@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build-time single source of truth for Nettle resource limits. This file is
+# not a runtime configuration surface. See RESOURCE_LIMITS_FILE_FORMAT.md for
+# the security purpose and rationale of each value.
+
+schemaVersion: 1
+
+bundle:
+  archive:
+    eocdSearchBytes: 65557
+    entryPathBytes: 1024
+    manifestBytes: 1048576
+    entryCount: 100004
+    entryBytes: 67108864
+    totalBytes: 1073741824
+    compressionRatio: 200
+  protobuf:
+    stringBytes: 4194304
+    modules: 50000
+    sources: 50000
+    graphObjects: 150000
+    nodes: 50000
+    edges: 100000
+    groups: 50000
+    graphFiles: 50000
+    ports: 250000
+    origins: 500000
+    metadataEntries: 500000
+    buildItems: 100000
+    diagnostics: 100000
+  sourcePathComponents: 64
+
+native:
+  builder:
+    sourceBytes: 4194304
+  compiler:
+    errorOutputBytes: 32768
+    processOutputBytes: 4194304
+    diagnosticsJsonBytes: 67108864
+    modelJsonBytes: 268435456
+  filelist:
+    depth: 64
+    files: 10000
+    bytes: 67108864
+    tokens: 250000
+  yosysImport:
+    endpointPairs: 1000000
+
+browser:
+  cache:
+    modulesBytes: 134217728
+    sourcesBytes: 33554432
+  display:
+    decimalConversionBits: 4096
+    formattableConstantBits: 65536
+    metadataDepth: 64
+    metadataNodes: 10000
+    metadataCharacters: 131072

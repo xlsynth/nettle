@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 2,
+  "source": {
+    "repository": "https://github.com/lowRISC/opentitan",
+    "commit": "fde05de428d1d3a0613c088a5ccd3a64434559c3",
+    "license": "Apache-2.0",
+    "sparsePaths": [
+      "hw/ip/aes/rtl",
+      "hw/ip/csrng/rtl",
+      "hw/ip/edn/rtl",
+      "hw/ip/entropy_src/rtl",
+      "hw/ip/prim/rtl",
+      "hw/ip/prim_generic/rtl"
+    ],
+    "licenseFile": "LICENSE"
+  },
+  "examples": [
+    {
+      "id": "aes-cipher-core",
+      "top": "aes_cipher_core",
+      "filelist": "aes_cipher_core.f",
+      "parameters": {
+        "SecMasking": "0",
+        "SecSBoxImpl": "aes_pkg::SBoxImplLut"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 965,
+          "topNodeCount": 290,
+          "topEdgeCount": 767,
+          "sourceOriginCount": 1227,
+          "nodeKinds": {
+            "constant": 110,
+            "input": 20,
+            "moduleInstance": 19,
+            "mux": 13,
+            "operator": 36,
+            "output": 11,
+            "register": 81
+          }
+        },
+        "parameters": {
+          "moduleCount": 132,
+          "topNodeCount": 181,
+          "topEdgeCount": 403,
+          "sourceOriginCount": 676,
+          "nodeKinds": {
+            "constant": 60,
+            "input": 20,
+            "moduleInstance": 15,
+            "mux": 11,
+            "operator": 31,
+            "output": 11,
+            "register": 33
+          }
+        }
+      },
+      "features": [
+        "major SoC cryptographic subsystem",
+        "AES encrypt/decrypt rounds",
+        "key expansion and control FSM",
+        "masked and unmasked generated datapaths",
+        "security countermeasure logic"
+      ],
+      "purpose": "Major OpenTitan SoC subsystem stress case for deep crypto datapaths, generated security options, and hierarchical control."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Build the generic synthesized netlist from the pinned Bedrock RTL checkout.
+# Run from the prepared Bedrock corpus with Yosys and yosys-slang on PATH:
+#   yosys -Q -m slang -s scripts/synth_br_cdc_fifo_flops.ys
+
+read_slang --best-effort-hierarchy --no-synthesis-define \
+  -G Depth=5 -G Width=16 -G RegisterPopOutputs=1 \
+  -F br_cdc_fifo_flops.f
+hierarchy -check -top br_cdc_fifo_flops
+synth -top br_cdc_fifo_flops -flatten
+clean -purge
+check -assert
+stat
+write_verilog -noattr -norename generated/br_cdc_fifo_flops_synth.v

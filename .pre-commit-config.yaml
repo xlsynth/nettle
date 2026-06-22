@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+
+minimum_pre_commit_version: "4.0.0"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 6eaad039603a4de39fddd1cf5f727391efe9974e # v8.30.0
+    hooks:
+      - id: gitleaks
+        entry: gitleaks dir --redact --verbose .
+
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: rustfmt
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        types: [rust]
+      - id: clippy
+        name: clippy
+        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
+      - id: biome
+        name: biome
+        entry: npm --workspace web run check
+        language: system
+        pass_filenames: false
+        types_or: [javascript, jsx, ts, tsx, json, css]
+      - id: prettier-docs
+        name: format Markdown and YAML
+        entry: npx --no-install prettier --check
+        language: system
+        types_or: [markdown, yaml]
+      - id: prettier-dockerfile
+        name: format Dockerfiles
+        entry: npx --no-install prettier --check --plugin=prettier-plugin-sh --parser=dockerfile
+        language: system
+        files: (^|/)Dockerfile[^/]*$
+      - id: web-test
+        name: web unit tests
+        entry: npm --workspace web run test
+        language: system
+        pass_filenames: false
+        types_or: [javascript, jsx, ts, tsx]

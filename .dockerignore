@@ -1,0 +1,16 @@
+.git
+.github
+.tools
+.cache
+.nettle
+node_modules
+web/node_modules
+web/dist
+target
+coverage
+playwright-report
+test-results
+*.log
+*.tmp
+*.nettle
+core.*

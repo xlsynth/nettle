@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.vscode/
+.tools/
+.cache/
+*.nettle
+__pycache__/
+*.py[cod]
+node_modules/
+web/dist/
+target/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.tmp
+core.*

@@ -1,0 +1,307 @@
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+// Canonical binary schema for independently loadable data inside a .nettle
+// bundle. NETTLE_FILE_FORMAT.md defines the surrounding ZIP container, validation
+// limits, and compatibility contract.
+//
+// Compatibility rules:
+// - add fields instead of changing existing field meanings;
+// - never reuse a published field number;
+// - reserve field numbers and names when removing a field; and
+// - use a new bundle-format major version for incompatible changes.
+package nettle.bundle.v1;
+
+// One map entry whose value is canonical JSON text. This preserves the
+// compiler-neutral JSON value domain without protobuf dynamic-value semantics.
+message JsonEntry {
+  // Map key, such as a parameter or attribute name.
+  string key = 1;
+  // Canonical serialized JSON value.
+  string json_value = 2;
+}
+
+// One project-relative source range. Lines and columns are one-based.
+message SourceOrigin {
+  // Project-root-relative source path.
+  string file = 1;
+  // Inclusive starting line.
+  uint32 start_line = 2;
+  // Inclusive starting column.
+  uint32 start_column = 3;
+  // Inclusive ending line.
+  uint32 end_line = 4;
+  // Exclusive ending column when the compiler reported one.
+  optional uint32 end_column = 5;
+}
+
+// Direction of a node port or design boundary.
+enum PortDirection {
+  // Direction was unavailable or unrecognized.
+  PORT_DIRECTION_UNKNOWN = 0;
+  // Signal enters the owning node.
+  PORT_DIRECTION_INPUT = 1;
+  // Signal leaves the owning node.
+  PORT_DIRECTION_OUTPUT = 2;
+  // Signal is bidirectional.
+  PORT_DIRECTION_INOUT = 3;
+}
+
+// Semantic node category used to choose schematic behavior and glyphs.
+enum NodeKind {
+  // Node could not be classified.
+  NODE_KIND_UNKNOWN = 0;
+  // Top-level input boundary.
+  NODE_KIND_INPUT = 1;
+  // Top-level output boundary.
+  NODE_KIND_OUTPUT = 2;
+  // Top-level bidirectional boundary.
+  NODE_KIND_INOUT = 3;
+  // Behavioral operator.
+  NODE_KIND_OPERATOR = 4;
+  // Multiplexer or conditional selection.
+  NODE_KIND_MUX = 5;
+  // Edge-triggered storage.
+  NODE_KIND_REGISTER = 6;
+  // Level-sensitive storage.
+  NODE_KIND_LATCH = 7;
+  // Memory abstraction.
+  NODE_KIND_MEMORY = 8;
+  // Hierarchical module instance.
+  NODE_KIND_MODULE_INSTANCE = 9;
+  // Literal constant.
+  NODE_KIND_CONSTANT = 10;
+  // Technology or language primitive.
+  NODE_KIND_PRIMITIVE = 11;
+}
+
+// One ordered connection point on a graph node.
+message GraphPort {
+  // Stable port identifier within its graph slice.
+  string id = 1;
+  // Source-level or synthesized port name.
+  string name = 2;
+  // Connection direction relative to the node.
+  PortDirection direction = 3;
+  // Operand order for operations whose inputs are not commutative.
+  optional uint32 index = 4;
+  // Semantic role such as clock, reset, select, or data.
+  optional string role = 5;
+  // Flattened total signal width in bits.
+  optional uint32 width = 6;
+}
+
+// Schematic object with ports, metadata, and source provenance.
+message GraphNode {
+  // Stable node identifier.
+  string id = 1;
+  // Semantic glyph category.
+  NodeKind kind = 2;
+  // Human-readable short label.
+  string label = 3;
+  // Referenced module definition for a hierarchical instance.
+  optional string definition_name = 4;
+  // Concrete elaborated parameter values, sorted by key.
+  repeated JsonEntry parameters = 5;
+  // Compiler or source attributes, sorted by key.
+  repeated JsonEntry attributes = 6;
+  // Ordered node connection points.
+  repeated GraphPort ports = 7;
+  // Source ranges contributing to this node.
+  repeated SourceOrigin origins = 8;
+}
+
+// Directed signal connection between two graph nodes.
+message GraphEdge {
+  // Stable edge identifier.
+  string id = 1;
+  // Source node identifier.
+  string source_node = 2;
+  // Source port identifier when the node exposes a specific port.
+  optional string source_port = 3;
+  // Target node identifier.
+  string target_node = 4;
+  // Target port identifier when the node exposes a specific port.
+  optional string target_port = 5;
+  // Source-visible signal name when available.
+  optional string label = 6;
+  // Flattened total signal width in bits.
+  optional uint32 width = 7;
+  // SystemVerilog type label when available.
+  optional string signal_type = 8;
+  // Ordered driver ranges for this connection. Builders prefer an exact
+  // assignment RHS, then a synthesized source-cell range, then a declaration.
+  // Multiple entries represent multiple source-level assignments or drivers.
+  repeated SourceOrigin origins = 9;
+}
+
+// Identity and metadata for the module represented by a graph slice.
+message GraphModule {
+  // Stable module graph identifier.
+  string id = 1;
+  // Module name used for navigation.
+  string name = 2;
+  // Hierarchical instance path represented by the slice.
+  string instance_path = 3;
+  // Source-level module definition name.
+  string definition_name = 4;
+  // Concrete parameters applied at this hierarchy level.
+  repeated JsonEntry parameters = 5;
+  // Module attributes preserved from compiler output.
+  repeated JsonEntry attributes = 6;
+}
+
+// Retained visual boundary for a module instance made transparent by projection.
+message GraphGroup {
+  // Original module-instance node identifier.
+  string id = 1;
+  // Instance name displayed on the retained boundary.
+  string name = 2;
+  // Source-level module definition name.
+  string definition_name = 3;
+  // Concrete parameters applied to the instance.
+  repeated JsonEntry parameters = 4;
+  // Source ranges associated with the original instance.
+  repeated SourceOrigin origins = 5;
+  // Projected child node identifiers contained by this boundary.
+  repeated string child_node_ids = 6;
+}
+
+// Stable identity and display path of a referenced source file.
+message SourceFileRef {
+  // Stable source identifier used by graph provenance.
+  string id = 1;
+  // Project-root-relative display path.
+  string path = 2;
+}
+
+// Independently loadable graph for one module definition or hierarchy level.
+message GraphSlice {
+  // Stable identity of the complete design snapshot.
+  string snapshot_id = 1;
+  // Module identity and metadata.
+  GraphModule module = 2;
+  // Nodes contained in the slice.
+  repeated GraphNode nodes = 3;
+  // Directed connections contained in the slice.
+  repeated GraphEdge edges = 4;
+  // Transparent-instance boundaries retained by a projection.
+  repeated GraphGroup groups = 5;
+  // Source files referenced by nodes and edges.
+  repeated SourceFileRef files = 6;
+}
+
+// Lightweight index record for one independently stored module graph.
+message ModuleSummary {
+  // Stable module graph identifier.
+  string id = 1;
+  // Module navigation name.
+  string name = 2;
+  // Source-level definition name.
+  string definition_name = 3;
+  // Hierarchical instance path represented by the graph.
+  string instance_path = 4;
+  // Exact node count used for preflight validation.
+  uint64 node_count = 5;
+  // Exact edge count used for preflight validation.
+  uint64 edge_count = 6;
+  // ZIP entry containing the encoded GraphSlice.
+  string entry = 7;
+}
+
+// Name with an optional textual value. Absence is distinct from an empty value.
+message NameValue {
+  // Parameter or preprocessor identifier.
+  string name = 1;
+  // Raw value when one was supplied; absent for a valueless macro definition.
+  optional string value = 2;
+}
+
+// Safe identity of a compiler used to produce the bundle.
+message Tool {
+  // Compiler name.
+  string name = 1;
+  // Sanitized executable basename rather than an absolute host path.
+  string path = 2;
+  // Compiler-reported version string.
+  string version = 3;
+}
+
+// Effective elaboration configuration and compiler provenance.
+message BuildMetadata {
+  // Project-root-relative root filelist path.
+  string filelist = 1;
+  // Top-level parameter overrides in deterministic order.
+  repeated NameValue parameters = 2;
+  // Preprocessor definitions in deterministic order.
+  repeated NameValue defines = 3;
+  // Preprocessor macro names explicitly undefined.
+  repeated string undefines = 4;
+  // Compilers used to create the snapshot.
+  repeated Tool tools = 5;
+}
+
+// Eager navigation index for all independently loadable module graphs.
+message DesignIndex {
+  // Bundle schema major version repeated for cross-entry validation.
+  uint32 schema_major = 1;
+  // Bundle schema minor version repeated for cross-entry validation.
+  uint32 schema_minor = 2;
+  // Stable design identity repeated for cross-entry validation.
+  string snapshot_id = 3;
+  // Selected top module.
+  string top = 4;
+  // Available top-module names.
+  repeated string tops = 5;
+  // Module graph inventory sorted deterministically.
+  repeated ModuleSummary modules = 6;
+  // Effective build inputs and compiler provenance.
+  BuildMetadata build = 7;
+}
+
+// Content-addressed source-file index record.
+message SourceFile {
+  // Stable source identifier used by graph provenance.
+  string id = 1;
+  // Project-root-relative display path.
+  string path = 2;
+  // ZIP entry containing the source bytes.
+  string entry = 3;
+  // Lowercase SHA-256 digest of the source bytes.
+  string sha256 = 4;
+  // Exact source size in bytes.
+  uint64 size = 5;
+}
+
+// Eager index of all referenced source payloads.
+message SourceIndex {
+  // Source records sorted by display path and identifier.
+  repeated SourceFile files = 1;
+}
+
+// Severity of a normalized compiler diagnostic.
+enum DiagnosticSeverity {
+  // Informational message.
+  DIAGNOSTIC_SEVERITY_INFO = 0;
+  // Non-fatal warning.
+  DIAGNOSTIC_SEVERITY_WARNING = 1;
+  // Compilation or elaboration error.
+  DIAGNOSTIC_SEVERITY_ERROR = 2;
+}
+
+// Compiler diagnostic normalized across tool-specific formats.
+message Diagnostic {
+  // Diagnostic severity.
+  DiagnosticSeverity severity = 1;
+  // Human-readable diagnostic message.
+  string message = 2;
+  // Optional source range; absent when the tool reported no location.
+  SourceOrigin origin = 3;
+}
+
+// Eager collection of normalized compiler diagnostics.
+message Diagnostics {
+  // Diagnostics in deterministic compiler/reporting order.
+  repeated Diagnostic diagnostics = 1;
+}

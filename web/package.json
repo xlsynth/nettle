@@ -1,0 +1,40 @@
+{
+  "name": "@nettle/web",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "prebuild": "node ../scripts/generate-resource-limits.mjs --check",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "precheck": "node ../scripts/generate-resource-limits.mjs --check",
+    "check": "node ../scripts/run-biome.mjs check src vite.config.ts vitest.config.ts playwright.config.ts playwright.benchmark.config.ts e2e",
+    "format": "node ../scripts/run-biome.mjs format --write src vite.config.ts vitest.config.ts playwright.config.ts playwright.benchmark.config.ts e2e",
+    "pretest": "node ../scripts/generate-resource-limits.mjs --check",
+    "test": "vitest run",
+    "test:e2e": "cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-browser-fixture.nettle && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-shift-register-fixture.nettle --shift-register && playwright test e2e/app.spec.ts --workers=1 && node ../scripts/run-netlist-e2e.mjs",
+    "bench:graph": "vitest bench --run",
+    "bench:browser": "playwright test --config playwright.benchmark.config.ts"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "4.7.0",
+    "elkjs": "0.11.1",
+    "lucide-react": "0.468.0",
+    "monaco-editor": "0.52.2",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.2",
+    "@playwright/test": "1.61.0",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.3.0",
+    "@types/react": "19.1.9",
+    "@types/react-dom": "19.1.7",
+    "@vitejs/plugin-react": "6.0.2",
+    "jsdom": "29.1.1",
+    "typescript": "5.9.2",
+    "vite": "8.0.16",
+    "vitest": "4.1.9"
+  }
+}

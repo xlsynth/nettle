@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 2,
+  "source": {
+    "repository": "https://github.com/lowRISC/ibex",
+    "commit": "022f084096baed0a9b5ebdf697ed2965f13e8ed8",
+    "license": "Apache-2.0",
+    "sparsePaths": [
+      "rtl",
+      "vendor/lowrisc_ip/dv/sv/dv_utils",
+      "vendor/lowrisc_ip/ip/prim/rtl",
+      "vendor/lowrisc_ip/ip/prim_generic/rtl"
+    ],
+    "licenseFile": "LICENSE",
+    "noticeFile": "NOTICE"
+  },
+  "examples": [
+    {
+      "id": "core",
+      "top": "ibex_core",
+      "filelist": "ibex_core.f",
+      "parameters": {
+        "RV32M": "ibex_pkg::RV32MFast",
+        "RV32B": "ibex_pkg::RV32BFull",
+        "PMPEnable": "1",
+        "PMPNumRegions": "8",
+        "BranchTargetALU": "1",
+        "WritebackStage": "1"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 32,
+          "topNodeCount": 83,
+          "topEdgeCount": 233,
+          "sourceOriginCount": 307,
+          "nodeKinds": {
+            "constant": 6,
+            "input": 25,
+            "moduleInstance": 6,
+            "mux": 1,
+            "operator": 15,
+            "output": 30
+          }
+        },
+        "parameters": {
+          "moduleCount": 50,
+          "topNodeCount": 94,
+          "topEdgeCount": 256,
+          "sourceOriginCount": 332,
+          "nodeKinds": {
+            "constant": 11,
+            "input": 25,
+            "moduleInstance": 7,
+            "mux": 2,
+            "operator": 19,
+            "output": 30
+          }
+        }
+      },
+      "features": [
+        "complete production RISC-V CPU core",
+        "multi-stage pipeline and control",
+        "PMP and CSR hierarchy",
+        "multiply/divide and bit manipulation",
+        "instruction fetch and compressed decode"
+      ],
+      "purpose": "Major CPU subsystem stress case for deep behavioral hierarchy, generated features, state, and wide datapaths."
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "creator": "Nettle hand-authored smoke fixture",
+  "modules": {
+    "child": {
+      "attributes": { "src": "rtl/child.sv:1.1-8.10" },
+      "parameter_default_values": { "WIDTH": "00000000000000000000000000001000" },
+      "ports": {
+        "in": { "direction": "input", "bits": [30, 31, 32, 33, 34, 35, 36, 37] },
+        "out": { "direction": "output", "bits": [38, 39, 40, 41, 42, 43, 44, 45] }
+      },
+      "cells": {
+        "$xor$child.sv:7": {
+          "hide_name": 1,
+          "type": "$xor",
+          "parameters": { "A_WIDTH": "00001000", "B_WIDTH": "00001000", "Y_WIDTH": "00001000" },
+          "attributes": { "src": "rtl/child.sv:7.16-7.29" },
+          "port_directions": { "A": "input", "B": "input", "Y": "output" },
+          "connections": {
+            "A": [30, 31, 32, 33, 34, 35, 36, 37],
+            "B": ["1", "0", "0", "0", "0", "0", "0", "0"],
+            "Y": [38, 39, 40, 41, 42, 43, 44, 45]
+          }
+        }
+      },
+      "netnames": {
+        "in": { "hide_name": 0, "bits": [30, 31, 32, 33, 34, 35, 36, 37], "attributes": { "src": "rtl/child.sv:4.27-4.29" } },
+        "out": { "hide_name": 0, "bits": [38, 39, 40, 41, 42, 43, 44, 45], "attributes": { "src": "rtl/child.sv:5.28-5.31" } }
+      }
+    },
+    "top": {
+      "attributes": { "top": "00000000000000000000000000000001", "src": "rtl/top.sv:3.1-26.10" },
+      "parameter_default_values": { "WIDTH": "00000000000000000000000000001000" },
+      "ports": {
+        "clk": { "direction": "input", "bits": [2] },
+        "rst_n": { "direction": "input", "bits": [3] },
+        "a": { "direction": "input", "bits": [4, 5, 6, 7, 8, 9, 10, 11] },
+        "b": { "direction": "input", "bits": [12, 13, 14, 15, 16, 17, 18, 19] },
+        "select": { "direction": "input", "bits": [20] },
+        "y": { "direction": "output", "bits": [21, 22, 23, 24, 25, 26, 27, 28] }
+      },
+      "cells": {
+        "$add$top.sv:16": {
+          "hide_name": 1,
+          "type": "$add",
+          "parameters": { "A_WIDTH": "00001000", "B_WIDTH": "00001000", "Y_WIDTH": "00001000" },
+          "attributes": { "src": "rtl/top.sv:16.16-16.21" },
+          "port_directions": { "A": "input", "B": "input", "Y": "output" },
+          "connections": {
+            "A": [4, 5, 6, 7, 8, 9, 10, 11],
+            "B": [12, 13, 14, 15, 16, 17, 18, 19],
+            "Y": [40, 41, 42, 43, 44, 45, 46, 47]
+          }
+        },
+        "$mux$top.sv:17": {
+          "hide_name": 1,
+          "type": "$mux",
+          "parameters": { "WIDTH": "00001000" },
+          "attributes": { "src": "rtl/top.sv:17.21-17.37" },
+          "port_directions": { "A": "input", "B": "input", "S": "input", "Y": "output" },
+          "connections": {
+            "A": [4, 5, 6, 7, 8, 9, 10, 11],
+            "B": [40, 41, 42, 43, 44, 45, 46, 47],
+            "S": [20],
+            "Y": [50, 51, 52, 53, 54, 55, 56, 57]
+          }
+        },
+        "$adff$top.sv:19": {
+          "hide_name": 1,
+          "type": "$adff",
+          "parameters": { "ARST_POLARITY": "0", "ARST_VALUE": "00000000", "WIDTH": "00001000" },
+          "attributes": { "src": "rtl/top.sv:19.3-24.6" },
+          "port_directions": { "ARST": "input", "CLK": "input", "D": "input", "Q": "output" },
+          "connections": {
+            "ARST": [3],
+            "CLK": [2],
+            "D": [50, 51, 52, 53, 54, 55, 56, 57],
+            "Q": [21, 22, 23, 24, 25, 26, 27, 28]
+          }
+        },
+        "u_child": {
+          "hide_name": 0,
+          "type": "child",
+          "parameters": { "WIDTH": "00000000000000000000000000001000" },
+          "attributes": { "src": "rtl/top.sv:26.3-26.55" },
+          "port_directions": { "in": "input", "out": "output" },
+          "connections": {
+            "in": [21, 22, 23, 24, 25, 26, 27, 28],
+            "out": [60, 61, 62, 63, 64, 65, 66, 67]
+          }
+        }
+      },
+      "netnames": {
+        "clk": { "hide_name": 0, "bits": [2], "attributes": { "src": "rtl/top.sv:6.27-6.30" } },
+        "rst_n": { "hide_name": 0, "bits": [3], "attributes": { "src": "rtl/top.sv:7.27-7.32" } },
+        "a": { "hide_name": 0, "bits": [4, 5, 6, 7, 8, 9, 10, 11], "attributes": { "src": "rtl/top.sv:8.27-8.28" } },
+        "b": { "hide_name": 0, "bits": [12, 13, 14, 15, 16, 17, 18, 19], "attributes": { "src": "rtl/top.sv:9.27-9.28" } },
+        "select": { "hide_name": 0, "bits": [20], "attributes": { "src": "rtl/top.sv:10.27-10.33" } },
+        "y": { "hide_name": 0, "bits": [21, 22, 23, 24, 25, 26, 27, 28], "attributes": { "src": "rtl/top.sv:11.28-11.29" } },
+        "sum": { "hide_name": 0, "bits": [40, 41, 42, 43, 44, 45, 46, 47], "attributes": { "src": "rtl/top.sv:13.21-13.24" } },
+        "selected": { "hide_name": 0, "bits": [50, 51, 52, 53, 54, 55, 56, 57], "attributes": { "src": "rtl/top.sv:14.21-14.29" } }
+      }
+    }
+  }
+}

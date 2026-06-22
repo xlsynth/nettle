@@ -1,0 +1,384 @@
+{
+  "schemaVersion": 2,
+  "source": {
+    "repository": "https://github.com/xlsynth/bedrock-rtl",
+    "commit": "dff5689eda7d5d0f74404d595fa8994889259fc1",
+    "license": "Apache-2.0",
+    "sparsePaths": [
+      "amba",
+      "arb",
+      "cdc",
+      "counter",
+      "credit",
+      "delay",
+      "demux",
+      "enc",
+      "fifo",
+      "flow",
+      "gate",
+      "macros",
+      "misc",
+      "mux",
+      "pkg",
+      "ram",
+      "tracker"
+    ],
+    "licenseFile": "LICENSE"
+  },
+  "examples": [
+    {
+      "id": "counter",
+      "top": "br_counter",
+      "filelist": "br_counter.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "MaxValue": "13",
+        "MaxChange": "3",
+        "EnableWrap": "1"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 2,
+          "topNodeCount": 29,
+          "topEdgeCount": 35,
+          "sourceOriginCount": 51,
+          "nodeKinds": {
+            "constant": 7,
+            "input": 8,
+            "moduleInstance": 1,
+            "mux": 6,
+            "operator": 4,
+            "output": 2,
+            "register": 1
+          }
+        },
+        "parameters": {
+          "moduleCount": 2,
+          "topNodeCount": 40,
+          "topEdgeCount": 54,
+          "sourceOriginCount": 78,
+          "nodeKinds": {
+            "constant": 9,
+            "input": 8,
+            "moduleInstance": 1,
+            "mux": 8,
+            "operator": 11,
+            "output": 2,
+            "register": 1
+          }
+        }
+      },
+      "features": [
+        "behavioral arithmetic",
+        "parameterized generate branches",
+        "inferred register",
+        "preprocessor includes"
+      ],
+      "purpose": "Small behavioral baseline for arithmetic, muxes, wrap logic, and a clocked state element."
+    },
+    {
+      "id": "priority-encoder",
+      "top": "br_enc_priority_encoder",
+      "filelist": "br_enc_priority_encoder.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "NumRequesters": "8",
+        "NumResults": "3",
+        "MsbHighestPriority": "1"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 1,
+          "topNodeCount": 6,
+          "topEdgeCount": 5,
+          "sourceOriginCount": 11,
+          "nodeKinds": { "input": 3, "operator": 2, "output": 1 }
+        },
+        "parameters": {
+          "moduleCount": 4,
+          "topNodeCount": 51,
+          "topEdgeCount": 110,
+          "sourceOriginCount": 153,
+          "nodeKinds": {
+            "constant": 2,
+            "input": 3,
+            "moduleInstance": 3,
+            "operator": 42,
+            "output": 1
+          }
+        }
+      },
+      "features": [
+        "packed arrays",
+        "nested generate loops",
+        "combinational priority logic"
+      ],
+      "purpose": "Compact combinational example for packed-array ports and repeated operator structure."
+    },
+    {
+      "id": "axil-to-apb",
+      "top": "br_amba_axil2apb",
+      "filelist": "br_amba_axil2apb.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "AddrWidth": "40",
+        "DataWidth": "64"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 4,
+          "topNodeCount": 127,
+          "topEdgeCount": 207,
+          "sourceOriginCount": 269,
+          "nodeKinds": {
+            "constant": 29,
+            "input": 16,
+            "moduleInstance": 1,
+            "mux": 22,
+            "operator": 35,
+            "output": 15,
+            "register": 9
+          }
+        },
+        "parameters": {
+          "moduleCount": 4,
+          "topNodeCount": 127,
+          "topEdgeCount": 207,
+          "sourceOriginCount": 269,
+          "nodeKinds": {
+            "constant": 29,
+            "input": 16,
+            "moduleInstance": 1,
+            "mux": 22,
+            "operator": 35,
+            "output": 15,
+            "register": 9
+          }
+        }
+      },
+      "features": [
+        "enum types",
+        "package types",
+        "round-robin arbitration",
+        "parameterized bus widths"
+      ],
+      "purpose": "Protocol bridge example for state-machine visualization, package metadata, and hierarchy."
+    },
+    {
+      "id": "flow-crossbar",
+      "top": "br_flow_xbar_rr",
+      "filelist": "br_flow_xbar_rr.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "NumPushFlows": "4",
+        "NumPopFlows": "3",
+        "Width": "16"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 24,
+          "topNodeCount": 11,
+          "topEdgeCount": 15,
+          "sourceOriginCount": 26,
+          "nodeKinds": { "input": 6, "moduleInstance": 2, "output": 3 }
+        },
+        "parameters": {
+          "moduleCount": 64,
+          "topNodeCount": 13,
+          "topEdgeCount": 27,
+          "sourceOriginCount": 40,
+          "nodeKinds": { "input": 6, "moduleInstance": 4, "output": 3 }
+        }
+      },
+      "features": [
+        "packed and unpacked arrays",
+        "multi-level hierarchy",
+        "generate loops",
+        "mux and demux topology"
+      ],
+      "purpose": "Topology-heavy example for layout quality, repeated hierarchy, and edge routing."
+    },
+    {
+      "id": "cdc-fifo",
+      "top": "br_cdc_fifo_flops",
+      "filelist": "br_cdc_fifo_flops.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "Depth": "5",
+        "Width": "16",
+        "RegisterPopOutputs": "1"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 94,
+          "topNodeCount": 17,
+          "topEdgeCount": 26,
+          "sourceOriginCount": 43,
+          "nodeKinds": {
+            "constant": 1,
+            "input": 7,
+            "moduleInstance": 2,
+            "output": 7
+          }
+        },
+        "parameters": {
+          "moduleCount": 161,
+          "topNodeCount": 17,
+          "topEdgeCount": 26,
+          "sourceOriginCount": 43,
+          "nodeKinds": {
+            "constant": 1,
+            "input": 7,
+            "moduleInstance": 2,
+            "output": 7
+          }
+        }
+      },
+      "features": [
+        "multiple clock domains",
+        "deep hierarchy",
+        "gate macro cells",
+        "flop RAM",
+        "structured mux"
+      ],
+      "purpose": "CDC-oriented stress case with two clocks, synchronization cells, control logic, and storage."
+    },
+    {
+      "id": "cdc-fifo-synth-netlist",
+      "top": "br_cdc_fifo_flops",
+      "filelist": "br_cdc_fifo_flops_synth.f",
+      "generatedNetlist": {
+        "sourceExample": "cdc-fifo",
+        "script": "scripts/synth_br_cdc_fifo_flops.ys",
+        "path": "generated/br_cdc_fifo_flops_synth.v",
+        "yosysVersion": "0.66+91 (git sha1 8869ce61d)",
+        "sha256": "e1dc0a751e40f2b22f45b54bf710e3eb5f7648e0beba2e07412c29a11b295195",
+        "parameters": {
+          "Depth": "5",
+          "Width": "16",
+          "RegisterPopOutputs": "1"
+        },
+        "flattened": true,
+        "genericCellCount": 423
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 1,
+          "topNodeCount": 767,
+          "topEdgeCount": 1454,
+          "sourceOriginCount": 2570,
+          "nodeKinds": {
+            "constant": 34,
+            "input": 7,
+            "mux": 150,
+            "operator": 415,
+            "output": 7,
+            "register": 154
+          }
+        }
+      },
+      "features": [
+        "fully synthesized flattened Verilog netlist",
+        "generic boolean gate cells",
+        "mapped muxes and flip-flops",
+        "two clock domains",
+        "netlist source provenance"
+      ],
+      "purpose": "Structural-netlist regression for Nettle build, bundle validation, browser loading, and the build-plus-view render command."
+    },
+    {
+      "id": "flop-ram",
+      "top": "br_ram_flops",
+      "filelist": "br_ram_flops.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "NumReadPorts": "2",
+        "NumWritePorts": "2",
+        "Depth": "8",
+        "Width": "16",
+        "DepthTiles": "2",
+        "WidthTiles": "2"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 16,
+          "topNodeCount": 20,
+          "topEdgeCount": 29,
+          "sourceOriginCount": 46,
+          "nodeKinds": {
+            "constant": 3,
+            "input": 10,
+            "moduleInstance": 5,
+            "output": 2
+          }
+        },
+        "parameters": {
+          "moduleCount": 101,
+          "topNodeCount": 30,
+          "topEdgeCount": 114,
+          "sourceOriginCount": 132,
+          "nodeKinds": {
+            "constant": 6,
+            "input": 10,
+            "moduleInstance": 12,
+            "output": 2
+          }
+        }
+      },
+      "features": [
+        "packed and unpacked arrays",
+        "multidimensional arrays",
+        "parameterized tiling",
+        "optional pipelines",
+        "inferred storage"
+      ],
+      "purpose": "Array-semantics and generated-hierarchy stress case for a tiled multi-port memory."
+    },
+    {
+      "id": "reorder-buffer",
+      "top": "br_tracker_reorder_buffer_flops",
+      "filelist": "br_tracker_reorder_buffer_flops.f",
+      "defines": ["BR_DISABLE_FINAL_CHECKS"],
+      "parameters": {
+        "NumEntries": "4",
+        "EntryIdWidth": "2",
+        "DataWidth": "32",
+        "RegisterPopOutputs": "1"
+      },
+      "expectedGraph": {
+        "default": {
+          "moduleCount": 60,
+          "topNodeCount": 15,
+          "topEdgeCount": 24,
+          "sourceOriginCount": 39,
+          "nodeKinds": {
+            "constant": 1,
+            "input": 7,
+            "moduleInstance": 2,
+            "output": 5
+          }
+        },
+        "parameters": {
+          "moduleCount": 71,
+          "topNodeCount": 15,
+          "topEdgeCount": 24,
+          "sourceOriginCount": 39,
+          "nodeKinds": {
+            "constant": 1,
+            "input": 7,
+            "moduleInstance": 2,
+            "output": 5
+          }
+        }
+      },
+      "features": [
+        "deep hierarchy",
+        "FIFO and credit control",
+        "reorder tracking",
+        "flop RAM",
+        "sequential and combinational logic"
+      ],
+      "purpose": "Deep practical hierarchy combining tracker, credit, FIFO, counter, and RAM subsystems."
+    }
+  ]
+}

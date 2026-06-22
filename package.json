@@ -1,0 +1,28 @@
+{
+  "name": "nettle",
+  "private": true,
+  "version": "0.0.1",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "generate:limits": "node scripts/generate-resource-limits.mjs",
+    "check:limits": "node scripts/generate-resource-limits.mjs --check",
+    "dev": "npm --workspace web run dev",
+    "build": "npm --workspace web run build",
+    "format": "npm --workspace web run format && npm run format:docs && npm run format:dockerfiles",
+    "format:docs": "prettier --write \"**/*.{md,yaml,yml}\" --ignore-path .gitignore",
+    "format:dockerfiles": "prettier --write --plugin=prettier-plugin-sh --parser=dockerfile Dockerfile.builder Dockerfile.viewer",
+    "lint": "npm --workspace web run check",
+    "test": "npm --workspace web run test",
+    "test:designs": "scripts/check-design-corpus.py",
+    "test:e2e": "npm --workspace web run test:e2e",
+    "bench:graph": "npm --workspace web run bench:graph",
+    "bench:browser": "npm --workspace web run bench:browser"
+  },
+  "devDependencies": {
+    "prettier": "3.8.4",
+    "prettier-plugin-sh": "0.18.1",
+    "yaml": "2.8.1"
+  }
+}

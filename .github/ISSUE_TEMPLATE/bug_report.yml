@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Bug report
+description: Report a reproducible problem in Nettle
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: Describe what happened and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Instructions to Reproduce
+      description: Provide the steps, inputs, and environment needed to reproduce the problem.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root Cause Analysis (optional)
+      description: If known, explain the underlying cause of the problem.
+    validations:
+      required: false
+
+  - type: textarea
+    id: recommended-fix
+    attributes:
+      label: Recommended Fix (optional)
+      description: If you have one, describe a recommended fix or workaround.
+    validations:
+      required: false
