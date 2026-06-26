@@ -1,0 +1,304 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.16.0
+  PRE_COMMIT_VERSION: 4.6.0
+  PRE_COMMIT_SHA256: ea8a0c84902e48c1875558f2f362ed8476773aa5fc8c16c5d8f2acc2a2830a65
+
+jobs:
+  pre-commit:
+    name: Pre-commit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies with npm ci
+        run: npm ci
+
+      - name: Download pinned pre-commit
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/pre-commit/pre-commit/releases/download/v${PRE_COMMIT_VERSION}/pre-commit-${PRE_COMMIT_VERSION}.pyz" \
+            --output /tmp/pre-commit.pyz
+          echo "${PRE_COMMIT_SHA256}  /tmp/pre-commit.pyz" | sha256sum --check --strict
+
+      - name: Run pre-commit
+        run: python3 /tmp/pre-commit.pyz run --all-files --show-diff-on-failure
+
+  cargo-test:
+    name: cargo test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run cargo test
+        run: cargo test --workspace --all-targets --all-features --locked
+
+  npm-test:
+    name: npm test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies with npm ci
+        run: npm ci
+
+      - name: Run npm test
+        run: npm test
+
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build and run the integration test target
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.builder
+          # The precompiled Slang and yosys-slang toolchains currently support
+          # linux/amd64 only, so this target cannot yet run on linux/arm64.
+          target: integration-tests
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=nettle-integration-tests
+          cache-to: type=gha,mode=max,scope=nettle-integration-tests
+
+  image-build:
+    name: Build ${{ matrix.image }} image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The precompiled Slang and yosys-slang toolchains currently support
+          # linux/amd64 only. The viewer itself supports both architectures.
+          - image: nettle-builder
+            dockerfile: Dockerfile.builder
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - image: nettle-viewer
+            dockerfile: Dockerfile.viewer
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - image: nettle-viewer
+            dockerfile: Dockerfile.viewer
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          tags: ghcr.io/xlsynth/${{ matrix.image }}:ci-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+  publish-images:
+    name: Publish ${{ matrix.image }} image (${{ matrix.arch }})
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - pre-commit
+      - cargo-test
+      - npm-test
+      - integration-tests
+      - image-build
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The precompiled Slang and yosys-slang toolchains currently support
+          # linux/amd64 only. The viewer itself supports both architectures.
+          - image: nettle-builder
+            dockerfile: Dockerfile.builder
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - image: nettle-viewer
+            dockerfile: Dockerfile.viewer
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - image: nettle-viewer
+            dockerfile: Dockerfile.viewer
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ghcr.io/xlsynth/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Publish architecture image
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/xlsynth/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          provenance: true
+          sbom: true
+
+      - name: Export image digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.image }}-${{ matrix.arch }}-digest
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-manifests:
+    name: Publish ${{ matrix.image }} manifest
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - publish-images
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: nettle-builder
+          - image: nettle-viewer
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ matrix.image }}-*-digest
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ghcr.io/xlsynth/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Publish manifest
+        env:
+          IMAGE: ghcr.io/xlsynth/${{ matrix.image }}
+          TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          tag_args=()
+          while IFS= read -r tag; do
+            tag_args+=(--tag "$tag")
+          done <<< "$TAGS"
+          sources=()
+          for digest in /tmp/digests/*; do
+            sources+=("${IMAGE}@sha256:$(basename "$digest")")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
