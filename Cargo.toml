@@ -7,6 +7,7 @@ default-run = "nettle"
 
 [dependencies]
 anyhow = "=1.0.102"
+async-stream = "=0.3.6"
 axum = "=0.8.9"
 clap = { version = "=4.6.1", features = ["derive"] }
 hex = "=0.4.3"
@@ -16,7 +17,8 @@ serde_json = "=1.0.150"
 serde_yaml_ng = "=0.10.0"
 sha2 = "=0.10.8"
 thiserror = "=2.0.18"
-tokio = { version = "=1.52.3", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tempfile = "=3.16.0"
+tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal"] }
 tower-http = { version = "=0.6.11", features = ["compression-gzip", "fs", "set-header"] }
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
@@ -27,7 +29,6 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_yaml_ng = "=0.10.0"
 
 [dev-dependencies]
-tempfile = "=3.16.0"
 tower = { version = "=0.5.3", features = ["util"] }
 
 [lints.rust]

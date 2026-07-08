@@ -35,4 +35,20 @@ describe("bounded bundle stream reads", () => {
       new Uint8Array([1, 2, 3, 4]),
     );
   });
+
+  it("cancels an in-flight decompression stream when aborted", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const controller = new AbortController();
+    const pending = readStreamWithLimit(stream, 4, "test stream", controller.signal);
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(cancelled).toBe(true);
+  });
 });

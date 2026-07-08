@@ -11,6 +11,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import type { SourceInventoryEntry } from "./api/contracts";
 import {
   findSourceReference,
   firstSourceReference,
@@ -19,14 +20,21 @@ import {
   normalizePath,
   pathsReferToSameFile,
 } from "./api/normalize";
+import { decodeComparisonStartup, startupFile } from "./api/startup";
 import { loadWorkspace } from "./api/workspace";
-import { LocalBundleProvider } from "./bundle/provider";
+import {
+  COMPARISON_BUNDLE_CACHE_LIMITS,
+  DEFAULT_BUNDLE_CACHE_LIMITS,
+  LocalBundleProvider,
+} from "./bundle/provider";
+import type { MatchingPolicy } from "./comparison/types";
 import { AppHeader } from "./components/AppHeader";
+import { ComparisonWorkspaceView } from "./components/ComparisonWorkspaceView";
 import { FileTree } from "./components/FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
 import { Inspector } from "./components/Inspector";
 import { InstanceHierarchy } from "./components/InstanceHierarchy";
-import { BundleWelcome, OpenBundleDialog } from "./components/OpenBundle";
+import { BundleWelcome, CompareBundlesDialog, OpenBundleDialog } from "./components/OpenBundle";
 import type { ConstantRadix } from "./graph/constant-format";
 import { TOP_MODULE_ID } from "./graph/constants";
 import type { LayoutProfile } from "./graph/layout-profile";
@@ -43,8 +51,24 @@ interface SourceView {
 }
 
 interface OpenedBundle {
+  installationId: number;
   provider: LocalBundleProvider;
   workspace: LoadedWorkspace;
+}
+
+interface OpenedComparisonBundle {
+  file: File;
+  provider: LocalBundleProvider;
+  workspace: LoadedWorkspace;
+  inventory: SourceInventoryEntry[];
+  modules: Array<{ id: string; name: string; definitionName: string }>;
+}
+
+interface OpenedComparison {
+  installationId: number;
+  reference: OpenedComparisonBundle;
+  candidate: OpenedComparisonBundle;
+  initialPolicy: MatchingPolicy;
 }
 
 type UtilityDialog = "search" | "help";
@@ -90,52 +114,194 @@ const contextualizeInstance = (parent: GraphSlice, child: GraphSlice, node: Grap
 const defaultSelection = (slice: GraphSlice) =>
   slice.nodes.find((node) => node.kind === "operator")?.id ?? slice.nodes[0]?.id ?? "";
 
+/** @internal Owns the cancellation lifetime of the latest workspace installation request. */
+export class OpenRequestOwner {
+  private controller?: AbortController;
+
+  begin() {
+    this.controller?.abort();
+    const controller = new AbortController();
+    this.controller = controller;
+    return controller;
+  }
+
+  finish(controller: AbortController) {
+    if (this.controller === controller) this.controller = undefined;
+  }
+
+  abort() {
+    this.controller?.abort();
+    this.controller = undefined;
+  }
+}
+
 export default function App() {
   const [opened, setOpened] = useState<OpenedBundle>();
+  const [comparison, setComparison] = useState<OpenedComparison>();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [statusDetail, setStatusDetail] = useState("No bundle is open");
   const generation = useRef(0);
+  const openOwner = useRef(new OpenRequestOwner());
   const startupRequested = useRef(false);
 
   const openBundle = useCallback(async (file: File) => {
     const request = ++generation.current;
+    const controller = openOwner.current.begin();
     setLoading(true);
     setError(undefined);
     setStatusDetail(`Validating ${file.name} in this browser`);
     try {
-      const provider = await LocalBundleProvider.open(file);
-      const workspace = await loadWorkspace(provider);
-      if (request !== generation.current) return;
-      setOpened({ provider, workspace });
+      const provider = await LocalBundleProvider.open(
+        file,
+        DEFAULT_BUNDLE_CACHE_LIMITS,
+        controller.signal,
+      );
+      const workspace = await loadWorkspace(provider, controller.signal);
+      if (request !== generation.current || controller.signal.aborted) return;
+      setOpened({ installationId: request, provider, workspace });
+      setComparison(undefined);
       setDialogOpen(false);
+      setCompareDialogOpen(false);
       setStatusDetail(`Local snapshot ${workspace.slice.snapshotId}`);
     } catch (reason) {
-      if (request !== generation.current) return;
+      if (request !== generation.current || controller.signal.aborted) return;
+      controller.abort();
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);
       setStatusDetail(`Could not open ${file.name}: ${message}`);
     } finally {
+      openOwner.current.finish(controller);
       if (request === generation.current) setLoading(false);
     }
   }, []);
+
+  const openComparison = useCallback(
+    async (referenceFile: File, candidateFile: File, matching: MatchingPolicy) => {
+      const request = ++generation.current;
+      const controller = openOwner.current.begin();
+      setLoading(true);
+      setError(undefined);
+      setStatusDetail(`Validating ${referenceFile.name} and ${candidateFile.name} in this browser`);
+      try {
+        const [referenceProvider, candidateProvider] = await Promise.all([
+          LocalBundleProvider.open(
+            referenceFile,
+            COMPARISON_BUNDLE_CACHE_LIMITS,
+            controller.signal,
+          ),
+          LocalBundleProvider.open(
+            candidateFile,
+            COMPARISON_BUNDLE_CACHE_LIMITS,
+            controller.signal,
+          ),
+        ]);
+        const [
+          referenceWorkspace,
+          candidateWorkspace,
+          referenceInventory,
+          candidateInventory,
+          referenceProject,
+          candidateProject,
+        ] = await Promise.all([
+          loadWorkspace(referenceProvider, controller.signal),
+          loadWorkspace(candidateProvider, controller.signal),
+          referenceProvider.getSourceInventory(controller.signal),
+          candidateProvider.getSourceInventory(controller.signal),
+          referenceProvider.getProject(controller.signal),
+          candidateProvider.getProject(controller.signal),
+        ]);
+        if (request !== generation.current || controller.signal.aborted) return;
+        setComparison({
+          installationId: request,
+          reference: {
+            file: referenceFile,
+            provider: referenceProvider,
+            workspace: referenceWorkspace,
+            inventory: referenceInventory,
+            modules: referenceProject.modules,
+          },
+          candidate: {
+            file: candidateFile,
+            provider: candidateProvider,
+            workspace: candidateWorkspace,
+            inventory: candidateInventory,
+            modules: candidateProject.modules,
+          },
+          initialPolicy: matching,
+        });
+        setOpened(undefined);
+        setDialogOpen(false);
+        setCompareDialogOpen(false);
+        setStatusDetail(`${referenceFile.name} → ${candidateFile.name}`);
+      } catch (reason) {
+        if (request !== generation.current || controller.signal.aborted) return;
+        controller.abort();
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setError(message);
+        setStatusDetail(`Could not compare bundles: ${message}`);
+      } finally {
+        openOwner.current.finish(controller);
+        if (request === generation.current) setLoading(false);
+      }
+    },
+    [],
+  );
 
   const openDialog = useCallback(() => {
     setError(undefined);
     setDialogOpen(true);
   }, []);
 
+  const openCompareDialog = useCallback(() => {
+    setError(undefined);
+    setCompareDialogOpen(true);
+  }, []);
+
+  useEffect(
+    () => () => {
+      openOwner.current.abort();
+    },
+    [],
+  );
+
   useEffect(() => {
     if (startupRequested.current) return;
     startupRequested.current = true;
     const controller = new AbortController();
-    void fetch("/startup.nettle", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
+    const startupGeneration = generation.current;
+    const ownsStartupRequest = () => generation.current === startupGeneration;
+    void fetch("/startup-comparison.json", { cache: "no-store", signal: controller.signal })
+      .then(async (comparisonResponse) => {
+        if (!ownsStartupRequest()) return;
+        const comparisonAvailable =
+          comparisonResponse.ok &&
+          !comparisonResponse.headers.get("content-type")?.includes("text/html");
+        if (comparisonAvailable) {
+          const descriptor = decodeComparisonStartup(await comparisonResponse.json());
+          if (!ownsStartupRequest()) return;
+          const [reference, candidate] = await Promise.all([
+            startupFile(descriptor.reference, controller.signal),
+            startupFile(descriptor.candidate, controller.signal),
+          ]);
+          if (!ownsStartupRequest()) return;
+          await openComparison(reference, candidate, descriptor.matching);
+          return;
+        }
+        if (comparisonResponse.status !== 404 && !comparisonResponse.ok) {
+          throw new Error(`startup comparison request failed (${comparisonResponse.status})`);
+        }
+        const response = await fetch("/startup.nettle", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (response.status === 404) return;
         if (!response.ok) throw new Error(`startup bundle request failed (${response.status})`);
         if (response.headers.get("content-type")?.includes("text/html")) return;
         const bytes = await response.blob();
+        if (!ownsStartupRequest()) return;
         await openBundle(
           new File([bytes], "startup.nettle", {
             type: response.headers.get("content-type") ?? "application/octet-stream",
@@ -143,7 +309,7 @@ export default function App() {
         );
       })
       .catch((reason) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || !ownsStartupRequest()) return;
         const message = reason instanceof Error ? reason.message : String(reason);
         setError(message);
         setStatusDetail(`Could not load startup bundle: ${message}`);
@@ -152,7 +318,7 @@ export default function App() {
       controller.abort();
       startupRequested.current = false;
     };
-  }, [openBundle]);
+  }, [openBundle, openComparison]);
 
   return (
     <div
@@ -163,20 +329,40 @@ export default function App() {
         if (event.dataTransfer.types.includes("Files")) event.preventDefault();
       }}
       onDrop={(event) => {
+        if (event.defaultPrevented) return;
+        if (dialogOpen || compareDialogOpen) {
+          event.preventDefault();
+          return;
+        }
         const file = event.dataTransfer.files[0];
         if (!file) return;
         event.preventDefault();
         void openBundle(file);
       }}
     >
-      {opened ? (
+      {comparison ? (
+        <ComparisonWorkspaceView
+          key={`comparison:${comparison.installationId}`}
+          reference={comparison.reference}
+          candidate={comparison.candidate}
+          initialPolicy={comparison.initialPolicy}
+          statusDetail={statusDetail}
+          setStatusDetail={setStatusDetail}
+          onOpenBundle={openDialog}
+          onCompareBundles={openCompareDialog}
+          onPolicyChange={(policy) =>
+            setComparison((current) => (current ? { ...current, initialPolicy: policy } : current))
+          }
+        />
+      ) : opened ? (
         <WorkspaceView
-          key={`${opened.provider.fileName}:${opened.workspace.slice.snapshotId}`}
+          key={`bundle:${opened.installationId}`}
           provider={opened.provider}
           initial={opened.workspace}
           statusDetail={statusDetail}
           setStatusDetail={setStatusDetail}
           onOpenBundle={openDialog}
+          onCompareBundles={openCompareDialog}
         />
       ) : (
         <>
@@ -186,6 +372,7 @@ export default function App() {
             dataMode={loading ? "loading" : "empty"}
             statusDetail={statusDetail}
             onOpenProject={openDialog}
+            onCompareBundles={openCompareDialog}
             onSearch={() => undefined}
             onHelp={() => undefined}
           />
@@ -193,6 +380,7 @@ export default function App() {
             loading={loading}
             error={error}
             onSelect={(file) => void openBundle(file)}
+            onCompare={openCompareDialog}
           />
         </>
       )}
@@ -205,6 +393,20 @@ export default function App() {
         }}
         onSelect={(file) => void openBundle(file)}
       />
+      <CompareBundlesDialog
+        open={compareDialogOpen}
+        loading={loading}
+        error={error}
+        initialReference={comparison?.reference.file}
+        initialCandidate={comparison?.candidate.file}
+        initialMatching={comparison?.initialPolicy}
+        onClose={() => {
+          if (!loading) setCompareDialogOpen(false);
+        }}
+        onCompare={(reference, candidate, matching) =>
+          void openComparison(reference, candidate, matching)
+        }
+      />
     </div>
   );
 }
@@ -215,6 +417,7 @@ interface WorkspaceViewProps {
   statusDetail: string;
   setStatusDetail: (detail: string) => void;
   onOpenBundle: () => void;
+  onCompareBundles: () => void;
 }
 
 function WorkspaceView({
@@ -223,6 +426,7 @@ function WorkspaceView({
   statusDetail,
   setStatusDetail,
   onOpenBundle,
+  onCompareBundles,
 }: WorkspaceViewProps) {
   const [sourceView, setSourceView] = useState<SourceView>(() => ({
     path: normalizePath(initial.source?.path ?? "Source unavailable"),
@@ -600,6 +804,7 @@ function WorkspaceView({
         dataMode="bundle"
         statusDetail={statusDetail}
         onOpenProject={onOpenBundle}
+        onCompareBundles={onCompareBundles}
         onSearch={() => setUtilityDialog("search")}
         onHelp={() => setUtilityDialog("help")}
       />

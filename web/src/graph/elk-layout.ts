@@ -12,6 +12,7 @@ import type {
   LayoutGroup,
   LayoutNode,
   LayoutResult,
+  Point,
 } from "./layout-types";
 import { shortModuleName } from "./presentation";
 
@@ -41,6 +42,8 @@ const getElk = () => {
   elk ??= createElk();
   return elk;
 };
+
+const abortError = () => new DOMException("The operation was aborted", "AbortError");
 
 const nodeSize = (node: GraphNode): { width: number; height: number } => {
   switch (node.kind) {
@@ -640,6 +643,7 @@ const layoutSlice = (slice: GraphSlice, flattenRenderMode: FlattenRenderMode) =>
 const layeredLayoutOptions = (
   effectiveProfile: Exclude<LayoutProfile, "auto">,
   padding: string,
+  separateConnectedComponents = false,
 ): LayoutOptions => {
   const overview = effectiveProfile !== "detailed";
   return {
@@ -677,7 +681,7 @@ const layeredLayoutOptions = (
     "elk.layered.spacing.edgeNodeBetweenLayers": "24",
     "elk.spacing.edgeEdge": "18",
     "elk.padding": padding,
-    "elk.separateConnectedComponents": "false",
+    "elk.separateConnectedComponents": separateConnectedComponents ? "true" : "false",
   };
 };
 
@@ -713,6 +717,7 @@ export const toElkGraph = (
   slice: GraphSlice,
   profile: LayoutProfile = "auto",
   flattenRenderMode: FlattenRenderMode = "grouped",
+  separateConnectedComponents = false,
 ): ElkNode => {
   const prepared = layoutSlice(slice, flattenRenderMode);
   const effectiveProfile = effectiveLayoutProfile(prepared, profile);
@@ -809,7 +814,11 @@ export const toElkGraph = (
 
   return {
     id: "root",
-    layoutOptions: layeredLayoutOptions(effectiveProfile, "[top=96,left=8,bottom=64,right=8]"),
+    layoutOptions: layeredLayoutOptions(
+      effectiveProfile,
+      "[top=96,left=8,bottom=64,right=8]",
+      separateConnectedComponents,
+    ),
     children: containerChildren(ROOT_CONTAINER_ID),
     edges: prepared.edges.map((edge): ElkExtendedEdge => {
       const source = sourceNodes.get(edge.sourceNode);
@@ -829,17 +838,340 @@ export const toElkGraph = (
   };
 };
 
+interface PackedComponent {
+  root: string;
+  nodeIds: Set<string>;
+  groupIds: Set<string>;
+  edgeIds: Set<string>;
+  firstNodeIndex: number;
+  bounds: { x: number; y: number; width: number; height: number };
+}
+
+const componentBounds = (
+  nodesById: ReadonlyMap<string, LayoutNode>,
+  groupsById: ReadonlyMap<string, LayoutGroup>,
+  edgesById: ReadonlyMap<string, LayoutEdge>,
+  nodeIds: ReadonlySet<string>,
+  groupIds: ReadonlySet<string>,
+  edgeIds: ReadonlySet<string>,
+) => {
+  let minimumX = Number.POSITIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+  const includePoint = (point: Point) => {
+    minimumX = Math.min(minimumX, point.x);
+    minimumY = Math.min(minimumY, point.y);
+    maximumX = Math.max(maximumX, point.x);
+    maximumY = Math.max(maximumY, point.y);
+  };
+  const includeRect = (rectangle: { x: number; y: number; width: number; height: number }) => {
+    includePoint(rectangle);
+    includePoint({ x: rectangle.x + rectangle.width, y: rectangle.y + rectangle.height });
+  };
+  for (const id of nodeIds) {
+    const node = nodesById.get(id);
+    if (node) includeRect(node);
+  }
+  for (const id of groupIds) {
+    const group = groupsById.get(id);
+    if (group) includeRect(group);
+  }
+  for (const id of edgeIds) {
+    const edge = edgesById.get(id);
+    if (!edge) continue;
+    for (const section of edge.sections) {
+      includePoint(section.startPoint);
+      for (const point of section.bendPoints) includePoint(point);
+      includePoint(section.endPoint);
+    }
+  }
+  if (!Number.isFinite(minimumX)) return { x: 0, y: 0, width: 1, height: 1 };
+  return {
+    x: minimumX,
+    y: minimumY,
+    width: Math.max(1, maximumX - minimumX),
+    height: Math.max(1, maximumY - minimumY),
+  };
+};
+
+const translatePoint = (point: Point, x: number, y: number): Point => ({
+  x: point.x + x,
+  y: point.y + y,
+});
+
+/**
+ * ELK layered layout intentionally preserves each component's internal routing,
+ * but it tends to stack disconnected diff islands into one very tall layer.
+ * Repack whole components after routing; no node moves relative to an edge or
+ * group in its own component.
+ *
+ * @internal Exported for deterministic geometry regression tests.
+ */
+export const packDisconnectedComponents = (
+  layout: LayoutResult,
+  slice: GraphSlice,
+): LayoutResult => {
+  if (layout.nodes.length < 2) return layout;
+  const parent = new Map(layout.nodes.map((node) => [node.id, node.id]));
+  const componentSizes = new Map(layout.nodes.map((node) => [node.id, 1]));
+  const find = (id: string): string => {
+    let root = id;
+    while (true) {
+      const next = parent.get(root);
+      if (!next || next === root) break;
+      root = next;
+    }
+    let current = id;
+    while (current !== root) {
+      const next = parent.get(current);
+      if (!next) break;
+      parent.set(current, root);
+      current = next;
+    }
+    return root;
+  };
+  const union = (left: string, right: string) => {
+    if (!parent.has(left) || !parent.has(right)) return;
+    let leftRoot = find(left);
+    let rightRoot = find(right);
+    if (leftRoot === rightRoot) return;
+    const leftSize = componentSizes.get(leftRoot) ?? 1;
+    const rightSize = componentSizes.get(rightRoot) ?? 1;
+    if (leftSize < rightSize) [leftRoot, rightRoot] = [rightRoot, leftRoot];
+    parent.set(rightRoot, leftRoot);
+    componentSizes.set(leftRoot, leftSize + rightSize);
+    componentSizes.delete(rightRoot);
+  };
+  for (const edge of slice.edges) union(edge.sourceNode, edge.targetNode);
+  for (const group of slice.groups ?? []) {
+    const childIds = group.childNodeIds.filter((id) => parent.has(id));
+    const first = childIds[0];
+    if (!first) continue;
+    for (let index = 1; index < childIds.length; index += 1) union(first, childIds[index]);
+  }
+
+  const nodeOrder = new Map(slice.nodes.map((node, index) => [node.id, index]));
+  const componentMembership = new Map<string, Omit<PackedComponent, "bounds">>();
+  for (const node of layout.nodes) {
+    const root = find(node.id);
+    let component = componentMembership.get(root);
+    if (!component) {
+      component = {
+        root,
+        nodeIds: new Set(),
+        groupIds: new Set(),
+        edgeIds: new Set(),
+        firstNodeIndex: Number.MAX_VALUE,
+      };
+      componentMembership.set(root, component);
+    }
+    component.nodeIds.add(node.id);
+    component.firstNodeIndex = Math.min(
+      component.firstNodeIndex,
+      nodeOrder.get(node.id) ?? Number.MAX_VALUE,
+    );
+  }
+  if (componentMembership.size <= 1) return layout;
+
+  for (const group of layout.groups) {
+    const child = group.childNodeIds.find((id) => parent.has(id));
+    if (child) componentMembership.get(find(child))?.groupIds.add(group.id);
+  }
+  for (const edge of layout.edges) {
+    const endpoint = parent.has(edge.sourceNode)
+      ? edge.sourceNode
+      : parent.has(edge.targetNode)
+        ? edge.targetNode
+        : undefined;
+    if (endpoint) componentMembership.get(find(endpoint))?.edgeIds.add(edge.id);
+  }
+  const nodesById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const groupsById = new Map(layout.groups.map((group) => [group.id, group]));
+  const edgesById = new Map(layout.edges.map((edge) => [edge.id, edge]));
+  const components: PackedComponent[] = [...componentMembership.values()].map((component) => {
+    return {
+      ...component,
+      bounds: componentBounds(
+        nodesById,
+        groupsById,
+        edgesById,
+        component.nodeIds,
+        component.groupIds,
+        component.edgeIds,
+      ),
+    };
+  });
+  components.sort((left, right) => left.firstNodeIndex - right.firstNodeIndex);
+  const primary = [...components].sort(
+    (left, right) =>
+      right.edgeIds.size - left.edgeIds.size ||
+      right.nodeIds.size - left.nodeIds.size ||
+      right.bounds.width * right.bounds.height - left.bounds.width * left.bounds.height ||
+      left.firstNodeIndex - right.firstNodeIndex,
+  )[0];
+  const hasPrimaryIsland = primary.edgeIds.size > 0 || primary.nodeIds.size > 1;
+  const gridComponents = hasPrimaryIsland
+    ? components.filter((component) => component !== primary)
+    : components;
+  // The schematic pane is landscape; a slightly wider component grid avoids
+  // wasting half of it on a third row of isolated diff islands.
+  const columns = Math.max(1, Math.ceil(Math.sqrt(gridComponents.length * 2)));
+  const rows = Math.max(1, Math.ceil(gridComponents.length / columns));
+  const columnWidths = Array.from({ length: columns }, () => 0);
+  const rowHeights = Array.from({ length: rows }, () => 0);
+  for (const [index, component] of gridComponents.entries()) {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    columnWidths[column] = Math.max(columnWidths[column], component.bounds.width);
+    rowHeights[row] = Math.max(rowHeights[row], component.bounds.height);
+  }
+  const gap = 54;
+  const gridWidth =
+    columnWidths.reduce((total, width) => total + width, 0) +
+    Math.max(0, columnWidths.length - 1) * gap;
+  const gridHeight =
+    rowHeights.reduce((total, height) => total + height, 0) +
+    Math.max(0, rowHeights.length - 1) * gap;
+  const primaryWidth = hasPrimaryIsland ? primary.bounds.width : 0;
+  const primaryHeight = hasPrimaryIsland ? primary.bounds.height : 0;
+  const contentWidth = Math.max(primaryWidth, gridWidth);
+  const contentHeight =
+    primaryHeight + (hasPrimaryIsland && gridComponents.length > 0 ? gap : 0) + gridHeight;
+  const targets = new Map<string, { x: number; y: number }>();
+  if (hasPrimaryIsland) {
+    targets.set(primary.root, { x: (contentWidth - primary.bounds.width) / 2, y: 0 });
+  }
+  const gridX = (contentWidth - gridWidth) / 2;
+  const gridY = primaryHeight + (hasPrimaryIsland && gridComponents.length > 0 ? gap : 0);
+  let y = gridY;
+  for (let row = 0; row < rows; row += 1) {
+    let x = gridX;
+    for (let column = 0; column < columns; column += 1) {
+      const index = row * columns + column;
+      const component = gridComponents[index];
+      if (!component) break;
+      targets.set(component.root, {
+        x: x + (columnWidths[column] - component.bounds.width) / 2,
+        y: y + (rowHeights[row] - component.bounds.height) / 2,
+      });
+      x += columnWidths[column] + gap;
+    }
+    y += rowHeights[row] + gap;
+  }
+
+  // When no component has a routed edge, the entire view is the disconnected
+  // region; the caption is especially useful for otherwise unexplained rows of
+  // floating symbols.
+  const hasDisconnectedRegion = gridComponents.length > 0;
+  const disconnectedRegionHeader = 56;
+  const disconnectedRegionBottom = 16;
+  const padding = {
+    left: hasDisconnectedRegion ? 32 : 8,
+    top: 96,
+    right: hasDisconnectedRegion ? 32 : 8,
+    bottom: 64,
+  };
+  const offsets = new Map(
+    components.map((component) => {
+      const target = targets.get(component.root) ?? { x: 0, y: 0 };
+      return [
+        component.root,
+        {
+          x: padding.left + target.x - component.bounds.x,
+          y: padding.top + target.y - component.bounds.y,
+        },
+      ] as const;
+    }),
+  );
+  const offsetForNode = (id: string) => offsets.get(find(id)) ?? { x: 0, y: 0 };
+  return {
+    ...layout,
+    width: contentWidth + padding.left + padding.right,
+    height: contentHeight + padding.top + padding.bottom,
+    disconnectedRegion: hasDisconnectedRegion
+      ? {
+          x: padding.left + gridX - 16,
+          y: padding.top + gridY - disconnectedRegionHeader,
+          width: gridWidth + 32,
+          height: gridHeight + disconnectedRegionHeader + disconnectedRegionBottom,
+          componentCount: gridComponents.length,
+          componentEntityIds: gridComponents.map((component) => [
+            ...component.nodeIds,
+            ...component.groupIds,
+            ...component.edgeIds,
+          ]),
+        }
+      : undefined,
+    nodes: layout.nodes.map((node) => {
+      const offset = offsetForNode(node.id);
+      return {
+        ...node,
+        x: node.x + offset.x,
+        y: node.y + offset.y,
+        ports: node.ports.map((port) => ({
+          ...port,
+          x: port.x + offset.x,
+          y: port.y + offset.y,
+        })),
+      };
+    }),
+    groups: layout.groups.map((group) => {
+      const child = group.childNodeIds.find((id) => parent.has(id));
+      const offset = child ? offsetForNode(child) : { x: 0, y: 0 };
+      return { ...group, x: group.x + offset.x, y: group.y + offset.y };
+    }),
+    edges: layout.edges.map((edge) => {
+      const offset = offsetForNode(edge.sourceNode);
+      return {
+        ...edge,
+        sections: edge.sections.map((section) => ({
+          startPoint: translatePoint(section.startPoint, offset.x, offset.y),
+          bendPoints: section.bendPoints.map((point) => translatePoint(point, offset.x, offset.y)),
+          endPoint: translatePoint(section.endPoint, offset.x, offset.y),
+        })),
+      };
+    }),
+  };
+};
+
 export const runElkLayout = async (
   slice: GraphSlice,
   profile: LayoutProfile = "auto",
   flattenRenderMode: FlattenRenderMode = "grouped",
+  signal?: AbortSignal,
+  separateConnectedComponents = false,
 ): Promise<LayoutResult> => {
+  if (signal?.aborted) throw abortError();
   const start = performance.now();
   const prepared = layoutSlice(slice, flattenRenderMode);
   if (effectiveLayoutProfile(prepared, profile) === "fast") {
-    return runGridOverview(prepared, start);
+    if (signal?.aborted) throw abortError();
+    const layout = runGridOverview(prepared, start);
+    return separateConnectedComponents ? packDisconnectedComponents(layout, prepared) : layout;
   }
-  const result = await (await getElk()).layout(toElkGraph(prepared, profile));
+  const elkPromise = getElk();
+  const instance = await elkPromise;
+  if (signal?.aborted) throw abortError();
+  let abort: (() => void) | undefined;
+  const layoutPromise = instance.layout(
+    toElkGraph(prepared, profile, "grouped", separateConnectedComponents),
+  );
+  const result = signal
+    ? await Promise.race([
+        layoutPromise,
+        new Promise<never>((_, reject) => {
+          abort = () => {
+            if (elk === elkPromise) elk = undefined;
+            instance.terminateWorker();
+            reject(abortError());
+          };
+          signal.addEventListener("abort", abort, { once: true });
+        }),
+      ]).finally(() => {
+        if (abort) signal.removeEventListener("abort", abort);
+      })
+    : await layoutPromise;
   const sourceNodes = new Map(prepared.nodes.map((node) => [node.id, node]));
   const sourceEdges = new Map(prepared.edges.map((edge) => [edge.id, edge]));
 
@@ -938,7 +1270,7 @@ export const runElkLayout = async (
     return [{ ...layoutGroup, x, width: Math.max(1, right - x) }];
   });
 
-  return {
+  const layout = {
     width: result.width ?? 0,
     height: result.height ?? 0,
     groups,
@@ -946,4 +1278,5 @@ export const runElkLayout = async (
     edges,
     elapsedMs: performance.now() - start,
   };
+  return separateConnectedComponents ? packDisconnectedComponents(layout, prepared) : layout;
 };

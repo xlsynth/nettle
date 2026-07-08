@@ -234,6 +234,24 @@ export const pathsReferToSameFile = (left: string, right: string) => {
   );
 };
 
+/**
+ * Resolves an exact path first, then a suffix match only when it identifies one
+ * candidate. Compiler origins frequently omit a project prefix, but a shared
+ * basename must never be resolved by input ordering.
+ */
+export const findUniquePathMatch = <T>(
+  values: Iterable<T>,
+  path: string,
+  candidatePath: (value: T) => string,
+): T | undefined => {
+  const entries = [...values];
+  const normalized = normalizePath(path);
+  const exact = entries.filter((value) => normalizePath(candidatePath(value)) === normalized);
+  if (exact.length > 0) return exact.length === 1 ? exact[0] : undefined;
+  const suffix = entries.filter((value) => pathsReferToSameFile(path, candidatePath(value)));
+  return suffix.length === 1 ? suffix[0] : undefined;
+};
+
 const flattenTreeFiles = (entries: FileTreeEntry[]): SourceFileRef[] =>
   entries.flatMap((entry): SourceFileRef[] => {
     if (entry.kind === "file") return entry.fileId ? [{ id: entry.fileId, path: entry.path }] : [];

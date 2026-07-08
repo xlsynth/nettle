@@ -414,10 +414,15 @@ fn import_module(
         let (kind, label, definition_name) = classify_cell(cell_name, &cell.cell_type);
         let origins = origins_from_attributes(&cell.attributes);
         let stage_count = shift_register_stage_count(cell, &alias_plan.aliases);
+        let cell_key = format!(
+            "{name}/{}/$type/{}",
+            display_name(cell_name),
+            display_name(&cell.cell_type)
+        );
         for stage in 0..stage_count.unwrap_or(1) {
             let node_key = match stage_count {
-                Some(_) => format!("{name}/{}/$bit/{stage}", display_name(cell_name)),
-                None => format!("{name}/{}", display_name(cell_name)),
+                Some(_) => format!("{cell_key}/$bit/{stage}"),
+                None => cell_key.clone(),
             };
             let node_id = stable_id("node", &node_key);
             let mut ports = Vec::with_capacity(cell.connections.len());
@@ -1452,6 +1457,52 @@ mod tests {
     }
 
     #[test]
+    fn cell_node_ids_include_cell_type() {
+        let import_operator_id = |cell_type: &str| {
+            let design = serde_json::json!({
+                "modules": {
+                    "top": {
+                        "attributes": {"top": 1},
+                        "ports": {
+                            "a": {"direction": "input", "bits": [2]},
+                            "b": {"direction": "input", "bits": [3]},
+                            "y": {"direction": "output", "bits": [4]}
+                        },
+                        "cells": {
+                            "same_cell": {
+                                "type": cell_type,
+                                "parameters": {},
+                                "attributes": {"src": "rtl/top.sv:3.3-3.20"},
+                                "port_directions": {
+                                    "A": "input",
+                                    "B": "input",
+                                    "Y": "output"
+                                },
+                                "connections": {"A": [2], "B": [3], "Y": [4]}
+                            }
+                        },
+                        "netnames": {}
+                    }
+                }
+            });
+            import_yosys_value(design, Some("top")).unwrap().modules["top"]
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Operator)
+                .unwrap()
+                .id
+                .clone()
+        };
+
+        let add_id = import_operator_id("$add");
+        let subtract_id = import_operator_id("$sub");
+
+        assert_ne!(add_id, subtract_id);
+        assert_eq!(add_id, stable_id("node", "top/same_cell/$type/$add"));
+        assert_eq!(subtract_id, stable_id("node", "top/same_cell/$type/$sub"));
+    }
+
+    #[test]
     fn indexes_only_order_dependent_binary_operands() {
         assert_eq!(behavioral_port_index("$sub", "A"), Some(0));
         assert_eq!(behavioral_port_index("$sub", "B"), Some(1));
@@ -1564,6 +1615,14 @@ mod tests {
             .filter(|node| node.kind == NodeKind::Register)
             .collect();
         let register_ids: BTreeSet<_> = registers.iter().map(|node| node.id.as_str()).collect();
+        let expected_register_ids: BTreeSet<_> = (0..4)
+            .map(|stage| {
+                stable_id(
+                    "node",
+                    &format!("top/$driver$pipe/$type/$aldff/$bit/{stage}"),
+                )
+            })
+            .collect();
         let pipeline_edges: Vec<_> = graph
             .edges
             .iter()
@@ -1574,6 +1633,13 @@ mod tests {
             .collect();
 
         assert_eq!(registers.len(), 4);
+        assert_eq!(
+            registers
+                .iter()
+                .map(|node| node.id.clone())
+                .collect::<BTreeSet<_>>(),
+            expected_register_ids
+        );
         assert!(registers.iter().all(|register| {
             register.parameters["WIDTH"] == "00000000000000000000000000000001"
                 && register

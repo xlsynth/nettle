@@ -4,6 +4,8 @@ import { expect, type Page, test } from "@playwright/test";
 
 const fixture = "/tmp/nettle-browser-fixture.nettle";
 const shiftRegisterFixture = "/tmp/nettle-shift-register-fixture.nettle";
+const comparisonReferenceFixture = "/tmp/nettle-comparison-reference.nettle";
+const comparisonCandidateFixture = "/tmp/nettle-comparison-candidate.nettle";
 
 const captureRuntimeErrors = (page: Page) => {
   const errors: string[] = [];
@@ -76,6 +78,198 @@ test("automatically opens a bundle supplied by the viewer host", async ({ page }
   await expect(page.getByText("LOCAL")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open bundle" })).toContainText("startup.nettle");
   await expect(page.locator(".schematic-node.kind-module")).toHaveCount(1);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("automatically opens a comparison supplied by the viewer host", async ({ page }) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  await page.route("**/startup-comparison.json", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      headers: { "cache-control": "no-store" },
+      body: JSON.stringify({
+        reference: {
+          name: "hosted-reference.nettle",
+          route: "/startup-reference.nettle",
+        },
+        candidate: {
+          name: "hosted-candidate.nettle",
+          route: "/startup-candidate.nettle",
+        },
+        matching: "aggressive",
+      }),
+    }),
+  );
+  await page.route("**/startup-reference.nettle", (route) =>
+    route.fulfill({
+      path: comparisonReferenceFixture,
+      contentType: "application/octet-stream",
+      headers: { "cache-control": "no-store" },
+    }),
+  );
+  await page.route("**/startup-candidate.nettle", (route) =>
+    route.fulfill({
+      path: comparisonCandidateFixture,
+      contentType: "application/octet-stream",
+      headers: { "cache-control": "no-store" },
+    }),
+  );
+
+  await page.goto("/");
+
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open bundle" })).toContainText(
+    "hosted-reference.nettle → hosted-candidate.nettle",
+  );
+  await expect(page.getByLabel("Schematic matching policy")).toHaveValue("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Read-only source diff" })).toBeVisible();
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("compares two bundles with source and schematic diff controls", async ({ page }) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Compare two bundles" }).click();
+  const dialog = page.getByRole("dialog", { name: "Compare Nettle bundles" });
+  await dialog.getByLabel("Choose reference .nettle bundle file").setInputFiles(
+    comparisonReferenceFixture,
+  );
+  await dialog.getByLabel("Choose candidate .nettle bundle file").setInputFiles(
+    comparisonCandidateFixture,
+  );
+  await dialog.getByRole("button", { name: "Compare bundles", exact: true }).click();
+
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Schematic matching policy")).toHaveValue("conservative");
+  await expect(page.getByRole("region", { name: "Read-only source diff" })).toBeVisible();
+  await expect(page.locator(".node-interaction.diff-modified")).not.toHaveCount(0);
+  await expect(page.locator(".diff-count.modified")).not.toHaveText("±0");
+  await expect(page.locator(".node-interaction.diff-modified .node-shape").first()).toHaveCSS(
+    "stroke",
+    "rgb(154, 103, 0)",
+  );
+  await expect(
+    page.locator(".top-level-layer.diff-modified .top-level-boundary"),
+  ).toHaveCSS("fill", "rgba(255, 244, 184, 0.12)");
+  await expect(page.getByTitle("Unchanged")).not.toHaveCount(0);
+  await expect(page.getByTitle("Missing from candidate")).not.toHaveCount(0);
+  await expect(page.getByTitle("Added in candidate")).not.toHaveCount(0);
+
+  const viewMenu = page.getByRole("button", { name: /Schematic comparison view:/ });
+  await expect(viewMenu).toContainText("Diff overlay");
+  await expect(page.getByRole("button", { name: "Changes", exact: true })).toHaveCount(0);
+  await viewMenu.click();
+  await page.getByRole("radio", { name: "Candidate snapshot" }).click();
+  await expect(viewMenu).toContainText("Candidate snapshot");
+  await expect(page.locator(".node-interaction.diff-modified")).toHaveCount(0);
+  await expect(page.locator(".node-interaction.diff-filtered")).not.toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Select module u_new/ })).toHaveClass(
+    /diff-unchanged/,
+  );
+  await viewMenu.click();
+  await page.getByRole("radio", { name: "Reference snapshot" }).click();
+  await expect(viewMenu).toContainText("Reference snapshot");
+  await expect(page.locator(".node-interaction.diff-filtered")).not.toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Select module u_legacy/ })).toHaveClass(
+    /diff-unchanged/,
+  );
+  await viewMenu.click();
+  await page.getByRole("radio", { name: "Diff overlay" }).click();
+  await expect(viewMenu).toContainText("Diff overlay");
+  await expect(page.locator(".node-interaction.diff-modified")).not.toHaveCount(0);
+
+  await page.getByRole("link", { name: "Select operator Add, Unchanged" }).click();
+  await expect(page.locator(".node-shape.selected")).toHaveCount(1);
+  await page.getByRole("link", { name: /Select top-level module top, Modified/ }).click();
+  await expect(page.locator(".top-level-module.selected")).toHaveCount(1);
+  await expect(page.locator(".node-shape.selected")).toHaveCount(0);
+
+  await page.getByTitle("rtl/z_source_only.sv").click();
+  await expect(page.getByText("1 source-only hunk", { exact: true })).toBeVisible();
+
+  await page.getByRole("tab", { name: "Hierarchy" }).click();
+  await page.getByRole("button", { name: "u_new (new_child)" }).click();
+  await expect(
+    page.getByRole("link", { name: "Select output one-sided-data-o, Added in candidate" }),
+  ).toBeVisible();
+  await page.getByRole("tab", { name: "Source" }).click();
+  await page.getByTitle("rtl/top.sv").click();
+  await page
+    .getByRole("link", { name: "Select output one-sided-data-o, Added in candidate" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "new_child.sv Added in candidate", exact: true }),
+  ).toHaveClass(/selected/);
+  await expect(page.getByRole("region", { name: "Read-only source diff" })).toContainText(
+    "module new_child",
+  );
+  await page.getByRole("button", { name: "Jump to top module" }).click();
+
+  const legacyChild = page.getByRole("link", { name: /Select module u_legacy/ });
+  await legacyChild.dblclick();
+  await expect(page.locator(".node-interaction.diff-removed")).not.toHaveCount(0);
+  await page.getByRole("button", { name: "Up one hierarchy level" }).click();
+  await expect(page.getByRole("link", { name: /Select module u_legacy/ })).toBeVisible();
+  await page.getByRole("link", { name: /Select module u_legacy/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Flatten selected instance" }).click();
+  await expect(page.locator(".group-layer .diff-removed .transparent-group")).toHaveCount(1);
+  await page.getByRole("button", { name: "Restore instance" }).click();
+
+  await page.getByRole("link", { name: /Select module u_child/ }).dblclick();
+  await expect(page.getByRole("button", { name: "Up one hierarchy level" })).toBeEnabled();
+  await expect(page.locator(".schematic-node.kind-module")).toHaveCount(0);
+  await page.getByRole("button", { name: "Up one hierarchy level" }).click();
+  await expect(page.getByRole("link", { name: /Select module u_child/ })).toBeVisible();
+  await page.getByRole("link", { name: /Select module u_child/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Flatten selected instance" }).click();
+  await expect(page.locator(".transparent-group")).toHaveCount(1);
+  await page.getByRole("button", { name: "Restore instance" }).click();
+  await expect(page.getByRole("link", { name: /Select module u_child/ })).toBeVisible();
+
+  await page.getByLabel("Flatten instance depth").selectOption("1");
+  await expect(page.locator(".transparent-group")).toHaveCount(3);
+  await expect(page.locator(".group-layer .diff-removed .transparent-group")).toHaveCount(1);
+  await expect(page.locator(".group-layer .diff-added .transparent-group")).toHaveCount(1);
+  await page.getByLabel("Schematic matching policy").selectOption("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  await page.getByLabel("Schematic matching policy").selectOption("conservative");
+  await expect(page.locator(".transparent-group")).toHaveCount(3);
+  await page.getByLabel("Flatten instance depth").selectOption("0");
+  await expect(page.getByRole("link", { name: /Select module u_child/ })).toBeVisible();
+
+  await page.getByLabel("Schematic matching policy").selectOption("aggressive");
+  await expect(page.getByLabel("Schematic matching policy")).toHaveValue("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  await page.locator(".node-interaction.diff-heuristic").first().click();
+  await page.getByLabel("Schematic matching policy").selectOption("conservative");
+  await expect(page.getByLabel("Schematic matching policy")).toHaveValue("conservative");
+  await expect(page.locator(".node-shape.selected")).toHaveCount(1);
+  await expect(page.locator(".node-interaction.diff-heuristic")).toHaveCount(0);
+  await page.getByLabel("Schematic matching policy").selectOption("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  await page.getByRole("button", { name: /Schematic comparison view:/ }).click();
+  await page.getByRole("radio", { name: "Changes only" }).click();
+  await expect(page.getByRole("button", { name: /Schematic comparison view:/ })).toContainText(
+    "Changes only",
+  );
+  await expect(page.locator(".node-interaction.diff-unchanged.diff-filtered")).not.toHaveCount(0);
+  await page.getByRole("button", { name: "Next schematic change" }).click();
+  await expect(page.locator(".node-shape.selected, .schematic-edge.active")).not.toHaveCount(0);
+
+  const nodeCount = await page.locator(".node-interaction").count();
+  await page.getByRole("button", { name: "Compare Nettle bundles" }).click();
+  const replacement = page.getByRole("dialog", { name: "Compare Nettle bundles" });
+  await replacement.getByLabel("Choose candidate .nettle bundle file").setInputFiles({
+    name: "corrupt-candidate.nettle",
+    mimeType: "application/zip",
+    buffer: Buffer.from("not a bundle"),
+  });
+  await replacement.getByRole("button", { name: "Compare bundles", exact: true }).click();
+  await expect(replacement.getByRole("alert")).toBeVisible();
+  await replacement.getByRole("button", { name: "Close compare bundles dialog" }).click();
+  await expect(page.locator(".mode-badge.diff")).toBeVisible();
+  await expect(page.locator(".node-interaction")).toHaveCount(nodeCount);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -212,6 +406,34 @@ test("resizes the source pane and keeps schematic controls in view", async ({ pa
       schematicBox.x + schematicBox.width,
     );
   }
+
+  await page.setViewportSize({ width: 480, height: 800 });
+  await expect(page.locator(".file-tree")).toBeHidden();
+  await expect(divider).toBeHidden();
+  const narrowSourceBox = await sourcePane.boundingBox();
+  const narrowSchematicBox = await page.locator(".schematic-panel").boundingBox();
+  expect(narrowSourceBox).not.toBeNull();
+  expect(narrowSchematicBox).not.toBeNull();
+  if (narrowSourceBox && narrowSchematicBox) {
+    expect(Math.abs(narrowSourceBox.x - narrowSchematicBox.x)).toBeLessThan(2);
+    expect(narrowSchematicBox.y).toBeGreaterThanOrEqual(
+      narrowSourceBox.y + narrowSourceBox.height - 2,
+    );
+  }
+  const narrowControls = page.locator(
+    ".schematic-toolbar button:visible, .schematic-toolbar select:visible",
+  );
+  for (let index = 0; index < (await narrowControls.count()); index += 1) {
+    const controlBox = await narrowControls.nth(index).boundingBox();
+    expect(controlBox?.x).toBeGreaterThanOrEqual(narrowSchematicBox?.x ?? 0);
+    expect((controlBox?.x ?? 0) + (controlBox?.width ?? 0)).toBeLessThanOrEqual(
+      (narrowSchematicBox?.x ?? 0) + (narrowSchematicBox?.width ?? 480),
+    );
+  }
+  await page.getByRole("button", { name: "Toggle inspector" }).click();
+  const narrowInspector = await page.getByRole("complementary", { name: "Selection inspector" }).boundingBox();
+  expect(narrowInspector?.width).toBeLessThanOrEqual(480);
+  expect(narrowInspector?.x).toBeGreaterThanOrEqual(0);
   expect(runtimeErrors).toEqual([]);
 });
 

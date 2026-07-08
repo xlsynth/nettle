@@ -57,6 +57,19 @@ export const RESOURCE_LIMITS = {
       modulesBytes: 134217728,
       sourcesBytes: 33554432,
     },
+    load: {
+      entryConcurrency: 4,
+    },
+    comparison: {
+      sourceDiffTimeoutMs: 2000,
+      sourceDiffMaxEditLength: 100000,
+      sourceDiffConcurrency: 4,
+      sourceMappingFiles: 64,
+      sourceEvidenceModulePairs: 512,
+      sourceEvidenceTimeoutMs: 5000,
+      matcherTimeoutMs: 5000,
+      fuzzyCandidatesPerNode: 32,
+    },
     display: {
       decimalConversionBits: 4096,
       formattableConstantBits: 65536,

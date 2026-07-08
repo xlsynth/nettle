@@ -12,8 +12,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use nettle::bundle::BundleReader;
 use nettle::{
-    BuildOptions, DefineOverride, ElaborationOverrides, ParameterOverride, build_project,
-    parse_define_override, parse_parameter_override, parse_undefine, serve_static,
+    BuildOptions, DefineOverride, ElaborationOverrides, MatchingPolicy, ParameterOverride,
+    StartupBundle, StartupWorkspace, build_project, parse_define_override,
+    parse_parameter_override, parse_undefine, serve_static,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -41,6 +42,8 @@ enum Command {
     Inspect(BundlePath),
     /// Serve the static viewer, optionally exposing one startup bundle.
     View(ViewArgs),
+    /// Compare reference and candidate bundles in the browser viewer.
+    Compare(CompareArgs),
 }
 
 #[derive(Debug, Args)]
@@ -201,6 +204,22 @@ struct ViewArgs {
 }
 
 #[derive(Debug, Args)]
+struct CompareArgs {
+    /// Reference .nettle bundle used as the comparison baseline.
+    reference: PathBuf,
+
+    /// Candidate .nettle bundle containing the proposed design.
+    candidate: PathBuf,
+
+    /// Graph-correspondence policy used to pair schematic objects.
+    #[arg(long, value_enum, default_value = "conservative")]
+    matching: MatchingPolicy,
+
+    #[command(flatten)]
+    server: ViewerServerArgs,
+}
+
+#[derive(Debug, Args)]
 struct RenderArgs {
     #[command(flatten)]
     build: BuildArgs,
@@ -239,20 +258,29 @@ fn build_bundle(args: BuildArgs) -> Result<PathBuf> {
     Ok(invocation.output)
 }
 
-fn validated_startup_bundle(path: &Path) -> Result<PathBuf> {
-    let mut bundle = BundleReader::open(path)
-        .with_context(|| format!("opening startup bundle {}", path.display()))?;
-    bundle
-        .validate_all()
-        .with_context(|| format!("validating startup bundle {}", path.display()))?;
-    std::fs::canonicalize(path)
-        .with_context(|| format!("locating startup bundle {}", path.display()))
+fn validated_startup_bundle(path: &Path, role: &str) -> Result<StartupBundle> {
+    StartupBundle::open(path)
+        .with_context(|| format!("validating {role} bundle {}", path.display()))
 }
 
-async fn serve_viewer(server: ViewerServerArgs, startup_bundle: Option<&Path>) -> Result<()> {
+fn validated_startup_comparison(
+    reference: &Path,
+    candidate: &Path,
+    matching: MatchingPolicy,
+) -> Result<StartupWorkspace> {
+    let reference = validated_startup_bundle(reference, "reference")?;
+    let candidate = validated_startup_bundle(candidate, "candidate")?;
+    Ok(StartupWorkspace::Comparison {
+        reference,
+        candidate,
+        matching,
+    })
+}
+
+async fn serve_viewer(server: ViewerServerArgs, startup_workspace: StartupWorkspace) -> Result<()> {
     serve_static(
         &server.web_root,
-        startup_bundle,
+        startup_workspace,
         server.bind_address,
         server.port,
     )
@@ -268,8 +296,14 @@ async fn main() -> Result<()> {
         }
         Command::Render(args) => {
             let output = build_bundle(args.build)?;
-            let startup_bundle = validated_startup_bundle(&output)?;
-            serve_viewer(args.server, Some(&startup_bundle)).await?;
+            let startup_bundle = validated_startup_bundle(&output, "startup")?;
+            serve_viewer(
+                args.server,
+                StartupWorkspace::SingleBundle {
+                    bundle: startup_bundle,
+                },
+            )
+            .await?;
         }
         Command::Validate(args) => {
             let mut bundle = BundleReader::open(&args.bundle)
@@ -299,12 +333,18 @@ async fn main() -> Result<()> {
             );
         }
         Command::View(args) => {
-            let startup_bundle = args
-                .bundle
-                .as_deref()
-                .map(validated_startup_bundle)
-                .transpose()?;
-            serve_viewer(args.server, startup_bundle.as_deref()).await?;
+            let startup_workspace = match args.bundle {
+                Some(bundle) => StartupWorkspace::SingleBundle {
+                    bundle: validated_startup_bundle(&bundle, "startup")?,
+                },
+                None => StartupWorkspace::Empty,
+            };
+            serve_viewer(args.server, startup_workspace).await?;
+        }
+        Command::Compare(args) => {
+            let startup_workspace =
+                validated_startup_comparison(&args.reference, &args.candidate, args.matching)?;
+            serve_viewer(args.server, startup_workspace).await?;
         }
     }
     Ok(())
@@ -313,8 +353,59 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser, error::ErrorKind};
+    use nettle::bundle::{BuildMetadata, BundleContents, write_bundle};
+    use nettle::ir::{DesignSnapshot, GraphEdge, GraphModule, GraphSlice};
 
     use super::*;
+
+    fn write_test_bundle(path: &Path, snapshot_id: &str, dangling_edge: bool) {
+        let edges = dangling_edge
+            .then(|| GraphEdge {
+                id: "dangling-edge".to_owned(),
+                source_node: "missing-source".to_owned(),
+                source_port: None,
+                target_node: "missing-target".to_owned(),
+                target_port: None,
+                label: None,
+                width: None,
+                signal_type: None,
+                origins: vec![],
+            })
+            .into_iter()
+            .collect();
+        let slice = GraphSlice {
+            snapshot_id: snapshot_id.to_owned(),
+            module: GraphModule {
+                id: format!("{snapshot_id}-module"),
+                name: "top".to_owned(),
+                instance_path: "top".to_owned(),
+                definition_name: "top".to_owned(),
+                parameters: BTreeMap::new(),
+                attributes: BTreeMap::new(),
+            },
+            nodes: vec![],
+            edges,
+            groups: vec![],
+            files: None,
+        };
+        let snapshot = DesignSnapshot {
+            snapshot_id: snapshot_id.to_owned(),
+            top: "top".to_owned(),
+            tops: vec!["top".to_owned()],
+            modules: BTreeMap::from([("top".to_owned(), slice)]),
+        };
+        write_bundle(
+            path,
+            &BundleContents {
+                snapshot: &snapshot,
+                sources: &[],
+                diagnostics: &[],
+                build: &BuildMetadata::default(),
+                debug_artifacts: &[],
+            },
+        )
+        .unwrap();
+    }
 
     #[test]
     fn cli_schema_is_valid() {
@@ -449,6 +540,113 @@ debug_artifacts: true
         };
         assert_eq!(args.bundle, Some(PathBuf::from("design.nettle")));
         assert_eq!(args.server.port, 9000);
+    }
+
+    #[test]
+    fn parses_compare_with_conservative_matching_by_default() {
+        let cli = Cli::try_parse_from([
+            "nettle",
+            "compare",
+            "reference.nettle",
+            "candidate.nettle",
+            "--port",
+            "9002",
+        ])
+        .unwrap();
+        let Command::Compare(args) = cli.command else {
+            panic!("expected compare command");
+        };
+        assert_eq!(args.reference, PathBuf::from("reference.nettle"));
+        assert_eq!(args.candidate, PathBuf::from("candidate.nettle"));
+        assert_eq!(args.matching, MatchingPolicy::Conservative);
+        assert_eq!(args.server.port, 9002);
+    }
+
+    #[test]
+    fn parses_compare_with_aggressive_matching() {
+        let cli = Cli::try_parse_from([
+            "nettle",
+            "compare",
+            "reference.nettle",
+            "candidate.nettle",
+            "--matching",
+            "aggressive",
+        ])
+        .unwrap();
+        let Command::Compare(args) = cli.command else {
+            panic!("expected compare command");
+        };
+        assert_eq!(args.matching, MatchingPolicy::Aggressive);
+    }
+
+    #[test]
+    fn compare_requires_two_bundles_and_a_known_policy() {
+        let missing_candidate =
+            Cli::try_parse_from(["nettle", "compare", "reference.nettle"]).unwrap_err();
+        assert_eq!(missing_candidate.kind(), ErrorKind::MissingRequiredArgument);
+
+        let unknown_policy = Cli::try_parse_from([
+            "nettle",
+            "compare",
+            "reference.nettle",
+            "candidate.nettle",
+            "--matching",
+            "speculative",
+        ])
+        .unwrap_err();
+        assert_eq!(unknown_policy.kind(), ErrorKind::InvalidValue);
+        assert!(unknown_policy.to_string().contains("conservative"));
+        assert!(unknown_policy.to_string().contains("aggressive"));
+    }
+
+    #[test]
+    fn comparison_validates_and_snapshots_both_bundles() {
+        let directory = tempfile::tempdir().unwrap();
+        let reference = directory.path().join("reference.nettle");
+        let candidate = directory.path().join("candidate.nettle");
+        write_test_bundle(&reference, "reference-snapshot", false);
+        write_test_bundle(&candidate, "candidate-snapshot", false);
+
+        let workspace =
+            validated_startup_comparison(&reference, &candidate, MatchingPolicy::Aggressive)
+                .unwrap();
+        let StartupWorkspace::Comparison {
+            reference: reference_snapshot,
+            candidate: candidate_snapshot,
+            matching,
+        } = workspace
+        else {
+            panic!("expected comparison workspace");
+        };
+        assert_eq!(matching, MatchingPolicy::Aggressive);
+        assert_eq!(reference_snapshot.name(), "reference.nettle");
+        assert_eq!(candidate_snapshot.name(), "candidate.nettle");
+        assert_eq!(
+            reference_snapshot.byte_len(),
+            fs::metadata(reference).unwrap().len()
+        );
+        assert_eq!(
+            candidate_snapshot.byte_len(),
+            fs::metadata(candidate).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn comparison_rejects_a_candidate_that_fails_full_bundle_validation() {
+        let directory = tempfile::tempdir().unwrap();
+        let reference = directory.path().join("reference.nettle");
+        let candidate = directory.path().join("candidate.nettle");
+        write_test_bundle(&reference, "reference-snapshot", false);
+        write_test_bundle(&candidate, "candidate-snapshot", true);
+
+        let error =
+            validated_startup_comparison(&reference, &candidate, MatchingPolicy::Conservative)
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("validating candidate bundle"),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains("missing source node"));
     }
 
     #[test]

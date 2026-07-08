@@ -8,6 +8,9 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?worker&url";
 import { useCallback, useEffect, useRef } from "react";
 import type { SourceOrigin } from "../model/graph";
+import { sourceLanguageForPath } from "./source-language";
+
+export { sourceLanguageForPath } from "./source-language";
 
 (self as typeof self & { MonacoEnvironment: { getWorker: () => Worker } }).MonacoEnvironment = {
   getWorker: () => new Worker(editorWorkerUrl, { type: "module" }),
@@ -28,33 +31,6 @@ interface SourcePaneProps {
     endColumn: number,
   ) => void;
 }
-
-interface SourceLanguage {
-  id: string;
-  label: string;
-}
-
-export const sourceLanguageForPath = (path: string): SourceLanguage => {
-  const lower = path.toLowerCase();
-  if (lower.endsWith(".sv") || lower.endsWith(".svh")) {
-    return { id: "systemverilog", label: "SystemVerilog" };
-  }
-  if (lower.endsWith(".v") || lower.endsWith(".vh")) {
-    return { id: "verilog", label: "Verilog" };
-  }
-  if (lower.endsWith(".json")) return { id: "json", label: "JSON" };
-  if (lower.endsWith(".md")) return { id: "markdown", label: "Markdown" };
-  if (lower.endsWith(".toml")) return { id: "toml", label: "TOML" };
-  if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return { id: "yaml", label: "YAML" };
-  if (lower.endsWith(".rs")) return { id: "rust", label: "Rust" };
-  if (lower.endsWith(".py")) return { id: "python", label: "Python" };
-  if (lower.endsWith(".c") || lower.endsWith(".h")) return { id: "c", label: "C" };
-  if (/\.(?:cc|cpp|cxx|hh|hpp|hxx)$/i.test(lower)) return { id: "cpp", label: "C++" };
-  if (lower.endsWith(".js")) return { id: "javascript", label: "JavaScript" };
-  if (lower.endsWith(".ts")) return { id: "typescript", label: "TypeScript" };
-  if (lower.endsWith(".f")) return { id: "plaintext", label: "File list" };
-  return { id: "plaintext", label: "Plain text" };
-};
 
 export function SourcePane({
   path,
@@ -127,15 +103,18 @@ export function SourcePane({
     (instance) => {
       editorRef.current = instance;
       selectionListenerRef.current?.dispose();
-      selectionListenerRef.current = instance.onDidChangeCursorSelection(({ selection }) => {
-        const endColumn = selection.isEmpty() ? selection.startColumn + 1 : selection.endColumn;
-        onSelectRangeRef.current(
-          selection.startLineNumber,
-          selection.startColumn,
-          selection.endLineNumber,
-          endColumn,
-        );
-      });
+      selectionListenerRef.current = instance.onDidChangeCursorSelection(
+        ({ selection, source }) => {
+          if (source !== "mouse" && source !== "keyboard") return;
+          const endColumn = selection.isEmpty() ? selection.startColumn + 1 : selection.endColumn;
+          onSelectRangeRef.current(
+            selection.startLineNumber,
+            selection.startColumn,
+            selection.endLineNumber,
+            endColumn,
+          );
+        },
+      );
       applyOrigin(instance, originRef.current);
     },
     [applyOrigin],

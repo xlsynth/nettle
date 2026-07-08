@@ -15,18 +15,21 @@ interface StoredLayoutState extends LayoutState {
   slice: GraphSlice;
   profile: LayoutProfile;
   flattenRenderMode: FlattenRenderMode;
+  separateConnectedComponents: boolean;
 }
 
 export const useLayout = (
   slice: GraphSlice,
   profile: LayoutProfile = "auto",
   flattenRenderMode: FlattenRenderMode = "grouped",
+  separateConnectedComponents = false,
 ): LayoutState => {
   const generation = useRef(0);
   const [state, setState] = useState<StoredLayoutState>({
     slice,
     profile,
     flattenRenderMode,
+    separateConnectedComponents,
     layout: null,
     loading: true,
     error: null,
@@ -34,13 +37,38 @@ export const useLayout = (
 
   useEffect(() => {
     const current = ++generation.current;
-    setState({ slice, profile, flattenRenderMode, layout: null, loading: true, error: null });
+    setState({
+      slice,
+      profile,
+      flattenRenderMode,
+      separateConnectedComponents,
+      layout: null,
+      loading: true,
+      error: null,
+    });
     let active = true;
+    const controller = new AbortController();
     void import("./elk-layout")
-      .then(({ runElkLayout }) => runElkLayout(slice, profile, flattenRenderMode))
+      .then(({ runElkLayout }) =>
+        runElkLayout(
+          slice,
+          profile,
+          flattenRenderMode,
+          controller.signal,
+          separateConnectedComponents,
+        ),
+      )
       .then((layout) => {
         if (active && current === generation.current) {
-          setState({ slice, profile, flattenRenderMode, layout, loading: false, error: null });
+          setState({
+            slice,
+            profile,
+            flattenRenderMode,
+            separateConnectedComponents,
+            layout,
+            loading: false,
+            error: null,
+          });
         }
       })
       .catch((error: unknown) => {
@@ -52,20 +80,23 @@ export const useLayout = (
             slice,
             profile,
             flattenRenderMode,
+            separateConnectedComponents,
           });
         }
       });
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [flattenRenderMode, profile, slice]);
+  }, [flattenRenderMode, profile, separateConnectedComponents, slice]);
 
   // Effects run after render. Hide a result from the previous input synchronously so
   // stale geometry can never dispatch events against the new graph semantics.
   if (
     state.slice !== slice ||
     state.profile !== profile ||
-    state.flattenRenderMode !== flattenRenderMode
+    state.flattenRenderMode !== flattenRenderMode ||
+    state.separateConnectedComponents !== separateConnectedComponents
   ) {
     return { layout: null, loading: true, error: null };
   }

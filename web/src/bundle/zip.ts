@@ -13,6 +13,12 @@ const {
 } = RESOURCE_LIMITS.bundle.archive;
 const pathEncoder = new TextEncoder();
 
+const abortError = () => new DOMException("The operation was aborted", "AbortError");
+
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) throw signal.reason ?? abortError();
+};
+
 const signatures = {
   central: 0x02014b50,
   eocd: 0x06054b50,
@@ -78,24 +84,35 @@ const safeEntryName = (name: string) => {
   }
 };
 
-const readBlob = async (blob: Blob, offset: number, length: number) => {
+const readBlob = async (blob: Blob, offset: number, length: number, signal?: AbortSignal) => {
+  throwIfAborted(signal);
   if (offset < 0 || length < 0 || offset + length > blob.size) {
     throw new Error("ZIP entry points outside the bundle");
   }
-  return new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+  const bytes = new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+  throwIfAborted(signal);
+  return bytes;
 };
 
 export const readStreamWithLimit = async (
   stream: ReadableStream<Uint8Array>,
   limit: number,
   description: string,
+  signal?: AbortSignal,
 ) => {
+  throwIfAborted(signal);
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
+  const abort = () => {
+    void reader.cancel(signal?.reason ?? abortError()).catch(() => undefined);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
     while (true) {
+      throwIfAborted(signal);
       const { done, value } = await reader.read();
+      throwIfAborted(signal);
       if (done) break;
       if (!value) continue;
       if (value.byteLength > limit - length) {
@@ -106,8 +123,10 @@ export const readStreamWithLimit = async (
       length += value.byteLength;
     }
   } finally {
+    signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
+  throwIfAborted(signal);
   const bytes = new Uint8Array(length);
   let offset = 0;
   for (const chunk of chunks) {
@@ -161,9 +180,9 @@ const parseZip64Extra = (
   return { size, compressedSize, localOffset };
 };
 
-const parseDirectoryLocation = async (blob: Blob) => {
+const parseDirectoryLocation = async (blob: Blob, signal?: AbortSignal) => {
   const tailOffset = Math.max(0, blob.size - MAX_EOCD_SEARCH);
-  const tail = await readBlob(blob, tailOffset, blob.size - tailOffset);
+  const tail = await readBlob(blob, tailOffset, blob.size - tailOffset, signal);
   const view = viewFor(tail);
   const eocd = findSignatureBackwards(view, signatures.eocd);
   if (eocd < 0) throw new Error("Not a ZIP file: end-of-central-directory record is missing");
@@ -180,7 +199,7 @@ const parseDirectoryLocation = async (blob: Blob) => {
   let directoryOffset = view.getUint32(eocd + 16, true);
   if (count === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) {
     const locatorAbsolute = tailOffset + eocd - 20;
-    const locator = await readBlob(blob, locatorAbsolute, 20);
+    const locator = await readBlob(blob, locatorAbsolute, 20, signal);
     const locatorView = viewFor(locator);
     if (locatorView.getUint32(0, true) !== signatures.zip64Locator) {
       throw new Error("ZIP64 locator is missing");
@@ -189,7 +208,7 @@ const parseDirectoryLocation = async (blob: Blob) => {
       throw new Error("Multi-disk ZIP64 files are unsupported");
     }
     const zip64Offset = safeNumber(locatorView.getBigUint64(8, true), "ZIP64 directory offset");
-    const zip64 = await readBlob(blob, zip64Offset, 56);
+    const zip64 = await readBlob(blob, zip64Offset, 56, signal);
     const zip64View = viewFor(zip64);
     if (zip64View.getUint32(0, true) !== signatures.zip64Eocd) {
       throw new Error("ZIP64 end-of-central-directory record is missing");
@@ -210,10 +229,10 @@ export class NettleArchive {
     private readonly entries: ReadonlyMap<string, ZipEntry>,
   ) {}
 
-  static async open(blob: Blob) {
-    const { count, directorySize, directoryOffset } = await parseDirectoryLocation(blob);
+  static async open(blob: Blob, signal?: AbortSignal) {
+    const { count, directorySize, directoryOffset } = await parseDirectoryLocation(blob, signal);
     if (directorySize > MAX_ENTRY_BYTES) throw new Error("ZIP central directory is too large");
-    const directory = await readBlob(blob, directoryOffset, directorySize);
+    const directory = await readBlob(blob, directoryOffset, directorySize, signal);
     const view = viewFor(directory);
     const entries = new Map<string, ZipEntry>();
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -283,11 +302,12 @@ export class NettleArchive {
     };
   }
 
-  async read(name: string, maximum: number = MAX_ENTRY_BYTES) {
+  async read(name: string, maximum: number = MAX_ENTRY_BYTES, signal?: AbortSignal) {
+    throwIfAborted(signal);
     const entry = this.entries.get(name);
     if (!entry) throw new Error(`Bundle entry ${name} is missing`);
     if (entry.size > maximum) throw new Error(`Bundle entry ${name} exceeds its size limit`);
-    const header = await readBlob(this.blob, entry.localOffset, 30);
+    const header = await readBlob(this.blob, entry.localOffset, 30, signal);
     const view = viewFor(header);
     if (view.getUint32(0, true) !== signatures.local) {
       throw new Error(`Bundle entry ${name} has a malformed local header`);
@@ -300,11 +320,11 @@ export class NettleArchive {
     const nameLength = view.getUint16(26, true);
     const extraLength = view.getUint16(28, true);
     const localName = new TextDecoder("utf-8", { fatal: true }).decode(
-      await readBlob(this.blob, entry.localOffset + 30, nameLength),
+      await readBlob(this.blob, entry.localOffset + 30, nameLength, signal),
     );
     if (localName !== name) throw new Error(`Bundle entry ${name} has a mismatched local name`);
     const dataOffset = entry.localOffset + 30 + nameLength + extraLength;
-    const compressed = await readBlob(this.blob, dataOffset, entry.compressedSize);
+    const compressed = await readBlob(this.blob, dataOffset, entry.compressedSize, signal);
     let bytes: Uint8Array;
     if (entry.compression === 0) {
       bytes = compressed;
@@ -319,8 +339,10 @@ export class NettleArchive {
         stream,
         Math.min(entry.size, maximum),
         `Bundle entry ${name}`,
+        signal,
       );
     }
+    throwIfAborted(signal);
     if (bytes.length !== entry.size || bytes.length > maximum) {
       throw new Error(`Bundle entry ${name} has an inconsistent expanded size`);
     }
@@ -355,9 +377,9 @@ export class NettleBundle {
     this.declarations = new Map(manifest.entries.map((entry) => [entry.path, entry]));
   }
 
-  static async open(blob: Blob) {
-    const archive = await NettleArchive.open(blob);
-    const manifestBytes = await archive.read("manifest.json", MAX_MANIFEST_BYTES);
+  static async open(blob: Blob, signal?: AbortSignal) {
+    const archive = await NettleArchive.open(blob, signal);
+    const manifestBytes = await archive.read("manifest.json", MAX_MANIFEST_BYTES, signal);
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
     if (!isManifest(parsed))
       throw new Error("Bundle manifest is invalid or has an unsupported major version");
@@ -406,11 +428,14 @@ export class NettleBundle {
     return new NettleBundle(archive, manifest);
   }
 
-  async read(path: string) {
+  async read(path: string, signal?: AbortSignal) {
+    throwIfAborted(signal);
     const declaration = this.declarations.get(path);
     if (!declaration) throw new Error(`Bundle entry ${path} is not declared`);
-    const bytes = await this.archive.read(path, declaration.size);
+    const bytes = await this.archive.read(path, declaration.size, signal);
+    throwIfAborted(signal);
     const digest = await sha256(bytes);
+    throwIfAborted(signal);
     if (digest !== declaration.sha256) {
       throw new Error(`Bundle entry ${path} failed its SHA-256 integrity check`);
     }

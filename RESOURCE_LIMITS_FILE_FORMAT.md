@@ -32,7 +32,7 @@ under a different browser resource policy.
 | `bundle.archive.manifestBytes`    | 1 MiB        | The manifest is compact metadata; 1 MiB permits large indexes without allowing it to dominate memory.                |
 | `bundle.archive.entryCount`       | 100,004      | Accommodates maximum module/source slices plus the four fixed bundle entries while bounding archive metadata.        |
 | `bundle.archive.entryBytes`       | 64 MiB       | Bounds any one decompression/read allocation; large design graphs remain independently addressable.                  |
-| `bundle.archive.totalBytes`       | 1 GiB        | Bounds aggregate expanded bundle content for a local desktop/browser workflow.                                       |
+| `bundle.archive.totalBytes`       | 1 GiB        | Bounds expanded content and each anonymous native startup snapshot; comparison may retain two snapshots.             |
 | `bundle.archive.compressionRatio` | 200:1        | Rejects extreme compression bombs while allowing highly repetitive HDL and JSON.                                     |
 | `bundle.protobuf.stringBytes`     | 4 MiB        | Bounds individual decoded strings and JSON metadata values; ordinary names and source paths are many orders smaller. |
 | `bundle.protobuf.modules`         | 50,000       | Bounds design-index navigation and module maps.                                                                      |
@@ -73,15 +73,24 @@ These values bound browser memory or display formatting. They do not change
 bundle validity, except that projection is always capped by the shared graph
 object limit rather than defining a second value.
 
-| YAML path                                 | Default | Purpose and rationale                                                             |
-| ----------------------------------------- | ------- | --------------------------------------------------------------------------------- |
-| `browser.cache.modulesBytes`              | 128 MiB | Keeps several decoded module graphs hot without retaining an entire large bundle. |
-| `browser.cache.sourcesBytes`              | 32 MiB  | Supports normal source navigation while bounding decoded source text.             |
-| `browser.display.decimalConversionBits`   | 4,096   | Avoids expensive `BigInt` conversion of extremely wide binary values.             |
-| `browser.display.formattableConstantBits` | 65,536  | Avoids constructing enormous reformatted literals in the inspector.               |
-| `browser.display.metadataDepth`           | 64      | Prevents recursive JSON stringification stack exhaustion.                         |
-| `browser.display.metadataNodes`           | 10,000  | Bounds iterative metadata traversal before display.                               |
-| `browser.display.metadataCharacters`      | 128 KiB | Prevents inspector strings from duplicating large decoded metadata.               |
+| YAML path                                      | Default  | Purpose and rationale                                                                           |
+| ---------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `browser.cache.modulesBytes`                   | 128 MiB  | Keeps several decoded module graphs hot without retaining an entire large bundle.               |
+| `browser.cache.sourcesBytes`                   | 32 MiB   | Supports normal source navigation while bounding decoded source text.                           |
+| `browser.load.entryConcurrency`                | 4        | Bounds module and source entry reads and decompressions shared by one bundle provider.          |
+| `browser.comparison.sourceDiffTimeoutMs`       | 2,000 ms | Bounds one source-file diff computation so adversarial input cannot monopolize comparison work. |
+| `browser.comparison.sourceDiffMaxEditLength`   | 100,000  | Bounds Myers edit search for highly dissimilar source files.                                    |
+| `browser.comparison.sourceDiffConcurrency`     | 4        | Bounds concurrent source-pair mapping tasks across one comparison workspace.                    |
+| `browser.comparison.sourceMappingFiles`        | 64       | Bounds modified source pairs inspected for one visible graph comparison.                        |
+| `browser.comparison.sourceEvidenceModulePairs` | 512      | Bounds reachable module pairs decoded for source-only evidence and hierarchy change indexing.   |
+| `browser.comparison.sourceEvidenceTimeoutMs`   | 5,000 ms | Bounds reachable-hierarchy work; exhaustion leaves source evidence or change status unknown.     |
+| `browser.comparison.matcherTimeoutMs`          | 5,000 ms | Terminates a graph-matcher worker that cannot reach its deterministic fixed point promptly.      |
+| `browser.comparison.fuzzyCandidatesPerNode`    | 32       | Prevents aggressive matching from degenerating into an all-pairs graph comparison.              |
+| `browser.display.decimalConversionBits`        | 4,096    | Avoids expensive `BigInt` conversion of extremely wide binary values.                           |
+| `browser.display.formattableConstantBits`      | 65,536   | Avoids constructing enormous reformatted literals in the inspector.                             |
+| `browser.display.metadataDepth`                | 64       | Prevents recursive JSON stringification stack exhaustion.                                       |
+| `browser.display.metadataNodes`                | 10,000   | Bounds iterative metadata traversal before display.                                             |
+| `browser.display.metadataCharacters`           | 128 KiB  | Prevents inspector strings from duplicating large decoded metadata.                             |
 
 ## Changing limits
 

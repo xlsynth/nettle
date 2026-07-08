@@ -35,4 +35,28 @@ describe("AppHeader", () => {
     expect(screen.getByText("Bundle ready")).not.toBeNull();
     expect(screen.queryByText(/slang/i)).toBeNull();
   });
+
+  it("shows comparison policy and source-change count", () => {
+    render(
+      <AppHeader
+        projectName="comparison"
+        statusText="7 schematic changes"
+        dataMode="comparison"
+        comparison={{
+          referenceName: "before.nettle",
+          candidateName: "after.nettle",
+          policy: "aggressive",
+          sourceChanges: 3,
+          heuristicMatches: 2,
+        }}
+        onOpenProject={vi.fn()}
+        onSearch={vi.fn()}
+        onHelp={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("before.nettle → after.nettle")).toBeTruthy();
+    expect(screen.getByText(/aggressive · 3 source changes · 2 ≈/)).toBeTruthy();
+    expect(screen.getByText("7 schematic changes")).toBeTruthy();
+  });
 });
