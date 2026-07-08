@@ -320,6 +320,8 @@ cargo run --locked -- compare reference.nettle candidate.nettle \
   --port 8090
 ```
 
+![Nettle schematic diff of the br_enc_priority_encoder design](assets/schematic_diff_conservative.jpg)
+
 The command copies and validates both inputs in anonymous delete-on-close
 storage before starting the viewer and exposes the private snapshots only
 through separate non-cacheable startup routes. The two snapshots can consume
