@@ -168,8 +168,8 @@ provenance stay outside the canonical graph schema.
 For each paired module slice, comparison proceeds in a fixed order: establish
 node correspondence, pair ports inside matched nodes, remap both snapshots onto
 the shared node/port identities, pair edges by those remapped endpoints, build
-the union, and invoke layout. Matching policy answers *whether two objects
-correspond*; diff status then answers *whether the paired payloads differ*.
+the union, and invoke layout. Matching policy answers _whether two objects
+correspond_; diff status then answers _whether the paired payloads differ_.
 Consequently, switching from conservative to aggressive can collapse a red
 removal and green addition into one matched object marked `≈`; payload
 comparison then classifies that object as unchanged or yellow modified. This is
@@ -202,12 +202,12 @@ modified.
 
 The single View menu combines presets and status visibility controls:
 
-| View | Semantics on the fixed union geometry |
-| --- | --- |
-| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration. |
-| Diff overlay | Shows the complete union: removed red/dashed with `−`, added green with `+`, modified yellow with `±`, unchanged neutral, and heuristic correspondence additionally marked `≈`. |
-| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration. |
-| Changes only | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change. |
+| View               | Semantics on the fixed union geometry                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration.                                                                                             |
+| Diff overlay       | Shows the complete union: removed red/dashed with `−`, added green with `+`, modified yellow with `±`, unchanged neutral, and heuristic correspondence additionally marked `≈`. |
+| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration.                                                                                             |
+| Changes only       | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change.                                               |
 
 Matched union objects use candidate-visible payloads in Diff overlay. All four
 views reuse the same union geometry and do not relayout merely to change a

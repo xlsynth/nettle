@@ -83,8 +83,8 @@ object limit rather than defining a second value.
 | `browser.comparison.sourceDiffConcurrency`     | 4        | Bounds concurrent source-pair mapping tasks across one comparison workspace.                    |
 | `browser.comparison.sourceMappingFiles`        | 64       | Bounds modified source pairs inspected for one visible graph comparison.                        |
 | `browser.comparison.sourceEvidenceModulePairs` | 512      | Bounds reachable module pairs decoded for source-only evidence and hierarchy change indexing.   |
-| `browser.comparison.sourceEvidenceTimeoutMs`   | 5,000 ms | Bounds reachable-hierarchy work; exhaustion leaves source evidence or change status unknown.     |
-| `browser.comparison.matcherTimeoutMs`          | 5,000 ms | Terminates a graph-matcher worker that cannot reach its deterministic fixed point promptly.      |
+| `browser.comparison.sourceEvidenceTimeoutMs`   | 5,000 ms | Bounds reachable-hierarchy work; exhaustion leaves source evidence or change status unknown.    |
+| `browser.comparison.matcherTimeoutMs`          | 5,000 ms | Terminates a graph-matcher worker that cannot reach its deterministic fixed point promptly.     |
 | `browser.comparison.fuzzyCandidatesPerNode`    | 32       | Prevents aggressive matching from degenerating into an all-pairs graph comparison.              |
 | `browser.display.decimalConversionBits`        | 4,096    | Avoids expensive `BigInt` conversion of extremely wide binary values.                           |
 | `browser.display.formattableConstantBits`      | 65,536   | Avoids constructing enormous reformatted literals in the inspector.                             |
