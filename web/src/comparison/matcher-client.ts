@@ -16,7 +16,15 @@ const matcherWork = (slice: GraphSlice) =>
   slice.nodes.length +
   slice.edges.length +
   (slice.groups?.length ?? 0) +
-  slice.nodes.reduce((count, node) => count + node.ports.length, 0);
+  slice.nodes.reduce((count, node) => count + node.ports.length + (node.origins?.length ?? 0), 0) +
+  slice.edges.reduce((count, edge) => count + (edge.origins?.length ?? 0), 0) +
+  (slice.groups ?? []).reduce((count, group) => count + (group.origins?.length ?? 0), 0);
+
+const sourceMappingWork = (options: CompareGraphOptions) =>
+  (options.sourceLineMappings ?? []).reduce(
+    (count, mapping) => count + 1 + mapping.referenceToCandidate.size,
+    0,
+  );
 
 const matcherTimeoutError = () => {
   const error = new Error(
@@ -142,7 +150,7 @@ export const compareGraphSlicesInWorker = (
 ): Promise<ComparisonSlice> => {
   if (signal?.aborted) return Promise.reject(abortError());
   if (typeof Worker === "undefined") {
-    const work = matcherWork(reference) + matcherWork(candidate);
+    const work = matcherWork(reference) + matcherWork(candidate) + sourceMappingWork(options);
     if (work > MAX_SYNCHRONOUS_MATCHER_WORK) {
       return Promise.reject(matcherWorkerUnavailableError(work));
     }

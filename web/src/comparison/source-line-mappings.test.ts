@@ -106,6 +106,55 @@ describe("SourceLineMappingResolver", () => {
     expect(navigated.nodes).toEqual(preview.nodes);
   });
 
+  it("retains same-file evidence when every referenced source line changed", async () => {
+    const sources: SourceInventoryComparison[] = [
+      {
+        id: "changed-line-pair",
+        status: "modified",
+        reference: {
+          id: "reference-changed-line",
+          path: "rtl/child.sv",
+          sha256: "reference-digest",
+          size: 4,
+        },
+        candidate: {
+          id: "candidate-changed-line",
+          path: "rtl/child.sv",
+          sha256: "candidate-digest",
+          size: 9,
+        },
+      },
+    ];
+    const resolver = new SourceLineMappingResolver({
+      referenceProvider: {
+        getSource: vi.fn().mockResolvedValue(source("reference-changed-line", "add\n")),
+      },
+      candidateProvider: {
+        getSource: vi.fn().mockResolvedValue(source("candidate-changed-line", "subtract\n")),
+      },
+      sources,
+    });
+    const referenceNode = { ...node("reference-op", 1), label: "Add", glyph: "+" };
+    const candidateNode = { ...node("candidate-op", 1), label: "Subtract", glyph: "−" };
+    const reference = slice("reference-changed-line", [referenceNode]);
+    const candidate = slice("candidate-changed-line", [candidateNode]);
+
+    const mappings = await resolver.resolve(reference, candidate);
+    expect(mappings).toHaveLength(1);
+    expect([...mappings[0].referenceToCandidate]).toEqual([]);
+    expect(
+      compareGraphSlices(reference, candidate, {
+        policy: "aggressive",
+        sourceLineMappings: mappings,
+      }).nodes,
+    ).toEqual([
+      expect.objectContaining({
+        status: "modified",
+        match: expect.objectContaining({ method: "heuristic" }),
+      }),
+    ]);
+  });
+
   it("uses identity mappings for unchanged and exact-renamed sources without loading bodies", async () => {
     const sources: SourceInventoryComparison[] = [
       {
@@ -172,7 +221,7 @@ describe("SourceLineMappingResolver", () => {
     ).toEqual(["sourceMapped", "sourceMapped"]);
   });
 
-  it("rejects oversized modified sources before loading either body", async () => {
+  it("preserves path-only evidence for oversized modified sources without loading bodies", async () => {
     const oversized = RESOURCE_LIMITS.native.builder.sourceBytes + 1;
     const sources: SourceInventoryComparison[] = [
       {
@@ -200,12 +249,17 @@ describe("SourceLineMappingResolver", () => {
       sources,
     });
 
-    await expect(
-      resolver.resolve(
-        slice("reference-oversized", [node("r", 1, "rtl/oversized.sv")]),
-        slice("candidate-oversized", [node("c", 1, "rtl/oversized.sv")]),
-      ),
-    ).resolves.toEqual([]);
+    const mappings = await resolver.resolve(
+      slice("reference-oversized", [node("r", 1, "rtl/oversized.sv")]),
+      slice("candidate-oversized", [node("c", 1, "rtl/oversized.sv")]),
+    );
+    expect(mappings).toEqual([
+      expect.objectContaining({
+        referencePath: "rtl/oversized.sv",
+        candidatePath: "rtl/oversized.sv",
+      }),
+    ]);
+    expect([...mappings[0].referenceToCandidate]).toEqual([]);
     expect(referenceGetSource).not.toHaveBeenCalled();
     expect(candidateGetSource).not.toHaveBeenCalled();
   });

@@ -340,6 +340,8 @@ const scopeComparisonContents = (
 interface SideOverlayIndex {
   nodeIds: Map<string, string>;
   portIds: Map<string, string>;
+  nodeMatches: Map<string, MatchMetadata | undefined>;
+  portMatches: Map<string, MatchMetadata | undefined>;
 }
 
 const buildSideOverlayIndex = (
@@ -349,17 +351,37 @@ const buildSideOverlayIndex = (
 ): SideOverlayIndex => {
   const nodeIds = new Map<string, string>();
   const portIds = new Map<string, string>();
+  const nodeMatches = new Map<string, MatchMetadata | undefined>();
+  const portMatches = new Map<string, MatchMetadata | undefined>();
   for (const entity of nodes) {
     const value = entity[side];
-    if (value) nodeIds.set(value.id, entity.id);
+    if (value) {
+      nodeIds.set(value.id, entity.id);
+      nodeMatches.set(value.id, entity.match);
+    }
   }
   for (const entity of ports) {
     const value = entity[side];
     const nodeId = side === "reference" ? entity.referenceNodeId : entity.candidateNodeId;
-    if (value && nodeId) portIds.set(nodePortKey(nodeId, value.id), entity.id);
+    if (value && nodeId) {
+      const key = nodePortKey(nodeId, value.id);
+      portIds.set(key, entity.id);
+      portMatches.set(key, entity.match);
+    }
   }
-  return { nodeIds, portIds };
+  return { nodeIds, portIds, nodeMatches, portMatches };
 };
+
+const edgeEndpointMatchDependencies = (edge: GraphEdge, index: SideOverlayIndex) => [
+  index.nodeMatches.get(edge.sourceNode),
+  edge.sourcePort
+    ? index.portMatches.get(nodePortKey(edge.sourceNode, edge.sourcePort))
+    : undefined,
+  index.nodeMatches.get(edge.targetNode),
+  edge.targetPort
+    ? index.portMatches.get(nodePortKey(edge.targetNode, edge.targetPort))
+    : undefined,
+];
 
 const remapSideEdge = (
   edge: GraphEdge,
@@ -443,6 +465,17 @@ const rebuildParentEdges = (
       ...entity,
       reference: referenceEdge,
       candidate: candidateEdge,
+      match:
+        entity.match && referenceEdge && candidateEdge
+          ? withHeuristicDependencies(
+              entity.match,
+              [
+                ...edgeEndpointMatchDependencies(referenceEdge, referenceIndex),
+                ...edgeEndpointMatchDependencies(candidateEdge, candidateIndex),
+              ],
+              "flattened edge correspondence",
+            )
+          : entity.match,
     });
   }
   return { union, comparisons };

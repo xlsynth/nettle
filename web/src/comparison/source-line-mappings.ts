@@ -205,6 +205,17 @@ const identityMapping = (
     referencePath: normalizePath(source.reference.path),
     candidatePath: normalizePath(source.candidate.path),
     referenceToCandidate: new Map(referenceLines.map((line) => [line, line] as const)),
+    pathPaired: true,
+  };
+};
+
+const pathOnlyMapping = (source: SourceInventoryComparison): SourceLineMapping | undefined => {
+  if (!source.reference || !source.candidate) return undefined;
+  return {
+    referencePath: normalizePath(source.reference.path),
+    candidatePath: normalizePath(source.candidate.path),
+    referenceToCandidate: new Map(),
+    pathPaired: true,
   };
 };
 
@@ -318,7 +329,10 @@ export class SourceLineMappingResolver {
         { referenceLines },
         controller.signal,
       );
-      return diff.status === "complete" ? diff.lineMapping : null;
+      // Even a bounded text diff still proves which inventory paths are paired.
+      // Aggressive matching can use that weaker same-file evidence without
+      // treating it as an exact conservative line correspondence.
+      return { ...diff.lineMapping, pathPaired: true };
     }, controller.signal);
     entry.promise.then(
       (mapping) => {
@@ -354,7 +368,7 @@ export class SourceLineMappingResolver {
     if (source.status !== "modified") return undefined;
     const sourceByteLimit = RESOURCE_LIMITS.native.builder.sourceBytes;
     if (referenceSource.size > sourceByteLimit || candidateSource.size > sourceByteLimit) {
-      return undefined;
+      return pathOnlyMapping(source);
     }
 
     const key = mappingRequestKey(source.id, referenceLines);

@@ -885,6 +885,7 @@ function ConfirmedComparisonWorkspaceView({
   const [policyFocusRevision, setPolicyFocusRevision] = useState<number>();
   const [hoveredId, setHoveredId] = useState<string>();
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [schematicSemanticSide, setSchematicSemanticSide] = useState<Side>();
   const [inlineHierarchy, setInlineHierarchy] = useState(false);
   const [inlineTargetIdentity, setInlineTargetIdentity] = useState<ComparisonInstanceIdentity>();
   const [flattenDepth, setFlattenDepth] = useState(0);
@@ -2213,9 +2214,25 @@ function ConfirmedComparisonWorkspaceView({
     return `Text diff too large (${reason}); schematic comparison continues.`;
   }, [selectedTextDiff, selectedTextDiffError]);
 
-  const selectedNode = schematicComparison.union.nodes.find((node) => node.id === selectedId);
-  const selectedEdge = schematicComparison.union.edges.find((edge) => edge.id === selectedId);
-  const selectedGroup = schematicComparison.union.groups?.find((group) => group.id === selectedId);
+  const selectedNodeRecord = schematicComparison.nodes.find((node) => node.id === selectedId);
+  const selectedEdgeRecord = schematicComparison.edges.find((edge) => edge.id === selectedId);
+  const selectedGroupRecord = schematicComparison.groups.find((group) => group.id === selectedId);
+  const selectedNode = schematicSemanticSide
+    ? selectedNodeRecord?.[schematicSemanticSide]
+    : schematicComparison.union.nodes.find((node) => node.id === selectedId);
+  const selectedEdge = schematicSemanticSide
+    ? selectedEdgeRecord?.[schematicSemanticSide]
+    : schematicComparison.union.edges.find((edge) => edge.id === selectedId);
+  const selectedGroup = schematicSemanticSide
+    ? selectedGroupRecord?.[schematicSemanticSide]
+    : schematicComparison.union.groups?.find((group) => group.id === selectedId);
+  const inspectorTopModule = schematicSemanticSide
+    ? schematicComparison[schematicSemanticSide].module
+    : schematicComparison.union.module;
+  const inspectorProject =
+    schematicSemanticSide === "reference"
+      ? reference.workspace.project
+      : candidate.workspace.project;
   const topModuleStatus = topModuleDiffStatus(displayPair);
   const inspectorNode =
     selectedNode ??
@@ -2231,11 +2248,11 @@ function ConfirmedComparisonWorkspaceView({
         }
       : selectedId === TOP_MODULE_ID
         ? {
-            id: schematicComparison.union.module.id,
+            id: inspectorTopModule.id,
             kind: "module" as const,
-            label: schematicComparison.union.module.name,
-            definitionName: schematicComparison.union.module.definitionName,
-            parameters: schematicComparison.union.module.parameters,
+            label: inspectorTopModule.name,
+            definitionName: inspectorTopModule.definitionName,
+            parameters: inspectorTopModule.parameters,
             ports: [],
           }
         : undefined);
@@ -2525,6 +2542,9 @@ function ConfirmedComparisonWorkspaceView({
               entities: presentationEntities,
               counts: comparisonCounts,
               comparisonSlice: schematicComparison,
+              referenceDefines: reference.workspace.project.effectiveElaboration.defines,
+              candidateDefines: candidate.workspace.project.effectiveElaboration.defines,
+              onSemanticSideChange: setSchematicSemanticSide,
             }}
             warnings={warnings}
             busy={matchingPending || Boolean(currentComparisonFailure)}
@@ -2555,8 +2575,8 @@ function ConfirmedComparisonWorkspaceView({
           <Inspector
             node={inspectorNode}
             edge={selectedEdge}
-            project={candidate.workspace.project}
-            topModule={schematicComparison.union.module}
+            project={inspectorProject}
+            topModule={inspectorTopModule}
             comparison={selectionComparison}
             onClose={() => setInspectorOpen(false)}
           />

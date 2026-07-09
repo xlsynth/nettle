@@ -48,6 +48,8 @@ export interface SourceLineMapping {
   candidatePath: string;
   /** One-based unchanged-line correspondence. */
   referenceToCandidate: ReadonlyMap<number, number>;
+  /** The source inventory proved this file pair even if no unchanged line survived. */
+  pathPaired?: boolean;
 }
 
 export type SourceDiffStatus = DiffStatus | "renamed";

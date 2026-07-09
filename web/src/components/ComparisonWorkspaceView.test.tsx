@@ -2,7 +2,7 @@
 
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LoadedWorkspace } from "../api/normalize";
 import type { WorkspaceProvider } from "../bundle/provider";
@@ -149,5 +149,41 @@ describe("comparison workspace module pairing", () => {
     );
 
     expect(await screen.findByText("0 current-slice schematic changes")).toBeTruthy();
+  });
+
+  it("uses reference build configuration in the reference snapshot inspector", async () => {
+    const reference = bundle("reference", "top");
+    const candidate = bundle("candidate", "top");
+    reference.workspace.slice.module.parameters = { WIDTH: 8 };
+    candidate.workspace.slice.module.parameters = { WIDTH: 16 };
+    reference.workspace.project.effectiveElaboration.defines = [
+      { name: "REFERENCE_BUILD", value: "1" },
+    ];
+    candidate.workspace.project.effectiveElaboration.defines = [
+      { name: "CANDIDATE_BUILD", value: "1" },
+    ];
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference}
+        candidate={candidate}
+        initialPolicy="conservative"
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+      />,
+    );
+
+    const viewButton = await screen.findByRole("button", {
+      name: /Schematic comparison view:/,
+    });
+    fireEvent.click(viewButton);
+    fireEvent.click(screen.getByRole("radio", { name: "Reference snapshot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Toggle inspector" }));
+
+    expect(await screen.findByText("REFERENCE_BUILD")).toBeTruthy();
+    expect(screen.queryByText("CANDIDATE_BUILD")).toBeNull();
+    expect(screen.getAllByText("8")).not.toHaveLength(0);
   });
 });

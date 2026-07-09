@@ -32,6 +32,7 @@ import {
 } from "react";
 import type { ComparisonSlice } from "../comparison/types";
 import {
+  type ComparisonSemanticSide,
   type DiffStatus,
   diffStatusLabel,
   type EntityDiffPresentation,
@@ -165,8 +166,6 @@ const diffMarker = (metadata: EntityDiffPresentation | undefined, emphasizeDiffe
     status === "added" ? "+" : status === "removed" ? "−" : status === "modified" ? "±" : "";
   return `${marker}${metadata?.matchMethod === "heuristic" ? "≈" : ""}`;
 };
-
-type ComparisonSemanticSide = "reference" | "candidate";
 
 const semanticSideForPreset = (preset: DiffPreset): ComparisonSemanticSide | undefined =>
   preset === "reference" || preset === "candidate" ? preset : undefined;
@@ -991,6 +990,22 @@ export function SchematicCanvas({
     comparison?.comparisonSlice,
     semanticSide,
   );
+  const renderedTopLevelDefines =
+    semanticSide === "reference"
+      ? (comparison?.referenceDefines ?? topLevelDefines)
+      : semanticSide === "candidate"
+        ? (comparison?.candidateDefines ?? topLevelDefines)
+        : topLevelDefines;
+  const hiddenComparisonEdgeIds = useMemo(
+    () =>
+      new Set(
+        (layout?.edges ?? []).flatMap((edge) => {
+          const signalKey = controlSignalKey(slice, edge);
+          return signalKey && hiddenSignalKeys.has(signalKey) ? [edge.id] : [];
+        }),
+      ),
+    [hiddenSignalKeys, layout, slice],
+  );
   const changesOnlyContext = useMemo(() => {
     const nodeIds = new Set<string>();
     const edgeIds = new Set<string>();
@@ -1001,6 +1016,7 @@ export function SchematicCanvas({
       return status !== "unchanged" && diffVisibility[status];
     };
     for (const edge of layout.edges) {
+      if (hiddenComparisonEdgeIds.has(edge.id)) continue;
       const edgeChanged = visibleChange(edge.id);
       const touchesChangedNode = visibleChange(edge.sourceNode) || visibleChange(edge.targetNode);
       if (!edgeChanged && touchesChangedNode && statusFor(edge.id) === "unchanged") {
@@ -1012,7 +1028,7 @@ export function SchematicCanvas({
       }
     }
     return { nodeIds, edgeIds };
-  }, [comparison, diffPreset, diffVisibility, layout]);
+  }, [comparison, diffPreset, diffVisibility, hiddenComparisonEdgeIds, layout]);
   const changesOnlyBounds = useMemo(() => {
     if (!comparison || !layout) return undefined;
     const visibleChange = (id: string) => {
@@ -1030,8 +1046,7 @@ export function SchematicCanvas({
     }
     for (const edge of layout.edges) {
       if (!visibleChange(edge.id) && !changesOnlyContext.edgeIds.has(edge.id)) continue;
-      const signalKey = controlSignalKey(slice, edge);
-      if (signalKey && hiddenSignalKeys.has(signalKey)) continue;
+      if (hiddenComparisonEdgeIds.has(edge.id)) continue;
       const edgeBounds = unionCameraBounds(
         edge.sections.flatMap((section) =>
           pointsForSection(section).map((point) => ({
@@ -1045,7 +1060,7 @@ export function SchematicCanvas({
       if (edgeBounds) bounds.push(edgeBounds);
     }
     return unionCameraBounds(bounds);
-  }, [changesOnlyContext, comparison, diffVisibility, hiddenSignalKeys, layout, slice]);
+  }, [changesOnlyContext, comparison, diffVisibility, hiddenComparisonEdgeIds, layout]);
   const fitCameraViewBox = useMemo(() => {
     if (!layout) return undefined;
     if (diffPreset !== "changes" || !changesOnlyBounds) {
@@ -1408,14 +1423,18 @@ export function SchematicCanvas({
     const region = renderedLayout?.disconnectedRegion;
     if (!comparison || !region) return 0;
     return region.componentEntityIds.filter((entityIds) =>
-      entityIds.some((id) => diffVisibility[comparison.entities[id]?.status ?? "unchanged"]),
+      entityIds.some(
+        (id) =>
+          !hiddenComparisonEdgeIds.has(id) &&
+          diffVisibility[comparison.entities[id]?.status ?? "unchanged"],
+      ),
     ).length;
-  }, [comparison, diffVisibility, renderedLayout?.disconnectedRegion]);
+  }, [comparison, diffVisibility, hiddenComparisonEdgeIds, renderedLayout?.disconnectedRegion]);
   const changeIds = useMemo(() => {
     if (!comparison || !layout) return [];
     const ids = [
       ...layout.nodes.map((node) => node.id),
-      ...layout.edges.map((edge) => edge.id),
+      ...layout.edges.flatMap((edge) => (hiddenComparisonEdgeIds.has(edge.id) ? [] : [edge.id])),
       ...layout.groups.map((group) => group.id),
       TOP_MODULE_ID,
     ];
@@ -1423,13 +1442,13 @@ export function SchematicCanvas({
       const status = comparison.entities[id]?.status ?? "unchanged";
       return status !== "unchanged" && diffVisibility[status];
     });
-  }, [comparison, diffVisibility, layout]);
+  }, [comparison, diffVisibility, hiddenComparisonEdgeIds, layout]);
   const comparisonCounts = useMemo(() => {
     if (!comparison || !layout) return undefined;
     const derived = { unchanged: 0, removed: 0, added: 0, modified: 0, heuristic: 0 };
     const visibleIds = [
       ...layout.nodes.map((node) => node.id),
-      ...layout.edges.map((edge) => edge.id),
+      ...layout.edges.flatMap((edge) => (hiddenComparisonEdgeIds.has(edge.id) ? [] : [edge.id])),
       ...layout.groups.map((group) => group.id),
       TOP_MODULE_ID,
     ];
@@ -1441,7 +1460,7 @@ export function SchematicCanvas({
       if (metadata.matchMethod === "heuristic") derived.heuristic += 1;
     }
     return derived;
-  }, [comparison, diffVisibility, layout]);
+  }, [comparison, diffVisibility, hiddenComparisonEdgeIds, layout]);
   const availableDiffStatuses = useMemo(() => {
     if (!comparison) return ALL_DIFF_STATUSES;
     const statuses = new Set(
@@ -1524,6 +1543,7 @@ export function SchematicCanvas({
   const selectedChangeIndex = selectedId ? changeIds.indexOf(selectedId) : -1;
   const applyDiffPreset = (preset: NamedDiffPreset) => {
     setDiffPreset(preset);
+    comparison?.onSemanticSideChange?.(semanticSideForPreset(preset));
     switch (preset) {
       case "reference":
         setDiffVisibility({ unchanged: true, removed: true, added: false, modified: true });
@@ -1628,6 +1648,7 @@ export function SchematicCanvas({
                               checked={diffVisibility[status]}
                               onChange={() => {
                                 setDiffPreset("custom");
+                                comparison.onSemanticSideChange?.(undefined);
                                 setDiffVisibility((current) => ({
                                   ...current,
                                   [status]: !current[status],
@@ -2474,8 +2495,8 @@ export function SchematicCanvas({
             </section>
             <section className="instance-config-section">
               <b>Defines</b>
-              {topLevelDefines.length > 0 ? (
-                topLevelDefines.map((define) => (
+              {renderedTopLevelDefines.length > 0 ? (
+                renderedTopLevelDefines.map((define) => (
                   <div className="instance-config-row" key={define.name}>
                     <span>{define.name}</span>
                     <code>{define.value ?? "1"}</code>

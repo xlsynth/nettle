@@ -470,6 +470,27 @@ describe("comparison-aware hierarchy projection", () => {
     expect(expanded.heuristicMatchCount).toBeGreaterThanOrEqual(3);
   });
 
+  it("propagates heuristic child boundary correspondence to rebuilt parent edges", () => {
+    const parent = compareGraphSlices(topSlice({ prefix: "r" }), topSlice({ prefix: "c" }));
+    const instance = moduleEntity(parent);
+    const child = compareGraphSlices(childSlice("r"), childSlice("c"));
+    const childInput = child.nodes.find((entity) => entity.reference?.id === "r-child-a");
+    if (!childInput) throw new Error("Fixture has no child input comparison");
+    childInput.match = {
+      method: "heuristic",
+      confidence: { score: 0.7, band: "low", evidence: ["boundary heuristic fixture"] },
+    };
+
+    const expanded = expandComparisonInstance(parent, instance, child);
+    const incoming = expanded.edges.find((entity) => entity.reference?.id === "r-incoming");
+
+    expect(incoming?.match?.method).toBe("heuristic");
+    expect(incoming?.match?.confidence.score).toBe(0.7);
+    expect(incoming?.match?.confidence.evidence).toContain(
+      "flattened edge correspondence depends on heuristic node correspondence",
+    );
+  });
+
   it("keeps derived heuristic evidence bounded through eight projection levels", () => {
     let projected = compareGraphSlices(childSlice("leaf-reference"), childSlice("leaf-candidate"));
     const leafLogic = projected.nodes.find(

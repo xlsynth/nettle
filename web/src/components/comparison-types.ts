@@ -35,6 +35,8 @@ export interface ComparisonStatusCounts {
   heuristic: number;
 }
 
+export type ComparisonSemanticSide = "reference" | "candidate";
+
 export interface SchematicComparisonPresentation {
   referenceName: string;
   candidateName: string;
@@ -44,6 +46,9 @@ export interface SchematicComparisonPresentation {
   counts?: Partial<ComparisonStatusCounts>;
   /** Side-specific semantic payloads; the union graph remains the sole layout input. */
   comparisonSlice?: ComparisonSlice;
+  referenceDefines?: readonly { name: string; value?: string }[];
+  candidateDefines?: readonly { name: string; value?: string }[];
+  onSemanticSideChange?: (side: ComparisonSemanticSide | undefined) => void;
 }
 
 export interface HeaderComparisonPresentation {

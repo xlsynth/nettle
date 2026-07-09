@@ -186,6 +186,35 @@ describe("graph matcher worker client", () => {
     });
   });
 
+  it("includes origins and source mappings in the synchronous fallback budget", async () => {
+    vi.stubGlobal("Worker", undefined);
+    const originHeavyReference = slice("origin-heavy", {
+      ...operator("origin-heavy-op", "origin heavy", 1),
+      origins: Array.from({ length: MAX_SYNCHRONOUS_MATCHER_WORK }, (_, index) => ({
+        file: "rtl/generated.sv",
+        startLine: index + 1,
+        startColumn: 1,
+      })),
+    });
+    await expect(
+      compareGraphSlicesInWorker(originHeavyReference, candidate, { policy: "aggressive" }),
+    ).rejects.toMatchObject({ name: "MatcherWorkerUnavailableError" });
+
+    const mappingHeavy: SourceLineMapping = {
+      referencePath: "rtl/top.sv",
+      candidatePath: "rtl/top.sv",
+      referenceToCandidate: new Map(
+        Array.from({ length: MAX_SYNCHRONOUS_MATCHER_WORK }, (_, index) => [index + 1, index + 1]),
+      ),
+    };
+    await expect(
+      compareGraphSlicesInWorker(reference, candidate, {
+        policy: "aggressive",
+        sourceLineMappings: [mappingHeavy],
+      }),
+    ).rejects.toMatchObject({ name: "MatcherWorkerUnavailableError" });
+  });
+
   it("structured-clones source-line Maps through the browser worker request", async () => {
     let clonedRequest: GraphMatcherWorkerRequest | undefined;
     class CompletingWorker {

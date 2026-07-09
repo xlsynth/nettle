@@ -1651,6 +1651,7 @@ describe("SchematicCanvas comparison presentation", () => {
       ],
     };
 
+    const onSemanticSideChange = vi.fn();
     const view = render(
       <SchematicCanvas
         slice={slice}
@@ -1696,6 +1697,9 @@ describe("SchematicCanvas comparison presentation", () => {
             group: { status: "modified", sourceHighlighted: true },
           },
           comparisonSlice,
+          referenceDefines: [{ name: "REFERENCE_BUILD" }],
+          candidateDefines: [{ name: "CANDIDATE_BUILD" }],
+          onSemanticSideChange,
         }}
       />,
     );
@@ -1726,6 +1730,7 @@ describe("SchematicCanvas comparison presentation", () => {
     expect(view.container.querySelector(".top-level-layer.diff-modified")).not.toBeNull();
 
     chooseComparisonView("Reference snapshot");
+    expect(onSemanticSideChange).toHaveBeenLastCalledWith("reference");
     expect(visibleLabel(".top-level-title")).toBe("reference-top");
     expect(visibleLabel(".top-level-definition")).toBe("reference-top-definition");
     expect(visibleLabel(".group-title")).toBe("reference-group");
@@ -1771,9 +1776,12 @@ describe("SchematicCanvas comparison presentation", () => {
     fireEvent.mouseMove(top, { clientX: 30, clientY: 30 });
     expect(screen.getByRole("tooltip").textContent).toContain("REF_TOP");
     expect(screen.getByRole("tooltip").textContent).toContain("reference-top-value");
+    expect(screen.getByRole("tooltip").textContent).toContain("REFERENCE_BUILD");
+    expect(screen.getByRole("tooltip").textContent).not.toContain("CANDIDATE_BUILD");
     fireEvent.mouseLeave(top);
 
     chooseComparisonView("Candidate snapshot");
+    expect(onSemanticSideChange).toHaveBeenLastCalledWith("candidate");
     expect(visibleLabel(".top-level-title")).toBe("candidate-top");
     expect(visibleLabel(".top-level-definition")).toBe("candidate-top-definition");
     expect(visibleLabel(".group-title")).toBe("candidate-group");
@@ -1799,13 +1807,127 @@ describe("SchematicCanvas comparison presentation", () => {
     fireEvent.mouseMove(top, { clientX: 30, clientY: 30 });
     expect(screen.getByRole("tooltip").textContent).toContain("CAND_TOP");
     expect(screen.getByRole("tooltip").textContent).toContain("candidate-top-value");
+    expect(screen.getByRole("tooltip").textContent).toContain("CANDIDATE_BUILD");
+    expect(screen.getByRole("tooltip").textContent).not.toContain("REFERENCE_BUILD");
     fireEvent.mouseLeave(top);
     chooseComparisonView("Diff overlay");
+    expect(onSemanticSideChange).toHaveBeenLastCalledWith(undefined);
     expect(node()?.classList).toContain("diff-modified");
     expect(edge()?.classList).toContain("diff-modified");
     expect(node()?.querySelector(".diff-modified-outline")).not.toBeNull();
     expect(geometry()).toEqual(unionGeometry);
     expect(layoutHarness.receivedSlices.every((received) => received === slice)).toBe(true);
+  });
+
+  it("excludes hidden control-signal changes from context and navigation", () => {
+    const slice = {
+      snapshotId: "hidden-control-comparison",
+      module: {
+        id: "top",
+        name: "top",
+        instancePath: "top",
+        definitionName: "top",
+        parameters: {},
+      },
+      nodes: [
+        { id: "clock-source", kind: "input", label: "clk", ports: [] },
+        { id: "clock-target", kind: "register", label: "state", ports: [] },
+      ],
+      edges: [
+        {
+          id: "changed-clock",
+          sourceNode: "clock-source",
+          targetNode: "clock-target",
+          label: "clk",
+          role: "clock",
+        },
+      ],
+    } satisfies GraphSlice;
+    layoutHarness.layout = {
+      width: 300,
+      height: 160,
+      groups: [],
+      nodes: [
+        { ...slice.nodes[0], x: 30, y: 55, width: 50, height: 50, ports: [] },
+        { ...slice.nodes[1], x: 210, y: 55, width: 50, height: 50, ports: [] },
+      ],
+      edges: [
+        {
+          ...slice.edges[0],
+          sections: [
+            {
+              startPoint: { x: 80, y: 80 },
+              bendPoints: [],
+              endPoint: { x: 210, y: 80 },
+            },
+          ],
+        },
+      ],
+      elapsedMs: 1,
+    };
+    const view = render(
+      <SchematicCanvas
+        slice={slice}
+        onSelect={vi.fn()}
+        onOpenInstance={vi.fn()}
+        canGoUp={false}
+        onGoUp={vi.fn()}
+        onGoTop={vi.fn()}
+        labelSettings={{
+          nets: true,
+          signalTypes: false,
+          bitWidths: false,
+          instances: true,
+          definitions: false,
+        }}
+        onToggleLabel={vi.fn()}
+        flattenDepth={0}
+        onFlattenDepthChange={vi.fn()}
+        flattenRenderMode="grouped"
+        onFlattenRenderModeChange={vi.fn()}
+        layoutProfile="auto"
+        onLayoutProfileChange={vi.fn()}
+        constantRadix="binary"
+        onConstantRadixChange={vi.fn()}
+        onFlattenInstance={vi.fn()}
+        onRestoreInstance={vi.fn()}
+        individuallyFlattened={false}
+        topLevelDefines={[]}
+        inspectorOpen={false}
+        onToggleInspector={vi.fn()}
+        comparison={{
+          referenceName: "reference.nettle",
+          candidateName: "candidate.nettle",
+          policy: "conservative",
+          onPolicyChange: vi.fn(),
+          entities: {
+            "clock-source": { status: "unchanged" },
+            "clock-target": { status: "unchanged" },
+            "changed-clock": { status: "modified" },
+          },
+        }}
+      />,
+    );
+
+    chooseComparisonView("Changes only");
+    expect(view.container.querySelector('[href="#schematic-clock-source"]')?.classList).toContain(
+      "diff-context",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Signals/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "clk" }));
+
+    expect(view.container.querySelector('[href="#schematic-changed-clock"]')?.classList).toContain(
+      "hidden-signal",
+    );
+    expect(view.container.querySelector('[href="#schematic-clock-source"]')?.classList).toContain(
+      "diff-filtered",
+    );
+    expect(view.container.querySelector('[href="#schematic-clock-target"]')?.classList).toContain(
+      "diff-filtered",
+    );
+    expect(
+      (screen.getByRole("button", { name: "Next schematic change" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("counts and navigates a top-module-only semantic change", () => {

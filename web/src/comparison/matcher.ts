@@ -671,7 +671,7 @@ const sourceTargets = (
   (node.origins ?? []).flatMap((origin) => {
     if (side === "candidate") {
       const mapping = findUniquePathMatch(mappings, origin.file, (entry) => entry.candidatePath);
-      return mapping && mapping.referenceToCandidate.size > 0
+      return mapping && (mapping.referenceToCandidate.size > 0 || mapping.pathPaired)
         ? [{ path: normalizePath(mapping.candidatePath), line: origin.startLine }]
         : [];
     }
@@ -682,6 +682,11 @@ const sourceTargets = (
       return [{ path: normalizePath(mapping.candidatePath), line: exactLine }];
     }
     const nearest = nearestLineMapping(mapping.referenceToCandidate, origin.startLine);
+    // An empty map still carries deterministic inventory-level file pairing.
+    // Preserve that as approximate evidence only for aggressive matching.
+    if (!nearest && mapping.pathPaired) {
+      return [{ path: normalizePath(mapping.candidatePath), line: origin.startLine }];
+    }
     if (!nearest) return [];
     const line = Math.max(1, nearest[1] + origin.startLine - nearest[0]);
     return [{ path: normalizePath(mapping.candidatePath), line }];
