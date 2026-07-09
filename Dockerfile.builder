@@ -109,6 +109,8 @@ COPY --from=eda-toolchain /opt/oss-cad-suite /opt/oss-cad-suite
 ENV PATH=/opt/oss-cad-suite/bin:/opt/slang:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
   NETTLE_CHROMIUM_PATH=/usr/bin/chromium \
   NETTLE_NETLIST_FIXTURE=/tmp/br_cdc_fifo_flops_synth.nettle \
+  NETTLE_COMPARISON_REFERENCE_FIXTURE=/tmp/br_enc_priority_encoder_reference.nettle \
+  NETTLE_COMPARISON_CANDIDATE_FIXTURE=/tmp/br_enc_priority_encoder_candidate.nettle \
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 WORKDIR /src
 COPY . .

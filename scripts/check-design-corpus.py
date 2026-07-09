@@ -415,6 +415,116 @@ def validate_nettle_bundle(
     )
 
 
+def build_nettle_bundle(
+    slang: str,
+    yosys: str,
+    corpus: Path,
+    example: Dict[str, object],
+    parameters: Dict[str, str],
+    output: Path,
+) -> None:
+    """Build and validate one browser-consumable bundle."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "cargo",
+        "run",
+        "--quiet",
+        "-p",
+        "nettle",
+        "--",
+        "build",
+        "--filelist",
+        str((corpus / str(example["filelist"])).resolve()),
+        "--project-root",
+        str(corpus),
+        "--top",
+        str(example["top"]),
+        "--slang-bin",
+        slang,
+        "--yosys-bin",
+        yosys,
+        "--output",
+        str(output),
+    ]
+    for name, value in sorted(parameters.items()):
+        command.extend(["--param", f"{name}={value}"])
+    run(command, cwd=ROOT)
+    run(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "nettle",
+            "--",
+            "validate",
+            str(output),
+        ],
+        cwd=ROOT,
+    )
+
+
+def build_comparison_fixtures(
+    slang: str,
+    yosys: str,
+    corpus: Path,
+    examples: List[Dict[str, object]],
+) -> None:
+    """Build a real one-line RTL diff pair for the browser geometry test."""
+    reference_path = os.environ.get("NETTLE_COMPARISON_REFERENCE_FIXTURE")
+    candidate_path = os.environ.get("NETTLE_COMPARISON_CANDIDATE_FIXTURE")
+    if reference_path is None and candidate_path is None:
+        return
+    if reference_path is None or candidate_path is None:
+        raise RuntimeError(
+            "NETTLE_COMPARISON_REFERENCE_FIXTURE and "
+            "NETTLE_COMPARISON_CANDIDATE_FIXTURE must be set together"
+        )
+    example = next(
+        (example for example in examples if example["id"] == "priority-encoder"),
+        None,
+    )
+    if example is None:
+        raise RuntimeError(
+            "real comparison fixtures require the Bedrock RTL priority-encoder example"
+        )
+    parameters = example.get("parameters", {})
+    if not isinstance(parameters, dict) or not parameters:
+        raise RuntimeError("priority-encoder comparison fixture requires parameters")
+    source = corpus / "bedrock-rtl/enc/rtl/br_enc_priority_encoder.sv"
+    original = source.read_bytes()
+    reference_expression = b"in_masked[in_idx] && (in_masked[in_idx-1:out_idx] == '0)"
+    candidate_expression = b"in_masked[in_idx] || (in_masked[in_idx-1:out_idx] == '0)"
+    if original.count(reference_expression) != 1:
+        raise RuntimeError(
+            "priority-encoder comparison mutation no longer has one exact source match"
+        )
+    build_nettle_bundle(
+        slang,
+        yosys,
+        corpus,
+        example,
+        parameters,
+        Path(reference_path).resolve(),
+    )
+    source.write_bytes(original.replace(reference_expression, candidate_expression))
+    try:
+        build_nettle_bundle(
+            slang,
+            yosys,
+            corpus,
+            example,
+            parameters,
+            Path(candidate_path).resolve(),
+        )
+    finally:
+        source.write_bytes(original)
+    print(
+        "PASS priority-encoder (comparison) — built validated parameterized "
+        "bundles around a one-line RTL mutation for browser geometry testing"
+    )
+
+
 def validate_generated_netlist(
     yosys: str, corpus: Path, example: Dict[str, object]
 ) -> None:
@@ -636,6 +746,8 @@ def main() -> int:
                     print(f"PASS {corpus_name}/{example['id']} ({variant}) — {detail}")
 
             if yosys is not None and examples:
+                if corpus_name == "bedrock-rtl":
+                    build_comparison_fixtures(slang, yosys, corpus, examples)
                 preferred = next(
                     (example for example in examples if example["id"] == "counter"),
                     examples[0],

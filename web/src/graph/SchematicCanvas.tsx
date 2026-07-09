@@ -2145,6 +2145,9 @@ export function SchematicCanvas({
                       className={`schematic-edge role-${renderedRole}${active ? " active" : ""}${hidden ? " hidden-signal" : ""}${comparison ? diffClassName(metadata, diffVisibility, contextVisible, emphasizeDifferences) : ""}`}
                       key={edge.id}
                       href={`#schematic-${encodeURIComponent(edge.id)}`}
+                      data-entity-id={edge.id}
+                      data-source-node={edge.sourceNode}
+                      data-target-node={edge.targetNode}
                       aria-label={`Select net ${accessibleLabel}${
                         comparison
                           ? `, ${diffStatusLabel(metadata?.status ?? "unchanged")}${
@@ -2234,6 +2237,11 @@ export function SchematicCanvas({
                       }`}
                       key={node.id}
                       href={`#schematic-${encodeURIComponent(node.id)}`}
+                      data-entity-id={node.id}
+                      data-layout-x={node.x}
+                      data-layout-y={node.y}
+                      data-layout-width={node.width}
+                      data-layout-height={node.height}
                       aria-label={`Select ${node.kind} ${node.label}${
                         comparison
                           ? `, ${diffStatusLabel(metadata?.status ?? "unchanged")}${

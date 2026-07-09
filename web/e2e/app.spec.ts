@@ -6,6 +6,8 @@ const fixture = "/tmp/nettle-browser-fixture.nettle";
 const shiftRegisterFixture = "/tmp/nettle-shift-register-fixture.nettle";
 const comparisonReferenceFixture = "/tmp/nettle-comparison-reference.nettle";
 const comparisonCandidateFixture = "/tmp/nettle-comparison-candidate.nettle";
+const realComparisonReferenceFixture = process.env.NETTLE_COMPARISON_REFERENCE_FIXTURE;
+const realComparisonCandidateFixture = process.env.NETTLE_COMPARISON_CANDIDATE_FIXTURE;
 
 const captureRuntimeErrors = (page: Page) => {
   const errors: string[] = [];
@@ -15,6 +17,140 @@ const captureRuntimeErrors = (page: Page) => {
   page.on("pageerror", (error) => errors.push(error.message));
   return errors;
 };
+
+const inspectSchematicGeometry = async (page: Page) =>
+  page.locator(".schematic-viewport").evaluate((element) => {
+    const svg = element as SVGSVGElement;
+    const problems: string[] = [];
+    const finite = (...values: number[]) => values.every(Number.isFinite);
+    const parseNumber = (value: string | undefined) =>
+      value === undefined ? Number.NaN : Number.parseFloat(value);
+    const nodes = Array.from(
+      svg.querySelectorAll<SVGAElement>(".node-interaction:not(.diff-filtered)"),
+    ).map((node) => {
+      const bounds = {
+        x: parseNumber(node.dataset.layoutX),
+        y: parseNumber(node.dataset.layoutY),
+        width: parseNumber(node.dataset.layoutWidth),
+        height: parseNumber(node.dataset.layoutHeight),
+      };
+      const id = node.dataset.entityId ?? "<missing node id>";
+      if (
+        !finite(bounds.x, bounds.y, bounds.width, bounds.height) ||
+        bounds.width <= 0 ||
+        bounds.height <= 0
+      ) {
+        problems.push(`${id}: invalid node bounds`);
+      }
+      return {
+        id,
+        bounds,
+        changed:
+          node.classList.contains("diff-added") ||
+          node.classList.contains("diff-removed") ||
+          node.classList.contains("diff-modified"),
+      };
+    });
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const viewBox = svg.viewBox.baseVal;
+    for (const node of nodes) {
+      const { x, y, width, height } = node.bounds;
+      if (x < -0.5 || y < -0.5 || x + width > viewBox.width + 0.5 || y + height > viewBox.height + 0.5) {
+        problems.push(`${node.id}: node falls outside the layout bounds`);
+      }
+    }
+    for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
+      const left = nodes[leftIndex];
+      for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
+        const right = nodes[rightIndex];
+        const overlapWidth =
+          Math.min(left.bounds.x + left.bounds.width, right.bounds.x + right.bounds.width) -
+          Math.max(left.bounds.x, right.bounds.x);
+        const overlapHeight =
+          Math.min(left.bounds.y + left.bounds.height, right.bounds.y + right.bounds.height) -
+          Math.max(left.bounds.y, right.bounds.y);
+        if (overlapWidth > 0.5 && overlapHeight > 0.5) {
+          problems.push(`${left.id} overlaps ${right.id}`);
+        }
+      }
+    }
+    const distanceToBounds = (
+      point: DOMPoint,
+      bounds: { x: number; y: number; width: number; height: number },
+    ) => {
+      const dx = Math.max(bounds.x - point.x, 0, point.x - (bounds.x + bounds.width));
+      const dy = Math.max(bounds.y - point.y, 0, point.y - (bounds.y + bounds.height));
+      return Math.hypot(dx, dy);
+    };
+    const connectedNodeIds = new Set<string>();
+    const edges = Array.from(
+      svg.querySelectorAll<SVGAElement>(".schematic-edge:not(.diff-filtered)"),
+    );
+    for (const edge of edges) {
+      const id = edge.dataset.entityId ?? "<missing edge id>";
+      const sourceId = edge.dataset.sourceNode;
+      const targetId = edge.dataset.targetNode;
+      const source = sourceId ? nodeById.get(sourceId) : undefined;
+      const target = targetId ? nodeById.get(targetId) : undefined;
+      const path = edge.querySelector<SVGPathElement>(".edge-line");
+      if (!sourceId || !targetId || !source || !target || !path) {
+        problems.push(`${id}: missing rendered endpoint identity or path`);
+        continue;
+      }
+      const length = path.getTotalLength();
+      const start = path.getPointAtLength(0);
+      const end = path.getPointAtLength(length);
+      if (!finite(length, start.x, start.y, end.x, end.y) || length <= 0) {
+        problems.push(`${id}: invalid routed path geometry`);
+        continue;
+      }
+      connectedNodeIds.add(sourceId);
+      connectedNodeIds.add(targetId);
+      // Removed and added lanes are shifted by 2.5 layout units, so keep this
+      // endpoint tolerance larger than the decoration without pinning a route.
+      if (distanceToBounds(start, source.bounds) > 8) {
+        problems.push(`${id}: route does not start at ${sourceId}`);
+      }
+      if (distanceToBounds(end, target.bounds) > 8) {
+        problems.push(`${id}: route does not end at ${targetId}`);
+      }
+    }
+    const isolatedNodes = nodes.filter((node) => !connectedNodeIds.has(node.id));
+    const disconnectedRect = svg.querySelector<SVGRectElement>(
+      ".disconnected-comparison-region rect",
+    );
+    if (isolatedNodes.length > 0 && !disconnectedRect) {
+      problems.push("isolated nodes are not labeled as having no visible connections");
+    }
+    if (disconnectedRect) {
+      const region = {
+        x: disconnectedRect.x.baseVal.value,
+        y: disconnectedRect.y.baseVal.value,
+        width: disconnectedRect.width.baseVal.value,
+        height: disconnectedRect.height.baseVal.value,
+      };
+      for (const node of isolatedNodes) {
+        const { x, y, width, height } = node.bounds;
+        if (
+          x < region.x - 0.5 ||
+          y < region.y - 0.5 ||
+          x + width > region.x + region.width + 0.5 ||
+          y + height > region.y + region.height + 0.5
+        ) {
+          problems.push(`${node.id}: isolated node falls outside the disconnected region`);
+        }
+      }
+    }
+    return {
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      connectedChangedNodeCount: nodes.filter(
+        (node) => node.changed && connectedNodeIds.has(node.id),
+      ).length,
+      isolatedNodeCount: isolatedNodes.length,
+      problems,
+    };
+  });
 
 const openFixture = async (page: Page) => {
   await page.goto("/");
@@ -270,6 +406,43 @@ test("compares two bundles with source and schematic diff controls", async ({ pa
   await replacement.getByRole("button", { name: "Close compare bundles dialog" }).click();
   await expect(page.locator(".mode-badge.diff")).toBeVisible();
   await expect(page.locator(".node-interaction")).toHaveCount(nodeCount);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("lays out a real elaborated schematic diff with coherent geometry", async ({ page }) => {
+  test.skip(
+    !realComparisonReferenceFixture || !realComparisonCandidateFixture,
+    "real comparison bundles were not supplied by the integration runner",
+  );
+  const runtimeErrors = captureRuntimeErrors(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Compare two bundles" }).click();
+  const dialog = page.getByRole("dialog", { name: "Compare Nettle bundles" });
+  await dialog
+    .getByLabel("Choose reference .nettle bundle file")
+    .setInputFiles(realComparisonReferenceFixture ?? "");
+  await dialog
+    .getByLabel("Choose candidate .nettle bundle file")
+    .setInputFiles(realComparisonCandidateFixture ?? "");
+  await dialog.getByRole("button", { name: "Compare bundles", exact: true }).click();
+
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
+  await expect(page.locator(".node-interaction")).not.toHaveCount(0, { timeout: 30_000 });
+  await expect(page.locator(".schematic-edge")).not.toHaveCount(0, { timeout: 30_000 });
+  const conservativeGeometry = await inspectSchematicGeometry(page);
+  expect(conservativeGeometry.nodeCount).toBeGreaterThan(10);
+  expect(conservativeGeometry.edgeCount).toBeGreaterThan(5);
+  expect(conservativeGeometry.connectedChangedNodeCount).toBeGreaterThan(0);
+  expect(conservativeGeometry.problems).toEqual([]);
+
+  await page.getByLabel("Schematic matching policy").selectOption("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  const aggressiveGeometry = await inspectSchematicGeometry(page);
+  expect(aggressiveGeometry.nodeCount).toBeGreaterThan(10);
+  expect(aggressiveGeometry.edgeCount).toBeGreaterThan(5);
+  expect(aggressiveGeometry.connectedChangedNodeCount).toBeGreaterThan(0);
+  expect(aggressiveGeometry.problems).toEqual([]);
   expect(runtimeErrors).toEqual([]);
 });
 
