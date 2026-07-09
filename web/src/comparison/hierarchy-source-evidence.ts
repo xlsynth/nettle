@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { RESOURCE_LIMITS } from "../generated/resource-limits";
-import type { GraphSlice } from "../model/graph";
+import type { GraphSlice, JsonValue } from "../model/graph";
 import {
   comparisonHasSchematicSourceEvidence,
   type SchematicSourceEvidence,
@@ -36,12 +36,24 @@ const throwIfAborted = (signal: AbortSignal) => {
   if (signal.aborted) throw new DOMException("The operation was aborted", "AbortError");
 };
 
+const stableJsonValue = (value: JsonValue | undefined): string => {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJsonValue).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJsonValue(value[key])}`)
+    .join(",")}}`;
+};
+
 const pairKey = (pair: SourceEvidenceSlicePair) =>
-  JSON.stringify([
+  stableJsonValue([
     pair.reference.snapshotId,
     pair.reference.module.id,
+    pair.reference.module.parameters,
     pair.candidate.snapshotId,
     pair.candidate.module.id,
+    pair.candidate.module.parameters,
   ]);
 
 /**
@@ -113,9 +125,11 @@ export const reachableHierarchyHasSchematicSourceEvidence = async <
       for (const instance of instances) {
         throwIfAborted(signal);
         if (timedOut()) return "unknown";
-        const definitionKey = JSON.stringify([
+        const definitionKey = stableJsonValue([
           instance.reference?.definitionName ?? null,
+          instance.reference?.parameters ?? null,
           instance.candidate?.definitionName ?? null,
+          instance.candidate?.parameters ?? null,
         ]);
         if (queuedDefinitions.has(definitionKey)) continue;
         if (queue.length >= maximumModulePairs) return "unknown";

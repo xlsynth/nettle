@@ -5,11 +5,16 @@ import type { GraphNode, GraphSlice } from "../model/graph";
 import { reachableHierarchyHasSchematicSourceEvidence } from "./hierarchy-source-evidence";
 import type { ComparisonSlice } from "./types";
 
-const moduleNode = (id: string, definitionName: string): GraphNode => ({
+const moduleNode = (
+  id: string,
+  definitionName: string,
+  parameters: GraphNode["parameters"] = {},
+): GraphNode => ({
   id,
   kind: "module",
   label: id,
   definitionName,
+  parameters,
   ports: [],
   origins: [{ file: "rtl/top.sv", startLine: 2, startColumn: 1 }],
 });
@@ -91,6 +96,56 @@ describe("reachable hierarchy source evidence", () => {
     ).resolves.toBe("found");
     expect(comparePair).toHaveBeenCalledTimes(2);
     expect(loadChildPair).toHaveBeenCalledTimes(1);
+  });
+
+  it("visits distinct parameter specializations of one child definition", async () => {
+    const referenceTop = slice("reference", "top", [
+      moduleNode("u_narrow", "child", { WIDTH: 8 }),
+      moduleNode("u_wide", "child", { WIDTH: 16 }),
+    ]);
+    const candidateTop = slice("candidate", "top", [
+      moduleNode("u_narrow", "child", { WIDTH: 8 }),
+      moduleNode("u_wide", "child", { WIDTH: 16 }),
+    ]);
+    const childPair = (width: number) => {
+      const reference = slice("reference", "child", [
+        operator(`logic-${width}`, width === 16 ? "rtl/child.sv" : "rtl/other.sv"),
+      ]);
+      const candidate = slice("candidate", "child", [
+        operator(`logic-${width}`, width === 16 ? "rtl/child.sv" : "rtl/other.sv"),
+      ]);
+      reference.module.parameters = { WIDTH: width };
+      candidate.module.parameters = { WIDTH: width };
+      return { reference, candidate };
+    };
+    const comparePair = vi.fn(async (pair: { reference: GraphSlice; candidate: GraphSlice }) =>
+      comparison(
+        pair.reference,
+        pair.candidate,
+        pair.reference.module.parameters.WIDTH === 16 ? "modified" : "unchanged",
+      ),
+    );
+    const loadChildPair = vi.fn(
+      async (
+        _pair: { reference: GraphSlice; candidate: GraphSlice },
+        instance: ComparisonSlice["nodes"][number],
+      ) => childPair(Number(instance.reference?.parameters?.WIDTH)),
+    );
+
+    await expect(
+      reachableHierarchyHasSchematicSourceEvidence(
+        {
+          root: { reference: referenceTop, candidate: candidateTop },
+          referencePath: "rtl/child.sv",
+          candidatePath: "rtl/child.sv",
+          comparePair,
+          loadChildPair,
+        },
+        new AbortController().signal,
+      ),
+    ).resolves.toBe("found");
+    expect(loadChildPair).toHaveBeenCalledTimes(2);
+    expect(comparePair).toHaveBeenCalledTimes(3);
   });
 
   it("proves an unrelated bundled source has no reachable schematic evidence", async () => {

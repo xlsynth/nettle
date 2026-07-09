@@ -10,7 +10,9 @@ for integration testing and end-user demonstrations:
 - `bedrock-rtl/`: seven parameterized infrastructure RTL examples plus a CDC
   FIFO synthesis and browser regression;
 - `ibex/`: the complete production Ibex RISC-V CPU core;
-- `opentitan/`: OpenTitan's AES cryptographic engine; and
+- `opentitan/`: OpenTitan's AES cryptographic engine;
+- `schematic-diff/`: Nettle-owned reference and candidate RTL projects that
+  change ports, module instances, connectivity, and operator structure; and
 - `smoke/`: a tiny Nettle-authored compiler smoke fixture.
 
 No third-party HDL is stored in the Nettle source tree. Each corpus manifest
@@ -77,3 +79,10 @@ completion. Pass `--workspace <path>` to retain or reuse it. The same staged
 filelists can be passed to `nettle build` to create demo bundles; each corpus
 README provides a copy-paste command. Use `nettle render` with the same build
 arguments to write the bundle and immediately serve it in the local viewer.
+
+The Docker integration target additionally compiles both `schematic-diff/`
+projects and opens them in comparison mode. Browser assertions cover interface
+additions and removals, one-sided instances, changed operators and wiring, and
+non-overlapping, endpoint-connected union geometry under both matching
+policies. These checks intentionally inspect semantic SVG geometry rather than
+pixel screenshots or exact ELK coordinates.

@@ -8,6 +8,8 @@ const comparisonReferenceFixture = "/tmp/nettle-comparison-reference.nettle";
 const comparisonCandidateFixture = "/tmp/nettle-comparison-candidate.nettle";
 const realComparisonReferenceFixture = process.env.NETTLE_COMPARISON_REFERENCE_FIXTURE;
 const realComparisonCandidateFixture = process.env.NETTLE_COMPARISON_CANDIDATE_FIXTURE;
+const structuralReferenceFixture = process.env.NETTLE_STRUCTURAL_REFERENCE_FIXTURE;
+const structuralCandidateFixture = process.env.NETTLE_STRUCTURAL_CANDIDATE_FIXTURE;
 
 const captureRuntimeErrors = (page: Page) => {
   const errors: string[] = [];
@@ -441,6 +443,57 @@ test("lays out a real elaborated schematic diff with coherent geometry", async (
   const aggressiveGeometry = await inspectSchematicGeometry(page);
   expect(aggressiveGeometry.nodeCount).toBeGreaterThan(10);
   expect(aggressiveGeometry.edgeCount).toBeGreaterThan(5);
+  expect(aggressiveGeometry.connectedChangedNodeCount).toBeGreaterThan(0);
+  expect(aggressiveGeometry.problems).toEqual([]);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("renders compiled RTL interface, instance, connectivity, and structure mutations", async ({
+  page,
+}) => {
+  test.skip(
+    !structuralReferenceFixture || !structuralCandidateFixture,
+    "structural comparison bundles were not supplied by the integration runner",
+  );
+  const runtimeErrors = captureRuntimeErrors(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Compare two bundles" }).click();
+  const dialog = page.getByRole("dialog", { name: "Compare Nettle bundles" });
+  await dialog
+    .getByLabel("Choose reference .nettle bundle file")
+    .setInputFiles(structuralReferenceFixture ?? "");
+  await dialog
+    .getByLabel("Choose candidate .nettle bundle file")
+    .setInputFiles(structuralCandidateFixture ?? "");
+  await dialog.getByRole("button", { name: "Compare bundles", exact: true }).click();
+
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
+  await expect(page.getByRole("link", { name: "Select input enable_i, Added in candidate" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Select output legacy_o, Missing from candidate" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Select output status_o, Added in candidate" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Select module u_removed, Missing from candidate" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Select module u_added, Added in candidate" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Select module u_keep, Unchanged" })).toBeVisible();
+  await expect(
+    page.locator(".node-interaction.diff-removed").filter({
+      has: page.locator(".schematic-node.kind-operator"),
+    }),
+  ).not.toHaveCount(0);
+  await expect(
+    page.locator(".node-interaction.diff-added").filter({
+      has: page.locator(".schematic-node.kind-operator"),
+    }),
+  ).not.toHaveCount(0);
+  await expect(page.locator(".schematic-edge.diff-removed")).not.toHaveCount(0);
+  await expect(page.locator(".schematic-edge.diff-added")).not.toHaveCount(0);
+
+  const conservativeGeometry = await inspectSchematicGeometry(page);
+  expect(conservativeGeometry.connectedChangedNodeCount).toBeGreaterThan(0);
+  expect(conservativeGeometry.problems).toEqual([]);
+
+  await page.getByLabel("Schematic matching policy").selectOption("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  const aggressiveGeometry = await inspectSchematicGeometry(page);
   expect(aggressiveGeometry.connectedChangedNodeCount).toBeGreaterThan(0);
   expect(aggressiveGeometry.problems).toEqual([]);
   expect(runtimeErrors).toEqual([]);
