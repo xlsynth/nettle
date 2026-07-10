@@ -4,13 +4,18 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Focus,
+  GitCompareArrows,
   Home,
   Info,
   Layers3,
+  ListFilter,
   Minus,
   Plus,
   Radio,
+  TriangleAlert,
   Undo2,
 } from "lucide-react";
 import {
@@ -25,14 +30,27 @@ import {
   useRef,
   useState,
 } from "react";
-import { formatJsonValue } from "../model/format";
-import type { GraphEdge, GraphSlice } from "../model/graph";
+import type { ComparisonSlice } from "../comparison/types";
 import {
+  type ComparisonSemanticSide,
+  type DiffStatus,
+  diffStatusLabel,
+  type EntityDiffPresentation,
+  type SchematicComparisonPresentation,
+  schematicDiffStatusDescription,
+} from "../components/comparison-types";
+import { formatJsonValue } from "../model/format";
+import type { GraphEdge, GraphSlice, ModuleContext } from "../model/graph";
+import {
+  type CameraBounds,
   type CameraViewBox,
+  cameraFocusedOnBounds,
   cameraTransform,
+  cameraViewBoxForBounds,
   constrainedCameraSize,
   panCameraByScreenDelta,
   resizeCameraAt,
+  unionCameraBounds,
   wheelZoomFactor,
 } from "./camera";
 import { type ConstantRadix, formatConstantLiteral } from "./constant-format";
@@ -45,6 +63,7 @@ import type {
   LayoutEdge,
   LayoutGroup,
   LayoutNode,
+  LayoutResult,
   Point,
 } from "./layout-types";
 import {
@@ -68,6 +87,8 @@ export interface LabelSettings {
 interface SchematicCanvasProps {
   slice: GraphSlice;
   selectedId?: string;
+  focusEntityId?: string;
+  focusEntityRevision?: number;
   onSelect: (id: string) => void;
   onHover?: (id: string | undefined) => void;
   onOpenInstance: (id: string) => void;
@@ -90,7 +111,151 @@ interface SchematicCanvasProps {
   topLevelDefines: Array<{ name: string; value?: string }>;
   inspectorOpen: boolean;
   onToggleInspector: () => void;
+  comparison?: SchematicComparisonPresentation;
+  warnings?: readonly string[];
+  busy?: boolean;
 }
+
+type DiffVisibility = Record<DiffStatus, boolean>;
+type DiffPreset = "reference" | "overlay" | "candidate" | "changes" | "custom";
+type NamedDiffPreset = Exclude<DiffPreset, "custom">;
+
+const DIFF_PRESET_LABELS: Record<DiffPreset, string> = {
+  reference: "Reference snapshot",
+  overlay: "Diff overlay",
+  candidate: "Candidate snapshot",
+  changes: "Changes only",
+  custom: "Custom overlay",
+};
+
+const DIFF_PRESET_DESCRIPTIONS: Record<NamedDiffPreset, string> = {
+  reference: "Reference payloads with candidate-only objects hidden and no diff decoration.",
+  overlay: "The complete union with removed, added, and modified objects highlighted.",
+  candidate: "Candidate payloads with reference-only objects hidden and no diff decoration.",
+  changes: "The diff overlay restricted to changes and the connectivity needed to understand them.",
+};
+
+const ALL_DIFF_STATUSES: readonly DiffStatus[] = ["unchanged", "removed", "added", "modified"];
+
+const defaultDiffVisibility = (): DiffVisibility => ({
+  unchanged: true,
+  removed: true,
+  added: true,
+  modified: true,
+});
+
+const diffClassName = (
+  metadata: EntityDiffPresentation | undefined,
+  visibility: DiffVisibility,
+  contextVisible = false,
+  emphasizeDifference = true,
+) => {
+  const status = metadata?.status ?? "unchanged";
+  const visualStatus = emphasizeDifference ? status : "unchanged";
+  return ` diff-${visualStatus}${
+    emphasizeDifference && metadata?.matchMethod === "heuristic" ? " diff-heuristic" : ""
+  }${
+    metadata?.sourceHighlighted ? " source-cross-probed" : ""
+  }${contextVisible ? " diff-context" : ""}${visibility[status] || contextVisible ? "" : " diff-filtered"}`;
+};
+
+const diffMarker = (metadata: EntityDiffPresentation | undefined, emphasizeDifference = true) => {
+  if (!emphasizeDifference) return "";
+  const status = metadata?.status ?? "unchanged";
+  const marker =
+    status === "added" ? "+" : status === "removed" ? "−" : status === "modified" ? "±" : "";
+  return `${marker}${metadata?.matchMethod === "heuristic" ? "≈" : ""}`;
+};
+
+const semanticSideForPreset = (preset: DiffPreset): ComparisonSemanticSide | undefined =>
+  preset === "reference" || preset === "candidate" ? preset : undefined;
+
+const portComparisonKey = (nodeId: string, portId: string) => `${nodeId}\u0000${portId}`;
+
+/**
+ * Applies one snapshot's semantic payload to immutable union geometry. This is
+ * deliberately downstream of layout so changing a view preset cannot move any
+ * object or reroute any edge.
+ */
+const layoutForComparisonSide = (
+  layout: LayoutResult,
+  comparison: ComparisonSlice | undefined,
+  side: ComparisonSemanticSide | undefined,
+): LayoutResult => {
+  if (!comparison || !side) return layout;
+  const nodes = new Map(comparison.nodes.map((entity) => [entity.id, entity]));
+  const ports = new Map(
+    comparison.ports.map((entity) => [portComparisonKey(entity.nodeId, entity.id), entity]),
+  );
+  const edges = new Map(comparison.edges.map((entity) => [entity.id, entity]));
+  const groups = new Map(comparison.groups.map((entity) => [entity.id, entity]));
+  return {
+    ...layout,
+    nodes: layout.nodes.map((node) => {
+      const semantic = nodes.get(node.id)?.[side];
+      const semanticPorts = node.ports.flatMap((port) => {
+        const comparisonPort = ports.get(portComparisonKey(node.id, port.id));
+        if (!comparisonPort) return [port];
+        const semanticPort = comparisonPort[side];
+        if (!semanticPort) return [];
+        return [
+          {
+            ...port,
+            name: semanticPort.name,
+            direction: semanticPort.direction,
+            index: semanticPort.index,
+            role: semanticPort.role,
+            bitWidth: semanticPort.width,
+          },
+        ];
+      });
+      if (!semantic) return { ...node, ports: semanticPorts };
+      return {
+        ...node,
+        kind: semantic.kind,
+        label: semantic.label,
+        glyph: semantic.glyph,
+        definitionName: semantic.definitionName,
+        parameters: semantic.parameters,
+        origins: semantic.origins,
+        transparent: semantic.transparent,
+        metadata: semantic.metadata,
+        ports: semanticPorts,
+      };
+    }),
+    edges: layout.edges.map((edge) => {
+      const semantic = edges.get(edge.id)?.[side];
+      return semantic
+        ? {
+            ...edge,
+            label: semantic.label,
+            width: semantic.width,
+            signalType: semantic.signalType,
+            role: semantic.role,
+            origins: semantic.origins,
+          }
+        : edge;
+    }),
+    groups: layout.groups.map((group) => {
+      const semantic = groups.get(group.id)?.[side];
+      return semantic
+        ? {
+            ...group,
+            name: semantic.name,
+            definitionName: semantic.definitionName,
+            parameters: semantic.parameters,
+            origins: semantic.origins,
+          }
+        : group;
+    }),
+  };
+};
+
+const moduleForComparisonSide = (
+  fallback: ModuleContext,
+  comparison: ComparisonSlice | undefined,
+  side: ComparisonSemanticSide | undefined,
+) => (comparison && side ? comparison[side].module : fallback);
 
 const pointsForSection = (section: EdgeSection): Point[] => [
   section.startPoint,
@@ -681,11 +846,11 @@ const TopLevelBoundary = memo(function TopLevelBoundary({
         className="top-level-boundary"
         x={8}
         y={8}
-        width={width - 16}
-        height={height - 16}
+        width={Math.max(0, width - 16)}
+        height={Math.max(0, height - 16)}
         rx={7}
       />
-      <path className="top-level-header-rule" d={`M8,48 H${width - 8}`} />
+      <path className="top-level-header-rule" d={`M8,48 H${Math.max(8, width - 8)}`} />
       {showInstance ? (
         <text className="top-level-title" x={20} y={27}>
           <title>{module.instancePath}</title>
@@ -729,9 +894,38 @@ const FLATTEN_RENDER_MODE_OPTIONS: Array<{
   },
 ];
 
+const boundsForLayoutEntity = (layout: LayoutResult, id: string): CameraBounds | undefined => {
+  const node = layout.nodes.find((candidate) => candidate.id === id);
+  if (node) return { x: node.x, y: node.y, width: node.width, height: node.height };
+  const group = layout.groups.find((candidate) => candidate.id === id);
+  if (group) return { x: group.x, y: group.y, width: group.width, height: group.height };
+  const edge = layout.edges.find((candidate) => candidate.id === id);
+  if (!edge) return undefined;
+  return unionCameraBounds([
+    ...edge.sections.flatMap((section) =>
+      pointsForSection(section).map((point) => ({
+        x: point.x,
+        y: point.y,
+        width: 0,
+        height: 0,
+      })),
+    ),
+    ...layout.nodes
+      .filter((candidate) => candidate.id === edge.sourceNode || candidate.id === edge.targetNode)
+      .map((candidate) => ({
+        x: candidate.x,
+        y: candidate.y,
+        width: candidate.width,
+        height: candidate.height,
+      })),
+  ]);
+};
+
 export function SchematicCanvas({
   slice,
   selectedId,
+  focusEntityId,
+  focusEntityRevision,
   onSelect,
   onHover,
   onOpenInstance,
@@ -754,6 +948,9 @@ export function SchematicCanvas({
   topLevelDefines,
   inspectorOpen,
   onToggleInspector,
+  comparison,
+  warnings = [],
+  busy = false,
 }: SchematicCanvasProps) {
   const gridPatternId = useId().replaceAll(":", "");
   const edgeArrowId = useId().replaceAll(":", "");
@@ -762,11 +959,119 @@ export function SchematicCanvas({
   const [signalsOpen, setSignalsOpen] = useState(false);
   const [flattenModesOpen, setFlattenModesOpen] = useState(false);
   const [layoutProfilesOpen, setLayoutProfilesOpen] = useState(false);
+  const [diffViewOpen, setDiffViewOpen] = useState(false);
+  const [diffVisibility, setDiffVisibility] = useState<DiffVisibility>(defaultDiffVisibility);
+  const [diffPreset, setDiffPreset] = useState<DiffPreset>("overlay");
+  const emphasizeDifferences = diffPreset !== "reference" && diffPreset !== "candidate";
   const [contextMenu, setContextMenu] = useState<
     { id: string; x: number; y: number; action: "flatten" | "restore" } | undefined
   >();
   const controlSignals = useMemo(() => detectedControlSignals(slice), [slice]);
-  const { layout, loading, error } = useLayout(slice, layoutProfile, flattenRenderMode);
+  const { layout, loading, error } = useLayout(
+    slice,
+    layoutProfile,
+    flattenRenderMode,
+    Boolean(comparison),
+  );
+  const semanticSide = semanticSideForPreset(diffPreset);
+  const renderedLayout = useMemo(
+    () =>
+      layout
+        ? layoutForComparisonSide(layout, comparison?.comparisonSlice, semanticSide)
+        : undefined,
+    [comparison?.comparisonSlice, layout, semanticSide],
+  );
+  const renderedNodeLabels = useMemo(
+    () => new Map(renderedLayout?.nodes.map((node) => [node.id, node.label]) ?? []),
+    [renderedLayout],
+  );
+  const renderedModule = moduleForComparisonSide(
+    slice.module,
+    comparison?.comparisonSlice,
+    semanticSide,
+  );
+  const renderedTopLevelDefines =
+    semanticSide === "reference"
+      ? (comparison?.referenceDefines ?? topLevelDefines)
+      : semanticSide === "candidate"
+        ? (comparison?.candidateDefines ?? topLevelDefines)
+        : topLevelDefines;
+  const hiddenComparisonEdgeIds = useMemo(
+    () =>
+      new Set(
+        (layout?.edges ?? []).flatMap((edge) => {
+          const signalKey = controlSignalKey(slice, edge);
+          return signalKey && hiddenSignalKeys.has(signalKey) ? [edge.id] : [];
+        }),
+      ),
+    [hiddenSignalKeys, layout, slice],
+  );
+  const changesOnlyContext = useMemo(() => {
+    const nodeIds = new Set<string>();
+    const edgeIds = new Set<string>();
+    if (!comparison || !layout || diffPreset !== "changes") return { nodeIds, edgeIds };
+    const statusFor = (id: string) => comparison.entities[id]?.status ?? "unchanged";
+    const visibleChange = (id: string) => {
+      const status = statusFor(id);
+      return status !== "unchanged" && diffVisibility[status];
+    };
+    for (const edge of layout.edges) {
+      if (hiddenComparisonEdgeIds.has(edge.id)) continue;
+      const edgeChanged = visibleChange(edge.id);
+      const touchesChangedNode = visibleChange(edge.sourceNode) || visibleChange(edge.targetNode);
+      if (!edgeChanged && touchesChangedNode && statusFor(edge.id) === "unchanged") {
+        edgeIds.add(edge.id);
+      }
+      if (!edgeChanged && !touchesChangedNode) continue;
+      for (const nodeId of [edge.sourceNode, edge.targetNode]) {
+        if (statusFor(nodeId) === "unchanged") nodeIds.add(nodeId);
+      }
+    }
+    return { nodeIds, edgeIds };
+  }, [comparison, diffPreset, diffVisibility, hiddenComparisonEdgeIds, layout]);
+  const changesOnlyBounds = useMemo(() => {
+    if (!comparison || !layout) return undefined;
+    const visibleChange = (id: string) => {
+      const status = comparison.entities[id]?.status ?? "unchanged";
+      return status !== "unchanged" && diffVisibility[status];
+    };
+    const bounds: CameraBounds[] = [];
+    for (const node of layout.nodes) {
+      if (!visibleChange(node.id) && !changesOnlyContext.nodeIds.has(node.id)) continue;
+      bounds.push({ x: node.x, y: node.y, width: node.width, height: node.height });
+    }
+    for (const group of layout.groups) {
+      if (!visibleChange(group.id)) continue;
+      bounds.push({ x: group.x, y: group.y, width: group.width, height: group.height });
+    }
+    for (const edge of layout.edges) {
+      if (!visibleChange(edge.id) && !changesOnlyContext.edgeIds.has(edge.id)) continue;
+      if (hiddenComparisonEdgeIds.has(edge.id)) continue;
+      const edgeBounds = unionCameraBounds(
+        edge.sections.flatMap((section) =>
+          pointsForSection(section).map((point) => ({
+            x: point.x,
+            y: point.y,
+            width: 0,
+            height: 0,
+          })),
+        ),
+      );
+      if (edgeBounds) bounds.push(edgeBounds);
+    }
+    return unionCameraBounds(bounds);
+  }, [changesOnlyContext, comparison, diffVisibility, hiddenComparisonEdgeIds, layout]);
+  const fitCameraViewBox = useMemo(() => {
+    if (!layout) return undefined;
+    if (diffPreset !== "changes" || !changesOnlyBounds) {
+      return { x: 0, y: 0, width: layout.width, height: layout.height };
+    }
+    const padding = Math.max(
+      24,
+      Math.min(160, Math.max(changesOnlyBounds.width, changesOnlyBounds.height) * 0.06),
+    );
+    return cameraViewBoxForBounds(changesOnlyBounds, layout, padding);
+  }, [changesOnlyBounds, diffPreset, layout]);
   const selectedLayoutProfile =
     LAYOUT_PROFILE_OPTIONS.find((option) => option.value === layoutProfile) ??
     LAYOUT_PROFILE_OPTIONS[0];
@@ -790,12 +1095,28 @@ export function SchematicCanvas({
   const stageRef = useRef<HTMLDivElement>(null);
   const gridPatternRef = useRef<SVGPatternElement>(null);
   const zoomReadoutRef = useRef<HTMLSpanElement>(null);
+  const diffViewButtonRef = useRef<HTMLButtonElement>(null);
+  const diffViewDialogRef = useRef<HTMLDivElement>(null);
   const committedCameraRef = useRef<CameraViewBox>(cameraRef.current);
   const settleTimerRef = useRef<number | undefined>(undefined);
+  const appliedFocusRevision = useRef<number | undefined>(undefined);
+  const fittedLayoutRef = useRef<LayoutResult | undefined>(undefined);
+  const fittedPolicyRef = useRef(comparison?.policy);
+  const fittedPresetRef = useRef<DiffPreset>(diffPreset);
+  const fittedChangesBoundsKeyRef = useRef("");
   const highlighted = useMemo(
     () => getHighlighted(selectedId, slice.edges),
     [selectedId, slice.edges],
   );
+
+  useLayoutEffect(() => {
+    if (!diffViewOpen) return;
+    const dialog = diffViewDialogRef.current;
+    (
+      dialog?.querySelector<HTMLInputElement>("input:checked") ??
+      dialog?.querySelector<HTMLInputElement>("input")
+    )?.focus();
+  }, [diffViewOpen]);
 
   useEffect(() => {
     setHiddenSignalKeys((current) => {
@@ -806,7 +1127,14 @@ export function SchematicCanvas({
   }, [controlSignals]);
 
   useEffect(() => {
-    if (!contextMenu && !labelsOpen && !signalsOpen && !flattenModesOpen && !layoutProfilesOpen)
+    if (
+      !contextMenu &&
+      !labelsOpen &&
+      !signalsOpen &&
+      !flattenModesOpen &&
+      !layoutProfilesOpen &&
+      !diffViewOpen
+    )
       return;
     const dismiss = () => {
       setContextMenu(undefined);
@@ -814,9 +1142,13 @@ export function SchematicCanvas({
       setSignalsOpen(false);
       setFlattenModesOpen(false);
       setLayoutProfilesOpen(false);
+      setDiffViewOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismiss();
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismiss();
+      if (diffViewOpen) diffViewButtonRef.current?.focus();
     };
     window.addEventListener("pointerdown", dismiss);
     window.addEventListener("keydown", onKeyDown);
@@ -824,7 +1156,7 @@ export function SchematicCanvas({
       window.removeEventListener("pointerdown", dismiss);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [contextMenu, flattenModesOpen, labelsOpen, layoutProfilesOpen, signalsOpen]);
+  }, [contextMenu, diffViewOpen, flattenModesOpen, labelsOpen, layoutProfilesOpen, signalsOpen]);
 
   const applyCamera = useCallback(
     (camera: CameraViewBox) => {
@@ -865,6 +1197,22 @@ export function SchematicCanvas({
     [layout],
   );
 
+  const replaceCamera = useCallback(
+    (camera: CameraViewBox) => {
+      if (settleTimerRef.current !== undefined) window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = undefined;
+      cameraRef.current = camera;
+      committedCameraRef.current = camera;
+      viewportRef.current?.setAttribute(
+        "viewBox",
+        `${camera.x} ${camera.y} ${camera.width} ${camera.height}`,
+      );
+      applyCamera(camera);
+      if (stageRef.current) stageRef.current.style.transform = "none";
+    },
+    [applyCamera],
+  );
+
   const commitCamera = useCallback(() => {
     const camera = cameraRef.current;
     committedCameraRef.current = camera;
@@ -897,18 +1245,54 @@ export function SchematicCanvas({
   );
 
   useLayoutEffect(() => {
-    if (!layout?.width || !layout.height) return;
-    if (settleTimerRef.current !== undefined) window.clearTimeout(settleTimerRef.current);
-    settleTimerRef.current = undefined;
-    const camera = { x: 0, y: 0, width: layout.width, height: layout.height };
-    cameraRef.current = camera;
-    committedCameraRef.current = camera;
-    viewportRef.current?.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
-    applyCamera(camera);
-    if (stageRef.current) {
-      stageRef.current.style.transform = "none";
+    if (!layout?.width || !layout.height || !fitCameraViewBox) {
+      fittedPresetRef.current = diffPreset;
+      return;
     }
-  }, [applyCamera, layout]);
+    const policyChanged = fittedPolicyRef.current !== comparison?.policy;
+    // A policy change temporarily installs an empty comparison slice while matching. Keep the
+    // camera and the last completed layout as the transition anchor until the replacement union
+    // has finished matching and layout.
+    if (policyChanged && busy) return;
+    const layoutChanged = fittedLayoutRef.current !== layout;
+    const enteringChanges = diffPreset === "changes" && fittedPresetRef.current !== "changes";
+    const changesBoundsKey = changesOnlyBounds
+      ? `${changesOnlyBounds.x}:${changesOnlyBounds.y}:${changesOnlyBounds.width}:${changesOnlyBounds.height}`
+      : "";
+    const activeChangesMoved =
+      diffPreset === "changes" && fittedChangesBoundsKeyRef.current !== changesBoundsKey;
+    fittedPresetRef.current = diffPreset;
+    if (!layoutChanged && !enteringChanges && !activeChangesMoved && !policyChanged) return;
+    fittedLayoutRef.current = layout;
+    fittedPolicyRef.current = comparison?.policy;
+    fittedChangesBoundsKeyRef.current = changesBoundsKey;
+    if (policyChanged && diffPreset !== "changes") {
+      const retainedBounds = selectedId ? boundsForLayoutEntity(layout, selectedId) : undefined;
+      const target = retainedBounds ?? {
+        x: layout.width / 2,
+        y: layout.height / 2,
+        width: 0,
+        height: 0,
+      };
+      replaceCamera(
+        cameraFocusedOnBounds(cameraRef.current, target, {
+          width: layout.width,
+          height: layout.height,
+        }),
+      );
+      return;
+    }
+    replaceCamera(fitCameraViewBox);
+  }, [
+    busy,
+    changesOnlyBounds,
+    comparison?.policy,
+    diffPreset,
+    fitCameraViewBox,
+    layout,
+    replaceCamera,
+    selectedId,
+  ]);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -925,11 +1309,13 @@ export function SchematicCanvas({
     const current = cameraRef.current;
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
+    const worldWidth = layout?.width ?? current.width;
+    const worldHeight = layout?.height ?? current.height;
     const maxWidth = Math.max(10000, (layout?.width ?? current.width) * 4);
     const maxHeight = Math.max(7000, (layout?.height ?? current.height) * 4);
     const nextSize = constrainedCameraSize(current, factor, {
-      minWidth: 160,
-      minHeight: 100,
+      minWidth: Math.min(160, Math.max(24, worldWidth * 0.2)),
+      minHeight: Math.min(100, Math.max(24, worldHeight * 0.2)),
       maxWidth,
       maxHeight,
     });
@@ -945,17 +1331,20 @@ export function SchematicCanvas({
 
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     event.preventDefault();
+    if (busy) return;
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
     const ratioX = (event.clientX - rect.left) / rect.width;
     const ratioY = (event.clientY - rect.top) / rect.height;
     const factor = wheelZoomFactor(event.deltaY, event.deltaMode, rect.height);
     const current = cameraRef.current;
+    const worldWidth = layout?.width ?? current.width;
+    const worldHeight = layout?.height ?? current.height;
     const maxWidth = Math.max(10000, (layout?.width ?? current.width) * 4);
     const maxHeight = Math.max(7000, (layout?.height ?? current.height) * 4);
     const nextSize = constrainedCameraSize(current, factor, {
-      minWidth: 160,
-      minHeight: 100,
+      minWidth: Math.min(160, Math.max(24, worldWidth * 0.2)),
+      minHeight: Math.min(100, Math.max(24, worldHeight * 0.2)),
       maxWidth,
       maxHeight,
     });
@@ -970,8 +1359,13 @@ export function SchematicCanvas({
   };
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (busy) return;
     if (event.button !== 0 || !svgRef.current) return;
-    if ((event.target as Element).closest(".node-interaction, .group-interaction, .schematic-edge"))
+    if (
+      (event.target as Element).closest(
+        ".node-interaction, .group-interaction, .schematic-edge, .top-level-interaction-layer",
+      )
+    )
       return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { x: event.clientX, y: event.clientY, viewBox: cameraRef.current };
@@ -998,18 +1392,24 @@ export function SchematicCanvas({
     canvasWrapRef.current?.classList.remove("dragging");
   };
 
-  const hoveredNode = layout?.nodes.find((node) => node.id === hoveredId);
-  const hoveredGroup = layout?.groups.find((group) => group.id === hoveredId);
+  const hoveredNode = renderedLayout?.nodes.find((node) => node.id === hoveredId);
+  const hoveredGroup = renderedLayout?.groups.find((group) => group.id === hoveredId);
   const hoveredInstance =
-    hoveredNode?.kind === "module"
-      ? hoveredNode
-      : hoveredGroup
-        ? {
-            label: hoveredGroup.name,
-            definitionName: hoveredGroup.definitionName,
-            parameters: hoveredGroup.parameters,
-          }
-        : undefined;
+    hoveredId === TOP_MODULE_ID
+      ? {
+          label: renderedModule.name,
+          definitionName: renderedModule.definitionName,
+          parameters: renderedModule.parameters,
+        }
+      : hoveredNode?.kind === "module"
+        ? hoveredNode
+        : hoveredGroup
+          ? {
+              label: hoveredGroup.name,
+              definitionName: hoveredGroup.definitionName,
+              parameters: hoveredGroup.parameters,
+            }
+          : undefined;
   const updateTooltipPosition = (clientX: number, clientY: number) => {
     const bounds = canvasWrapRef.current?.getBoundingClientRect();
     setTooltipPosition({
@@ -1017,7 +1417,148 @@ export function SchematicCanvas({
       y: clientY - (bounds?.top ?? 0) + 14,
     });
   };
-  const breadcrumbs = slice.module.instancePath.split(".");
+  const breadcrumbs = renderedModule.instancePath.split(".");
+  const entityDiff = useCallback((id: string) => comparison?.entities[id], [comparison?.entities]);
+  const visibleDisconnectedComponentCount = useMemo(() => {
+    const region = renderedLayout?.disconnectedRegion;
+    if (!comparison || !region) return 0;
+    return region.componentEntityIds.filter((entityIds) =>
+      entityIds.some(
+        (id) =>
+          !hiddenComparisonEdgeIds.has(id) &&
+          diffVisibility[comparison.entities[id]?.status ?? "unchanged"],
+      ),
+    ).length;
+  }, [comparison, diffVisibility, hiddenComparisonEdgeIds, renderedLayout?.disconnectedRegion]);
+  const changeIds = useMemo(() => {
+    if (!comparison || !layout) return [];
+    const ids = [
+      ...layout.nodes.map((node) => node.id),
+      ...layout.edges.flatMap((edge) => (hiddenComparisonEdgeIds.has(edge.id) ? [] : [edge.id])),
+      ...layout.groups.map((group) => group.id),
+      TOP_MODULE_ID,
+    ];
+    return ids.filter((id) => {
+      const status = comparison.entities[id]?.status ?? "unchanged";
+      return status !== "unchanged" && diffVisibility[status];
+    });
+  }, [comparison, diffVisibility, hiddenComparisonEdgeIds, layout]);
+  const comparisonCounts = useMemo(() => {
+    if (!comparison || !layout) return undefined;
+    const derived = { unchanged: 0, removed: 0, added: 0, modified: 0, heuristic: 0 };
+    const visibleIds = [
+      ...layout.nodes.map((node) => node.id),
+      ...layout.edges.flatMap((edge) => (hiddenComparisonEdgeIds.has(edge.id) ? [] : [edge.id])),
+      ...layout.groups.map((group) => group.id),
+      TOP_MODULE_ID,
+    ];
+    for (const id of new Set(visibleIds)) {
+      const metadata = comparison.entities[id];
+      if (!metadata) continue;
+      if (!diffVisibility[metadata.status]) continue;
+      derived[metadata.status] += 1;
+      if (metadata.matchMethod === "heuristic") derived.heuristic += 1;
+    }
+    return derived;
+  }, [comparison, diffVisibility, hiddenComparisonEdgeIds, layout]);
+  const availableDiffStatuses = useMemo(() => {
+    if (!comparison) return ALL_DIFF_STATUSES;
+    const statuses = new Set(
+      Object.values(comparison.entities).flatMap((entity) => (entity ? [entity.status] : [])),
+    );
+    return ALL_DIFF_STATUSES.filter((status) => statuses.has(status));
+  }, [comparison]);
+  const focusEntity = useCallback(
+    (id: string, zoomToTarget = false) => {
+      if (!layout) return;
+      const bounds = boundsForLayoutEntity(layout, id);
+      if (!bounds) return;
+      setCamera(
+        cameraFocusedOnBounds(
+          cameraRef.current,
+          bounds,
+          { width: layout.width, height: layout.height },
+          zoomToTarget,
+        ),
+      );
+    },
+    [layout, setCamera],
+  );
+  useLayoutEffect(() => {
+    if (
+      focusEntityRevision === undefined ||
+      appliedFocusRevision.current === focusEntityRevision ||
+      !focusEntityId ||
+      !layout
+    ) {
+      return;
+    }
+    if (focusEntityId === TOP_MODULE_ID) {
+      appliedFocusRevision.current = focusEntityRevision;
+      return;
+    }
+    if (diffPreset === "changes") {
+      const status = comparison?.entities[focusEntityId]?.status ?? "unchanged";
+      const contextVisible =
+        changesOnlyContext.nodeIds.has(focusEntityId) ||
+        changesOnlyContext.edgeIds.has(focusEntityId);
+      if ((status === "unchanged" || !diffVisibility[status]) && !contextVisible) {
+        // Policy replacement can retain a selection whose new correspondence is unchanged. It is
+        // deliberately hidden in Changes-only, so centering it would move every visible change
+        // outside the camera immediately after the replacement layout was fitted.
+        appliedFocusRevision.current = focusEntityRevision;
+        return;
+      }
+    }
+    const exists =
+      layout.nodes.some((node) => node.id === focusEntityId) ||
+      layout.edges.some((edge) => edge.id === focusEntityId) ||
+      layout.groups.some((group) => group.id === focusEntityId);
+    if (!exists) return;
+    appliedFocusRevision.current = focusEntityRevision;
+    focusEntity(focusEntityId);
+  }, [
+    changesOnlyContext,
+    comparison?.entities,
+    diffPreset,
+    diffVisibility,
+    focusEntity,
+    focusEntityId,
+    focusEntityRevision,
+    layout,
+  ]);
+  const selectAdjacentChange = (direction: -1 | 1) => {
+    if (changeIds.length === 0) return;
+    const currentIndex = selectedId ? changeIds.indexOf(selectedId) : -1;
+    const fallback = direction > 0 ? 0 : changeIds.length - 1;
+    const nextIndex =
+      currentIndex < 0
+        ? fallback
+        : (currentIndex + direction + changeIds.length) % changeIds.length;
+    const next = changeIds[nextIndex];
+    if (!next) return;
+    onSelect(next);
+    focusEntity(next, true);
+  };
+  const selectedChangeIndex = selectedId ? changeIds.indexOf(selectedId) : -1;
+  const applyDiffPreset = (preset: NamedDiffPreset) => {
+    setDiffPreset(preset);
+    comparison?.onSemanticSideChange?.(semanticSideForPreset(preset));
+    switch (preset) {
+      case "reference":
+        setDiffVisibility({ unchanged: true, removed: true, added: false, modified: true });
+        break;
+      case "candidate":
+        setDiffVisibility({ unchanged: true, removed: false, added: true, modified: true });
+        break;
+      case "changes":
+        setDiffVisibility({ unchanged: false, removed: true, added: true, modified: true });
+        break;
+      case "overlay":
+        setDiffVisibility(defaultDiffVisibility());
+        break;
+    }
+  };
 
   return (
     <section className="schematic-panel" aria-label="Schematic">
@@ -1030,6 +1571,132 @@ export function SchematicCanvas({
             </span>
           ))}
         </nav>
+        {comparison ? (
+          <>
+            <div className="toolbar-divider" />
+            <div className="comparison-toolbar">
+              <label className="comparison-policy-control">
+                <GitCompareArrows size={13} aria-hidden="true" />
+                <span>Matching</span>
+                <select
+                  aria-label="Schematic matching policy"
+                  value={comparison.policy}
+                  onChange={(event) =>
+                    comparison.onPolicyChange(
+                      event.target.value as SchematicComparisonPresentation["policy"],
+                    )
+                  }
+                >
+                  <option value="conservative">Conservative</option>
+                  <option value="aggressive">Aggressive</option>
+                </select>
+              </label>
+              <div
+                className="comparison-view-wrap"
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <button
+                  ref={diffViewButtonRef}
+                  type="button"
+                  className={`toolbar-button comparison-view-button${diffViewOpen ? " active" : ""}`}
+                  aria-expanded={diffViewOpen}
+                  aria-haspopup="dialog"
+                  aria-label={`Schematic comparison view: ${DIFF_PRESET_LABELS[diffPreset]}`}
+                  title="Choose a snapshot or diff view and control visible statuses"
+                  onClick={() => setDiffViewOpen((open) => !open)}
+                >
+                  <ListFilter size={13} aria-hidden="true" />
+                  <span>View</span>
+                  <strong>{DIFF_PRESET_LABELS[diffPreset]}</strong>
+                  <ChevronDown size={12} aria-hidden="true" />
+                </button>
+                {diffViewOpen ? (
+                  <div
+                    ref={diffViewDialogRef}
+                    className="signal-filter-menu comparison-view-menu"
+                    role="dialog"
+                    aria-label="Schematic comparison view options"
+                  >
+                    <fieldset className="comparison-preset-menu">
+                      <legend>View preset</legend>
+                      {(Object.keys(DIFF_PRESET_DESCRIPTIONS) as NamedDiffPreset[]).map(
+                        (preset) => (
+                          <label key={preset} title={DIFF_PRESET_DESCRIPTIONS[preset]}>
+                            <input
+                              type="radio"
+                              name="schematic-comparison-view"
+                              value={preset}
+                              checked={diffPreset === preset}
+                              onChange={() => {
+                                applyDiffPreset(preset);
+                                setDiffViewOpen(false);
+                                diffViewButtonRef.current?.focus();
+                              }}
+                            />
+                            <span>{DIFF_PRESET_LABELS[preset]}</span>
+                          </label>
+                        ),
+                      )}
+                    </fieldset>
+                    {emphasizeDifferences ? (
+                      <fieldset className="comparison-filter-menu">
+                        <legend>Visible statuses</legend>
+                        {availableDiffStatuses.map((status) => (
+                          <label key={status} title={schematicDiffStatusDescription(status)}>
+                            <input
+                              type="checkbox"
+                              checked={diffVisibility[status]}
+                              onChange={() => {
+                                setDiffPreset("custom");
+                                comparison.onSemanticSideChange?.(undefined);
+                                setDiffVisibility((current) => ({
+                                  ...current,
+                                  [status]: !current[status],
+                                }));
+                              }}
+                            />
+                            <span className={`diff-filter-swatch ${status}`} aria-hidden="true" />
+                            <span>{diffStatusLabel(status)}</span>
+                          </label>
+                        ))}
+                      </fieldset>
+                    ) : (
+                      <p className="comparison-view-note">
+                        Snapshot views use fixed side membership. Choose a diff view to filter
+                        statuses.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                className="icon-button toolbar-icon comparison-change-nav"
+                type="button"
+                onClick={() => selectAdjacentChange(-1)}
+                disabled={changeIds.length === 0}
+                aria-label="Previous schematic change"
+                title="Previous schematic change"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button
+                className="icon-button toolbar-icon comparison-change-nav"
+                type="button"
+                onClick={() => selectAdjacentChange(1)}
+                disabled={changeIds.length === 0}
+                aria-label="Next schematic change"
+                title="Next schematic change"
+              >
+                <ChevronRight size={14} />
+              </button>
+              <span className="comparison-change-count">
+                {selectedChangeIndex >= 0
+                  ? `${(selectedChangeIndex + 1).toLocaleString()} of ${changeIds.length.toLocaleString()}`
+                  : `${changeIds.length.toLocaleString()} visible`}
+              </span>
+            </div>
+          </>
+        ) : null}
         <div className="toolbar-divider" />
         <button
           className="toolbar-button up-button"
@@ -1259,48 +1926,49 @@ export function SchematicCanvas({
           ) : null}
         </div>
         <div className="toolbar-spacer" />
-        <button
-          className={`icon-button toolbar-icon${inspectorOpen ? " active" : ""}`}
-          type="button"
-          onClick={onToggleInspector}
-          aria-label="Toggle inspector"
-        >
-          <Info size={15} />
-        </button>
-        <button
-          className="icon-button toolbar-icon"
-          type="button"
-          onClick={() =>
-            layout && setCamera({ x: 0, y: 0, width: layout.width, height: layout.height })
-          }
-          aria-label="Fit schematic"
-        >
-          <Focus size={15} />
-        </button>
-        <button
-          className="icon-button toolbar-icon"
-          type="button"
-          onClick={() => zoom(1.18)}
-          aria-label="Zoom out"
-        >
-          <Minus size={15} />
-        </button>
-        <span ref={zoomReadoutRef} className="zoom-readout">
-          {layout ? "100%" : "—"}
-        </span>
-        <button
-          className="icon-button toolbar-icon"
-          type="button"
-          onClick={() => zoom(0.84)}
-          aria-label="Zoom in"
-        >
-          <Plus size={15} />
-        </button>
+        <div className="canvas-view-controls">
+          <button
+            className={`icon-button toolbar-icon${inspectorOpen ? " active" : ""}`}
+            type="button"
+            onClick={onToggleInspector}
+            aria-label="Toggle inspector"
+          >
+            <Info size={15} />
+          </button>
+          <button
+            className="icon-button toolbar-icon"
+            type="button"
+            onClick={() => fitCameraViewBox && replaceCamera(fitCameraViewBox)}
+            aria-label="Fit schematic"
+          >
+            <Focus size={15} />
+          </button>
+          <button
+            className="icon-button toolbar-icon"
+            type="button"
+            onClick={() => zoom(1.18)}
+            aria-label="Zoom out"
+          >
+            <Minus size={15} />
+          </button>
+          <span ref={zoomReadoutRef} className="zoom-readout">
+            {layout ? "100%" : "—"}
+          </span>
+          <button
+            className="icon-button toolbar-icon"
+            type="button"
+            onClick={() => zoom(0.84)}
+            aria-label="Zoom in"
+          >
+            <Plus size={15} />
+          </button>
+        </div>
       </div>
 
       <div
         ref={canvasWrapRef}
-        className="canvas-wrap"
+        className={`canvas-wrap${busy ? " busy" : ""}`}
+        aria-busy={busy}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -1321,7 +1989,7 @@ export function SchematicCanvas({
             viewBox="0 0 1000 620"
             preserveAspectRatio="none"
           >
-            <title>Interactive schematic for {slice.module.instancePath}</title>
+            <title>Interactive schematic for {renderedModule.instancePath}</title>
             <defs>
               <pattern
                 ref={gridPatternRef}
@@ -1344,17 +2012,17 @@ export function SchematicCanvas({
             />
           </svg>
         ) : null}
-        {layout ? (
+        {renderedLayout ? (
           <div ref={stageRef} className="schematic-stage">
             <svg
               ref={viewportRef}
               className="schematic-viewport"
               width="100%"
               height="100%"
-              viewBox={`0 0 ${layout.width} ${layout.height}`}
+              viewBox={`0 0 ${renderedLayout.width} ${renderedLayout.height}`}
               preserveAspectRatio="xMidYMid meet"
             >
-              <title>Schematic graph for {slice.module.instancePath}</title>
+              <title>Schematic graph for {renderedModule.instancePath}</title>
               <defs>
                 <marker
                   id={edgeArrowId}
@@ -1368,32 +2036,99 @@ export function SchematicCanvas({
                   <path d="M0,0 L8,4 L0,8 Z" fill="context-stroke" />
                 </marker>
               </defs>
-              <g className="top-level-layer">
+              <g
+                className={`top-level-layer${
+                  comparison
+                    ? diffClassName(
+                        entityDiff(TOP_MODULE_ID),
+                        diffVisibility,
+                        false,
+                        emphasizeDifferences,
+                      )
+                    : ""
+                }`}
+              >
                 <TopLevelBoundary
-                  width={layout.width}
-                  height={layout.height}
-                  module={slice.module}
+                  width={renderedLayout.width}
+                  height={renderedLayout.height}
+                  module={renderedModule}
                   selected={selectedId === TOP_MODULE_ID}
                   hovered={hoveredId === TOP_MODULE_ID}
                   labelSettings={labelSettings}
                 />
               </g>
-              <g className="group-layer">
-                {layout.groups.map((group) => (
-                  <GroupBoundary
-                    key={group.id}
-                    group={group}
-                    selected={group.id === selectedId}
-                    hovered={group.id === hoveredId}
-                    labelSettings={labelSettings}
+              {comparison &&
+              renderedLayout.disconnectedRegion &&
+              visibleDisconnectedComponentCount > 0 ? (
+                <g className="disconnected-comparison-region" aria-label="No visible connections">
+                  <title>
+                    Objects in this region have no routed connection to the primary visible circuit.
+                  </title>
+                  <rect
+                    x={renderedLayout.disconnectedRegion.x}
+                    y={renderedLayout.disconnectedRegion.y}
+                    width={renderedLayout.disconnectedRegion.width}
+                    height={renderedLayout.disconnectedRegion.height}
+                    rx={8}
                   />
-                ))}
+                  <text
+                    className="disconnected-region-title"
+                    x={renderedLayout.disconnectedRegion.x + 12}
+                    y={renderedLayout.disconnectedRegion.y + 16}
+                  >
+                    NO VISIBLE CONNECTIONS
+                  </text>
+                  <text
+                    className="disconnected-region-note"
+                    x={renderedLayout.disconnectedRegion.x + 12}
+                    y={renderedLayout.disconnectedRegion.y + 29}
+                  >
+                    {`${visibleDisconnectedComponentCount} isolated ${visibleDisconnectedComponentCount === 1 ? "component" : "components"}`}
+                  </text>
+                </g>
+              ) : null}
+              <g className="group-layer">
+                {renderedLayout.groups.map((group) => {
+                  const metadata = entityDiff(group.id);
+                  const marker = diffMarker(metadata, emphasizeDifferences);
+                  return (
+                    <g
+                      className={
+                        comparison
+                          ? diffClassName(metadata, diffVisibility, false, emphasizeDifferences)
+                          : undefined
+                      }
+                      key={group.id}
+                    >
+                      <GroupBoundary
+                        group={group}
+                        selected={group.id === selectedId}
+                        hovered={group.id === hoveredId}
+                        labelSettings={labelSettings}
+                      />
+                      {marker ? (
+                        <g
+                          className={`diff-node-badge ${metadata?.status ?? "unchanged"}`}
+                          transform={`translate(${group.x + group.width - 10} ${group.y + 12})`}
+                        >
+                          <circle r={9} />
+                          <text>{marker}</text>
+                        </g>
+                      ) : null}
+                    </g>
+                  );
+                })}
               </g>
               <g className="edge-layer">
-                {layout.edges.map((edge) => {
+                {renderedLayout.edges.map((edge) => {
+                  const metadata = entityDiff(edge.id);
+                  const contextVisible = changesOnlyContext.edgeIds.has(edge.id);
                   const active = highlighted.edges.has(edge.id) || hoveredId === edge.id;
                   const signalKey = controlSignalKey(slice, edge);
-                  const renderedRole = controlSignalRole(slice, edge) ?? edge.role ?? "data";
+                  const inferredRole = controlSignalRole(slice, edge);
+                  const renderedRole = semanticSide
+                    ? (edge.role ?? inferredRole ?? "data")
+                    : (inferredRole ?? edge.role ?? "data");
                   const hidden = signalKey ? hiddenSignalKeys.has(signalKey) : false;
                   const path = pathForSections(edge.sections);
                   const label = labelPoint(edge);
@@ -1406,12 +2141,41 @@ export function SchematicCanvas({
                   const showBitWidth = !hidden && labelSettings.bitWidths && (edge.width ?? 1) > 1;
                   const bitWidthText = String(edge.width ?? 1);
                   const bitWidthLabelWidth = Math.max(12, bitWidthText.length * 5.5 + 5);
+                  const marker = diffMarker(metadata, emphasizeDifferences);
+                  const lineLaneOffset = emphasizeDifferences
+                    ? metadata?.status === "removed"
+                      ? -2.5
+                      : metadata?.status === "added"
+                        ? 2.5
+                        : 0
+                    : 0;
+                  const labelLaneOffset = emphasizeDifferences
+                    ? metadata?.status === "removed"
+                      ? -11
+                      : metadata?.status === "added"
+                        ? 11
+                        : 0
+                    : 0;
+                  const accessibleLabel =
+                    edge.label?.trim() ||
+                    `unlabeled net from ${renderedNodeLabels.get(edge.sourceNode) ?? "source"} to ${
+                      renderedNodeLabels.get(edge.targetNode) ?? "target"
+                    }`;
                   return (
                     <a
-                      className={`schematic-edge role-${renderedRole}${active ? " active" : ""}${hidden ? " hidden-signal" : ""}`}
+                      className={`schematic-edge role-${renderedRole}${active ? " active" : ""}${hidden ? " hidden-signal" : ""}${comparison ? diffClassName(metadata, diffVisibility, contextVisible, emphasizeDifferences) : ""}`}
                       key={edge.id}
                       href={`#schematic-${encodeURIComponent(edge.id)}`}
-                      aria-label={`Select net ${edge.label ?? edge.id}`}
+                      data-entity-id={edge.id}
+                      data-source-node={edge.sourceNode}
+                      data-target-node={edge.targetNode}
+                      aria-label={`Select net ${accessibleLabel}${
+                        comparison
+                          ? `, ${diffStatusLabel(metadata?.status ?? "unchanged")}${
+                              metadata?.matchMethod === "heuristic" ? ", heuristic match" : ""
+                            }${metadata?.sourceHighlighted ? ", intersects selected source hunk" : ""}`
+                          : ""
+                      }${contextVisible ? ", context for visible change" : ""}`}
                       tabIndex={hidden ? -1 : undefined}
                       onMouseEnter={() => updateHoveredId(edge.id)}
                       onMouseLeave={() => updateHoveredId(undefined)}
@@ -1421,16 +2185,21 @@ export function SchematicCanvas({
                         onSelect(edge.id);
                       }}
                     >
-                      <path className="edge-hit" d={path} />
+                      <path
+                        className="edge-hit"
+                        d={path}
+                        transform={lineLaneOffset ? `translate(0 ${lineLaneOffset})` : undefined}
+                      />
                       <path
                         className={`edge-line${(edge.width ?? 1) > 1 ? " bus" : ""}`}
                         d={path}
                         markerEnd={`url(#${edgeArrowId})`}
+                        transform={lineLaneOffset ? `translate(0 ${lineLaneOffset})` : undefined}
                       />
                       {showLabel && label ? (
                         <g
                           className="net-label"
-                          transform={`translate(${label.x + (showBitWidth ? bitWidthLabelWidth / 2 + 6 : 0)} ${label.y - 7})`}
+                          transform={`translate(${label.x + (showBitWidth ? bitWidthLabelWidth / 2 + 6 : 0)} ${label.y - 7 + labelLaneOffset})`}
                         >
                           <rect x={-4} y={-11} width={labelText.length * 6.4 + 8} height={16} />
                           <text>{labelText}</text>
@@ -1439,7 +2208,7 @@ export function SchematicCanvas({
                       {showBitWidth && label ? (
                         <g
                           className="bus-width-annotation"
-                          transform={`translate(${label.x} ${label.y})`}
+                          transform={`translate(${label.x} ${label.y + labelLaneOffset})`}
                           aria-label={`${edge.width} bits`}
                         >
                           <rect
@@ -1453,104 +2222,236 @@ export function SchematicCanvas({
                           <text y={-7}>{bitWidthText}</text>
                         </g>
                       ) : null}
+                      {marker && label ? (
+                        <g
+                          className={`diff-edge-badge ${metadata?.status ?? "unchanged"}`}
+                          transform={`translate(${label.x} ${label.y + 13 + labelLaneOffset})`}
+                        >
+                          <rect x={-10} y={-7} width={20} height={12} rx={5} />
+                          <text>{marker}</text>
+                        </g>
+                      ) : null}
                     </a>
                   );
                 })}
               </g>
               <g className="node-layer">
-                {layout.nodes.map((node) => (
-                  <a
-                    className="node-interaction"
-                    key={node.id}
-                    href={`#schematic-${encodeURIComponent(node.id)}`}
-                    aria-label={`Select ${node.kind} ${node.label}`}
-                    onMouseEnter={() => updateHoveredId(node.id)}
-                    onMouseMove={(event) => updateTooltipPosition(event.clientX, event.clientY)}
-                    onMouseLeave={() => {
-                      updateHoveredId(undefined);
-                      setTooltipPosition(undefined);
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onSelect(node.id);
-                    }}
-                    onDoubleClick={(event) => {
-                      event.stopPropagation();
-                      if (node.kind === "module") onOpenInstance(node.id);
-                    }}
-                    onContextMenu={(event) => {
-                      if (node.kind !== "module") return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onSelect(node.id);
-                      const bounds = canvasWrapRef.current?.getBoundingClientRect();
-                      setContextMenu({
-                        id: node.id,
-                        x: event.clientX - (bounds?.left ?? 0),
-                        y: event.clientY - (bounds?.top ?? 0),
-                        action: "flatten",
-                      });
-                    }}
-                  >
-                    <NodeShape
-                      node={node}
-                      selected={node.id === selectedId}
-                      hovered={node.id === hoveredId}
-                      labelSettings={labelSettings}
-                      constantRadix={node.kind === "constant" ? constantRadix : "binary"}
-                    />
-                  </a>
-                ))}
+                {renderedLayout.nodes.map((node) => {
+                  const metadata = entityDiff(node.id);
+                  const marker = diffMarker(metadata, emphasizeDifferences);
+                  const contextVisible = changesOnlyContext.nodeIds.has(node.id);
+                  const boundaryHitWidth =
+                    node.kind === "input" || node.kind === "output"
+                      ? Math.max(node.width, node.label.length * 6.5 + 8)
+                      : undefined;
+                  return (
+                    <a
+                      className={`node-interaction${node.id === selectedId ? " selected" : ""}${
+                        comparison
+                          ? diffClassName(
+                              metadata,
+                              diffVisibility,
+                              contextVisible,
+                              emphasizeDifferences,
+                            )
+                          : ""
+                      }`}
+                      key={node.id}
+                      href={`#schematic-${encodeURIComponent(node.id)}`}
+                      data-entity-id={node.id}
+                      data-layout-x={node.x}
+                      data-layout-y={node.y}
+                      data-layout-width={node.width}
+                      data-layout-height={node.height}
+                      aria-label={`Select ${node.kind} ${node.label}${
+                        comparison
+                          ? `, ${diffStatusLabel(metadata?.status ?? "unchanged")}${
+                              metadata?.matchMethod === "heuristic" ? ", heuristic match" : ""
+                            }${metadata?.sourceHighlighted ? ", intersects selected source hunk" : ""}`
+                          : ""
+                      }${contextVisible ? ", context for visible change" : ""}`}
+                      onMouseEnter={() => updateHoveredId(node.id)}
+                      onMouseMove={(event) => updateTooltipPosition(event.clientX, event.clientY)}
+                      onMouseLeave={() => {
+                        updateHoveredId(undefined);
+                        setTooltipPosition(undefined);
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onSelect(node.id);
+                      }}
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        if (node.kind === "module") onOpenInstance(node.id);
+                      }}
+                      onContextMenu={(event) => {
+                        if (node.kind !== "module") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onSelect(node.id);
+                        const bounds = canvasWrapRef.current?.getBoundingClientRect();
+                        setContextMenu({
+                          id: node.id,
+                          x: event.clientX - (bounds?.left ?? 0),
+                          y: event.clientY - (bounds?.top ?? 0),
+                          action: "flatten",
+                        });
+                      }}
+                    >
+                      {boundaryHitWidth !== undefined ? (
+                        <rect
+                          className="node-hit"
+                          x={
+                            node.kind === "output" ? node.x + node.width - boundaryHitWidth : node.x
+                          }
+                          y={node.y - 22}
+                          width={boundaryHitWidth}
+                          height={node.height + 44}
+                          rx={4}
+                        />
+                      ) : null}
+                      {emphasizeDifferences && metadata?.status === "modified" ? (
+                        <rect
+                          className="diff-modified-outline"
+                          x={node.x - 3}
+                          y={node.y - 3}
+                          width={node.width + 6}
+                          height={node.height + 6}
+                          rx={5}
+                        />
+                      ) : null}
+                      {emphasizeDifferences &&
+                      node.kind === "constant" &&
+                      (metadata?.status === "removed" || metadata?.status === "added") ? (
+                        <rect
+                          className={`diff-constant-outline ${metadata.status}`}
+                          x={node.x - 3}
+                          y={node.y - 3}
+                          width={node.width + 6}
+                          height={node.height + 6}
+                          rx={5}
+                        />
+                      ) : null}
+                      <NodeShape
+                        node={node}
+                        selected={node.id === selectedId}
+                        hovered={node.id === hoveredId}
+                        labelSettings={labelSettings}
+                        constantRadix={node.kind === "constant" ? constantRadix : "binary"}
+                      />
+                      {marker ? (
+                        <g
+                          className={`diff-node-badge ${metadata?.status ?? "unchanged"}`}
+                          transform={`translate(${node.x + node.width - 2} ${node.y + 2})`}
+                        >
+                          <circle r={9} />
+                          <text>{marker}</text>
+                        </g>
+                      ) : null}
+                    </a>
+                  );
+                })}
               </g>
               <g className="group-interaction-layer">
-                {layout.groups.map((group) => (
-                  <a
-                    className="group-interaction"
-                    key={group.id}
-                    href={`#schematic-${encodeURIComponent(group.id)}`}
-                    aria-label={`Select transparent instance ${group.name}`}
-                    onMouseEnter={() => updateHoveredId(group.id)}
-                    onMouseMove={(event) => updateTooltipPosition(event.clientX, event.clientY)}
-                    onMouseLeave={() => {
-                      updateHoveredId(undefined);
-                      setTooltipPosition(undefined);
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onSelect(group.id);
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onSelect(group.id);
-                      const bounds = canvasWrapRef.current?.getBoundingClientRect();
-                      setContextMenu({
-                        id: group.id,
-                        x: event.clientX - (bounds?.left ?? 0),
-                        y: event.clientY - (bounds?.top ?? 0),
-                        action: "restore",
-                      });
-                    }}
-                  >
-                    <rect
-                      className="group-hit"
-                      x={group.x}
-                      y={group.y}
-                      width={group.width}
-                      height={34}
-                      rx={5}
-                    />
-                  </a>
-                ))}
+                {renderedLayout.groups.map((group) => {
+                  const metadata = entityDiff(group.id);
+                  return (
+                    <a
+                      className={`group-interaction${
+                        comparison
+                          ? diffClassName(metadata, diffVisibility, false, emphasizeDifferences)
+                          : ""
+                      }`}
+                      key={group.id}
+                      href={`#schematic-${encodeURIComponent(group.id)}`}
+                      aria-label={`Select transparent instance ${group.name}${
+                        comparison
+                          ? `, ${diffStatusLabel(metadata?.status ?? "unchanged")}${
+                              metadata?.matchMethod === "heuristic" ? ", heuristic match" : ""
+                            }${metadata?.sourceHighlighted ? ", intersects selected source hunk" : ""}`
+                          : ""
+                      }`}
+                      onMouseEnter={() => updateHoveredId(group.id)}
+                      onMouseMove={(event) => updateTooltipPosition(event.clientX, event.clientY)}
+                      onMouseLeave={() => {
+                        updateHoveredId(undefined);
+                        setTooltipPosition(undefined);
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onSelect(group.id);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onSelect(group.id);
+                        const bounds = canvasWrapRef.current?.getBoundingClientRect();
+                        setContextMenu({
+                          id: group.id,
+                          x: event.clientX - (bounds?.left ?? 0),
+                          y: event.clientY - (bounds?.top ?? 0),
+                          action: "restore",
+                        });
+                      }}
+                    >
+                      <rect
+                        className="group-hit"
+                        x={group.x}
+                        y={group.y}
+                        width={group.width}
+                        height={34}
+                        rx={5}
+                      />
+                    </a>
+                  );
+                })}
               </g>
-              <g className="top-level-interaction-layer">
+              <g
+                className={`top-level-interaction-layer${
+                  comparison
+                    ? diffClassName(
+                        entityDiff(TOP_MODULE_ID),
+                        diffVisibility,
+                        false,
+                        emphasizeDifferences,
+                      )
+                    : ""
+                }`}
+              >
+                {comparison && diffMarker(entityDiff(TOP_MODULE_ID), emphasizeDifferences) ? (
+                  <g
+                    className={`diff-node-badge ${entityDiff(TOP_MODULE_ID)?.status ?? "unchanged"}`}
+                    transform={`translate(${renderedLayout.width - 22} 25)`}
+                  >
+                    <circle r={9} />
+                    <text>{diffMarker(entityDiff(TOP_MODULE_ID), emphasizeDifferences)}</text>
+                  </g>
+                ) : null}
                 <a
+                  className={
+                    comparison
+                      ? diffClassName(
+                          entityDiff(TOP_MODULE_ID),
+                          diffVisibility,
+                          false,
+                          emphasizeDifferences,
+                        ).trim()
+                      : undefined
+                  }
                   href={`#schematic-${encodeURIComponent(TOP_MODULE_ID)}`}
-                  aria-label={`Select top-level module ${shortModuleName(slice.module.name)}`}
+                  aria-label={`Select top-level module ${shortModuleName(renderedModule.name)}${
+                    comparison
+                      ? `, ${diffStatusLabel(entityDiff(TOP_MODULE_ID)?.status ?? "unchanged")}`
+                      : ""
+                  }`}
                   onMouseEnter={() => updateHoveredId(TOP_MODULE_ID)}
-                  onMouseLeave={() => updateHoveredId(undefined)}
+                  onMouseMove={(event) => updateTooltipPosition(event.clientX, event.clientY)}
+                  onMouseLeave={() => {
+                    updateHoveredId(undefined);
+                    setTooltipPosition(undefined);
+                  }}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1561,7 +2462,7 @@ export function SchematicCanvas({
                     className="top-level-hit"
                     x={8}
                     y={8}
-                    width={layout.width - 16}
+                    width={Math.max(0, renderedLayout.width - 16)}
                     height={40}
                   />
                 </a>
@@ -1594,8 +2495,8 @@ export function SchematicCanvas({
             </section>
             <section className="instance-config-section">
               <b>Defines</b>
-              {topLevelDefines.length > 0 ? (
-                topLevelDefines.map((define) => (
+              {renderedTopLevelDefines.length > 0 ? (
+                renderedTopLevelDefines.map((define) => (
                   <div className="instance-config-row" key={define.name}>
                     <span>{define.name}</span>
                     <code>{define.value ?? "1"}</code>
@@ -1637,13 +2538,22 @@ export function SchematicCanvas({
         ) : null}
       </div>
       <footer className="canvas-status">
-        <span title={slice.module.definitionName}>
-          {shortModuleName(slice.module.definitionName)}
+        <span title={renderedModule.definitionName}>
+          {shortModuleName(renderedModule.definitionName)}
         </span>
+        {warnings.length ? (
+          <output
+            className="canvas-warning-count"
+            title={warnings.join(" · ")}
+            aria-label={`${warnings.length} comparison ${warnings.length === 1 ? "warning" : "warnings"}: ${warnings.join("; ")}`}
+          >
+            <TriangleAlert size={11} /> {warnings.length}
+          </output>
+        ) : null}
         <span className="status-spacer" />
-        <span>{slice.nodes.length.toLocaleString()} nodes</span>
+        <span>{(layout?.nodes.length ?? slice.nodes.length).toLocaleString()} nodes</span>
         <span>·</span>
-        <span>{slice.edges.length.toLocaleString()} nets</span>
+        <span>{(layout?.edges.length ?? slice.edges.length).toLocaleString()} nets</span>
         {layout?.groups.length ? (
           <>
             <span>·</span>
@@ -1652,8 +2562,27 @@ export function SchematicCanvas({
         ) : null}
         <span>·</span>
         <span>{layout ? `layout ${Math.round(layout.elapsedMs)} ms` : "layout pending"}</span>
-        <span className="compile-ok">
-          <Check size={12} /> current
+        {comparisonCounts ? (
+          <>
+            <span>·</span>
+            <span className="diff-count removed">−{comparisonCounts.removed}</span>
+            <span className="diff-count added">+{comparisonCounts.added}</span>
+            {availableDiffStatuses.includes("modified") ? (
+              <span
+                className="diff-count modified"
+                title={schematicDiffStatusDescription("modified")}
+              >
+                ±{comparisonCounts.modified}
+              </span>
+            ) : null}
+            {comparisonCounts.heuristic ? (
+              <span className="diff-count heuristic">≈{comparisonCounts.heuristic}</span>
+            ) : null}
+          </>
+        ) : null}
+        <span className={comparison ? "compile-ok comparison" : "compile-ok"}>
+          {comparison ? <GitCompareArrows size={12} /> : <Check size={12} />}
+          {comparison ? comparison.policy : "current"}
         </span>
       </footer>
     </section>

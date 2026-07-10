@@ -7,6 +7,16 @@ import { describe, expect, it, vi } from "vitest";
 import { SourcePane, sourceLanguageForPath } from "./SourcePane";
 
 type MountedEditor = (instance: unknown, monaco: unknown) => void;
+type SelectionEvent = {
+  source: string;
+  selection: {
+    isEmpty: () => boolean;
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  };
+};
 
 const editorHarness = vi.hoisted(() => ({
   onMount: undefined as MountedEditor | undefined,
@@ -36,17 +46,7 @@ describe("SourcePane", () => {
   });
 
   it("uses the latest range callback and applies the current origin when Monaco mounts", () => {
-    let selectionListener:
-      | ((event: {
-          selection: {
-            isEmpty: () => boolean;
-            startLineNumber: number;
-            startColumn: number;
-            endLineNumber: number;
-            endColumn: number;
-          };
-        }) => void)
-      | undefined;
+    let selectionListener: ((event: SelectionEvent) => void) | undefined;
     const dispose = vi.fn();
     const clear = vi.fn();
     const createDecorationsCollection = vi.fn(() => ({ clear }));
@@ -93,6 +93,7 @@ describe("SourcePane", () => {
     );
     act(() =>
       selectionListener?.({
+        source: "mouse",
         selection: {
           isEmpty: () => false,
           startLineNumber: 9,
@@ -112,17 +113,7 @@ describe("SourcePane", () => {
   });
 
   it("treats a cursor click as a one-character source selection", () => {
-    let selectionListener:
-      | ((event: {
-          selection: {
-            isEmpty: () => boolean;
-            startLineNumber: number;
-            startColumn: number;
-            endLineNumber: number;
-            endColumn: number;
-          };
-        }) => void)
-      | undefined;
+    let selectionListener: ((event: SelectionEvent) => void) | undefined;
     const callback = vi.fn();
     const editor = {
       createDecorationsCollection: vi.fn(() => ({ clear: vi.fn() })),
@@ -143,6 +134,7 @@ describe("SourcePane", () => {
     act(() => editorHarness.onMount?.(editor, {}));
     act(() =>
       selectionListener?.({
+        source: "mouse",
         selection: {
           isEmpty: () => true,
           startLineNumber: 3,
@@ -153,6 +145,46 @@ describe("SourcePane", () => {
       }),
     );
     expect(callback).toHaveBeenCalledWith(3, 17, 3, 18);
+    view.unmount();
+  });
+
+  it("ignores cursor selections caused by API, model, and view-state synchronization", () => {
+    let selectionListener: ((event: SelectionEvent) => void) | undefined;
+    const callback = vi.fn();
+    const editor = {
+      createDecorationsCollection: vi.fn(() => ({ clear: vi.fn() })),
+      revealLineInCenterIfOutsideViewport: vi.fn(),
+      onDidChangeCursorSelection: vi.fn((listener: typeof selectionListener) => {
+        selectionListener = listener;
+        return { dispose: vi.fn() };
+      }),
+    };
+    const view = render(
+      <SourcePane
+        path="rtl/top.sv"
+        source="module top; endmodule"
+        onShowHierarchy={vi.fn()}
+        onSelectRange={callback}
+      />,
+    );
+    act(() => editorHarness.onMount?.(editor, {}));
+
+    const selection = {
+      isEmpty: () => true,
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 1,
+    };
+    act(() => {
+      selectionListener?.({ source: "api", selection });
+      selectionListener?.({ source: "modelChange", selection });
+      selectionListener?.({ source: "restoreState", selection });
+    });
+    expect(callback).not.toHaveBeenCalled();
+
+    act(() => selectionListener?.({ source: "keyboard", selection }));
+    expect(callback).toHaveBeenCalledWith(1, 1, 1, 2);
     view.unmount();
   });
 

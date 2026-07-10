@@ -51,6 +51,17 @@ const expectedShape = {
   },
   browser: {
     cache: { modulesBytes: 0, sourcesBytes: 0 },
+    load: { entryConcurrency: 0 },
+    comparison: {
+      sourceDiffTimeoutMs: 0,
+      sourceDiffMaxEditLength: 0,
+      sourceDiffConcurrency: 0,
+      sourceMappingFiles: 0,
+      sourceEvidenceModulePairs: 0,
+      sourceEvidenceTimeoutMs: 0,
+      matcherTimeoutMs: 0,
+      fuzzyCandidatesPerNode: 0,
+    },
     display: {
       decimalConversionBits: 0,
       formattableConstantBits: 0,

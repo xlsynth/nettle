@@ -47,11 +47,22 @@ export interface LayoutGroup extends GraphGroup {
   height: number;
 }
 
+export interface DisconnectedRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  componentCount: number;
+  /** Union entity IDs grouped by disconnected component for visibility-aware captions. */
+  componentEntityIds: string[][];
+}
+
 export interface LayoutResult {
   width: number;
   height: number;
   groups: LayoutGroup[];
   nodes: LayoutNode[];
   edges: LayoutEdge[];
+  disconnectedRegion?: DisconnectedRegion;
   elapsedMs: number;
 }

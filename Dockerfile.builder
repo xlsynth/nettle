@@ -109,6 +109,10 @@ COPY --from=eda-toolchain /opt/oss-cad-suite /opt/oss-cad-suite
 ENV PATH=/opt/oss-cad-suite/bin:/opt/slang:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
   NETTLE_CHROMIUM_PATH=/usr/bin/chromium \
   NETTLE_NETLIST_FIXTURE=/tmp/br_cdc_fifo_flops_synth.nettle \
+  NETTLE_COMPARISON_REFERENCE_FIXTURE=/tmp/br_enc_priority_encoder_reference.nettle \
+  NETTLE_COMPARISON_CANDIDATE_FIXTURE=/tmp/br_enc_priority_encoder_candidate.nettle \
+  NETTLE_STRUCTURAL_REFERENCE_FIXTURE=/tmp/nettle_structural_reference.nettle \
+  NETTLE_STRUCTURAL_CANDIDATE_FIXTURE=/tmp/nettle_structural_candidate.nettle \
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 WORKDIR /src
 COPY . .
@@ -122,6 +126,7 @@ FROM test-base AS integration-tests
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
   scripts/check-toolchain.sh \
   && npm run test:designs \
+  && python3 scripts/build-schematic-diff-fixtures.py \
   && npm run test:e2e
 
 # Retain a single target for developers who want every validation check in one

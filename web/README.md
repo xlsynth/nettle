@@ -2,17 +2,25 @@
 
 # Nettle web viewer
 
-`web/` is Nettle's static, browser-local viewer. It validates and decodes a
-user-selected `.nettle` bundle in browser memory, then renders its source and
-schematic views. It does not upload design data or call a project API. The
-optional native host can expose one command-line-selected bundle at
-`/startup.nettle`; the viewer fetches it once and applies the same browser
-validation path without showing the file picker.
+`web/` is Nettle's static, browser-local viewer. It validates and decodes one or
+two user-selected `.nettle` bundles in browser memory, then renders source and
+schematic views or a presentation-only comparison. It does not upload design
+data or call a project API. The optional native host can expose one
+command-line-selected bundle at `/startup.nettle`, or a comparison descriptor
+plus separate reference and candidate routes. The viewer applies the same
+browser validation path as the file picker.
 
 The production build is ordinary static content. `nettle view` and
-`Dockerfile.viewer` normally serve only those static files. If `nettle view`
-receives a bundle path, it also serves that bundle from a fixed `no-store`
-route. The browser then passes it through the normal `File`/`Blob` pipeline.
+`Dockerfile.viewer` normally serve only those static files. `nettle view` may
+serve one bundle from a fixed `no-store` route. `nettle compare` serves a
+`no-store` descriptor at `/startup-comparison.json` and two fixed `no-store`
+bundle routes. The native host first copies each selected archive into a
+private, size-bounded anonymous temporary snapshot and validates that exact
+copy, so later source-path changes cannot affect a running route. Comparison
+can retain two such snapshots; they have no pathname to orphan and are
+reclaimed by the operating system when their final handles close, including
+after abrupt termination. The browser passes every hosted bundle through the
+normal `File`/`Blob` validation pipeline.
 
 ## Development
 
@@ -31,6 +39,9 @@ npm run build
 cargo run --locked -- view --web-root web/dist --port 8090
 # Or open one validated bundle immediately:
 cargo run --locked -- view design.nettle --web-root web/dist --port 8090
+# Or compare two independently validated bundles:
+cargo run --locked -- compare reference.nettle candidate.nettle \
+  --matching conservative --web-root web/dist --port 8090
 ```
 
 Open the displayed URL and choose a `.nettle` file. The root README describes
@@ -42,15 +53,21 @@ how to build bundles and provides Bedrock-RTL, Ibex, and OpenTitan examples.
   decodes Protobuf indexes and module graphs, and composes hierarchy projections.
 - `src/api/` defines the viewer-facing workspace contract and normalizes bundle
   data into application models.
+- `src/comparison/` owns source inventory pairing, bounded line mapping,
+  conservative/aggressive graph correspondence, union-graph construction, and
+  comparison-aware hierarchy projection. Its records are presentation-only and
+  never alter the bundle schema.
 - `src/model/` contains TypeScript graph and format types.
 - `src/graph/` owns ELK layout, camera state, presentation-only filtering, SVG
   rendering, standard gate and storage glyphs, constant formatting, and
   schematic interaction.
 - `src/source/` implements graph/source cross-probing.
-- `src/components/` contains the header, bundle picker, source tree, Monaco
-  source pane, inspector, and supporting dialogs.
-- `src/App.tsx` coordinates opened-bundle state, hierarchy navigation, label and
-  signal visibility, selection, and the right-side inspector.
+- `src/components/` contains the header, open/compare dialog, source tree,
+  ordinary and diff Monaco panes, workspace views, inspector, and supporting
+  controls.
+- `src/App.tsx` owns atomic installation of an empty, single-bundle, or
+  comparison workspace. The workspace views coordinate hierarchy, presentation,
+  selection, and the right-side inspector.
 
 Module graphs and source bodies are decoded lazily and retained in bounded
 caches. Clock/reset visibility, label modes, and constant radix are presentation
@@ -94,5 +111,7 @@ Native/browser compatibility limits come from the build-time
 
 The browser viewer is not an authentication boundary. Hosted deployments should
 provide normal HTTPS, CSP, and ingress authentication. Picker-selected bundles
-never leave the client; a command-line startup bundle is intentionally served
-by the native host and is visible to every client able to reach that host.
+never leave the client. A command-line startup bundle, or either side of a
+command-line comparison, is intentionally served by the native host and is
+visible to every client able to reach that host. Every startup descriptor and
+bundle response is non-cacheable.

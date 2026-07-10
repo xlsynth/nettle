@@ -4,6 +4,7 @@ import type {
   ApiGraphSlice,
   GraphSliceRequest,
   ProjectResponse,
+  SourceInventoryEntry,
   SourceResponse,
   TreeResponse,
 } from "../api/contracts";
@@ -32,6 +33,19 @@ const MAX_PORTS = GRAPH_DECODE_LIMITS.ports;
 const MAX_ORIGINS = GRAPH_DECODE_LIMITS.origins;
 const MAX_MODULE_CACHE_BYTES = RESOURCE_LIMITS.browser.cache.modulesBytes;
 const MAX_SOURCE_CACHE_BYTES = RESOURCE_LIMITS.browser.cache.sourcesBytes;
+export const MAX_BUNDLE_LOAD_CONCURRENCY = RESOURCE_LIMITS.browser.load.entryConcurrency;
+export interface BundleCacheLimits {
+  modulesBytes: number;
+  sourcesBytes: number;
+}
+export const DEFAULT_BUNDLE_CACHE_LIMITS = {
+  modulesBytes: MAX_MODULE_CACHE_BYTES,
+  sourcesBytes: MAX_SOURCE_CACHE_BYTES,
+} as const;
+export const COMPARISON_BUNDLE_CACHE_LIMITS = {
+  modulesBytes: Math.floor(MAX_MODULE_CACHE_BYTES / 2),
+  sourcesBytes: Math.floor(MAX_SOURCE_CACHE_BYTES / 2),
+} as const;
 export const MAX_SOURCE_PATH_DEPTH = RESOURCE_LIMITS.bundle.sourcePathComponents;
 export const MAX_SOURCE_PATH_BYTES = RESOURCE_LIMITS.bundle.archive.entryPathBytes;
 const pathEncoder = new TextEncoder();
@@ -41,7 +55,8 @@ interface CacheEntry<T> {
   bytes: number;
 }
 
-class ByteLru<T> {
+/** @internal Byte-accounted cache used by decoded bundle data. */
+export class ByteLru<T> {
   private readonly values = new Map<string, CacheEntry<T>>();
   private total = 0;
 
@@ -59,6 +74,7 @@ class ByteLru<T> {
     const previous = this.values.get(key);
     if (previous) this.total -= previous.bytes;
     this.values.delete(key);
+    if (bytes > this.maximum) return;
     this.values.set(key, { value, bytes });
     this.total += bytes;
     while (this.total > this.maximum && this.values.size > 1) {
@@ -70,8 +86,114 @@ class ByteLru<T> {
   }
 }
 
+const abortError = () => new DOMException("The operation was aborted", "AbortError");
+
 const throwIfAborted = (signal?: AbortSignal) => {
-  if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+  if (signal?.aborted) throw signal.reason ?? abortError();
+};
+
+interface QueuedLoad {
+  start: () => void;
+}
+
+class LoadLimiter {
+  private active = 0;
+  private readonly queue: QueuedLoad[] = [];
+
+  constructor(private readonly maximum: number) {}
+
+  run<T>(task: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(signal.reason ?? abortError());
+    return new Promise<T>((resolve, reject) => {
+      let started = false;
+      let settled = false;
+      const job: QueuedLoad = {
+        start: () => {
+          if (settled) return;
+          if (signal.aborted) {
+            settled = true;
+            signal.removeEventListener("abort", abort);
+            reject(signal.reason ?? abortError());
+            return;
+          }
+          started = true;
+          signal.removeEventListener("abort", abort);
+          this.active += 1;
+          void Promise.resolve()
+            .then(task)
+            .then(resolve, reject)
+            .finally(() => {
+              settled = true;
+              this.active -= 1;
+              this.drain();
+            });
+        },
+      };
+      const abort = () => {
+        if (started || settled) return;
+        settled = true;
+        const index = this.queue.indexOf(job);
+        if (index >= 0) this.queue.splice(index, 1);
+        reject(signal.reason ?? abortError());
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      this.queue.push(job);
+      this.drain();
+    });
+  }
+
+  private drain() {
+    while (this.active < this.maximum) {
+      const job = this.queue.shift();
+      if (!job) return;
+      job.start();
+    }
+  }
+}
+
+interface PendingLoad<T> {
+  controller: AbortController;
+  promise: Promise<T>;
+  waiters: number;
+  settled: boolean;
+}
+
+const waitForSharedLoad = <T>(
+  pending: PendingLoad<T>,
+  signal: AbortSignal | undefined,
+  abandon: () => void,
+): Promise<T> => {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? abortError());
+  pending.waiters += 1;
+  return new Promise<T>((resolve, reject) => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      signal?.removeEventListener("abort", abort);
+      pending.waiters -= 1;
+      if (pending.waiters === 0 && !pending.settled) abandon();
+    };
+    const abort = () => {
+      release();
+      reject(signal?.reason ?? abortError());
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    pending.promise.then(
+      (value) => {
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        release();
+        resolve(value);
+      },
+      (reason: unknown) => {
+        release();
+        reject(reason);
+      },
+    );
+  });
 };
 
 export const makeTree = (files: BundleSourceFile[]): TreeResponse => {
@@ -132,18 +254,23 @@ export const makeTree = (files: BundleSourceFile[]): TreeResponse => {
 export interface WorkspaceProvider {
   getProject(signal?: AbortSignal): Promise<ProjectResponse>;
   getTree(signal?: AbortSignal): Promise<TreeResponse>;
+  getSourceInventory(signal?: AbortSignal): Promise<SourceInventoryEntry[]>;
   getSource(fileId: string, signal?: AbortSignal): Promise<SourceResponse>;
   getGraphSlice(request: GraphSliceRequest, signal?: AbortSignal): Promise<ApiGraphSlice>;
 }
 
 export class LocalBundleProvider implements WorkspaceProvider {
-  private readonly modules = new ByteLru<ApiGraphSlice>(MAX_MODULE_CACHE_BYTES);
-  private readonly sourceContents = new ByteLru<string>(MAX_SOURCE_CACHE_BYTES);
+  private readonly modules: ByteLru<ApiGraphSlice>;
+  private readonly sourceContents: ByteLru<string>;
+  private readonly moduleLoads = new Map<string, PendingLoad<ApiGraphSlice>>();
+  private readonly sourceLoads = new Map<string, PendingLoad<string>>();
+  private readonly loadLimiter = new LoadLimiter(MAX_BUNDLE_LOAD_CONCURRENCY);
   private readonly modulesById: ReadonlyMap<string, BundleDesignIndex["modules"][number]>;
   private readonly modulesByName: ReadonlyMap<string, BundleDesignIndex["modules"][number]>;
   private readonly sourcesById: ReadonlyMap<string, BundleSourceFile>;
   private readonly project: ProjectResponse;
   private readonly tree: TreeResponse;
+  private readonly sourceInventory: SourceInventoryEntry[];
 
   private constructor(
     readonly fileName: string,
@@ -151,7 +278,10 @@ export class LocalBundleProvider implements WorkspaceProvider {
     private readonly index: BundleDesignIndex,
     sources: BundleSourceFile[],
     project: ProjectResponse,
+    cacheLimits: BundleCacheLimits,
   ) {
+    this.modules = new ByteLru<ApiGraphSlice>(cacheLimits.modulesBytes);
+    this.sourceContents = new ByteLru<string>(cacheLimits.sourcesBytes);
     this.modulesById = new Map(index.modules.map((module) => [module.id, module]));
     this.modulesByName = new Map(
       index.modules.flatMap((module) => [
@@ -162,21 +292,45 @@ export class LocalBundleProvider implements WorkspaceProvider {
     this.sourcesById = new Map(sources.map((source) => [source.id, source]));
     this.project = project;
     this.tree = makeTree(sources);
+    this.sourceInventory = sources.map(({ id, path, sha256, size }) => ({
+      id,
+      path,
+      sha256,
+      size,
+    }));
   }
 
-  static async open(file: File) {
+  static async open(
+    file: File,
+    cacheLimits: BundleCacheLimits = DEFAULT_BUNDLE_CACHE_LIMITS,
+    signal?: AbortSignal,
+  ) {
+    throwIfAborted(signal);
     if (!file.name.toLowerCase().endsWith(".nettle")) {
       throw new Error("Select a .nettle bundle");
     }
-    const bundle = await NettleBundle.open(file);
+    if (
+      !Number.isSafeInteger(cacheLimits.modulesBytes) ||
+      cacheLimits.modulesBytes <= 0 ||
+      !Number.isSafeInteger(cacheLimits.sourcesBytes) ||
+      cacheLimits.sourcesBytes <= 0
+    ) {
+      throw new Error("Bundle cache limits must be positive safe integers");
+    }
+    const bundle = await NettleBundle.open(file, signal);
+    throwIfAborted(signal);
     const [indexBytes, sourceBytes, diagnosticBytes] = await Promise.all([
-      bundle.read(bundle.manifest.designIndex),
-      bundle.read(bundle.manifest.sourceIndex),
-      bundle.read(bundle.manifest.diagnostics),
+      bundle.read(bundle.manifest.designIndex, signal),
+      bundle.read(bundle.manifest.sourceIndex, signal),
+      bundle.read(bundle.manifest.diagnostics, signal),
     ]);
+    throwIfAborted(signal);
     const index = decodeDesignIndex(indexBytes);
+    throwIfAborted(signal);
     const sources = decodeSourceIndex(sourceBytes);
+    throwIfAborted(signal);
     const diagnostics = decodeDiagnostics(diagnosticBytes);
+    throwIfAborted(signal);
     if (
       index.schemaMajor !== bundle.manifest.formatVersion.major ||
       index.snapshotId !== bundle.manifest.snapshotId ||
@@ -193,6 +347,7 @@ export class LocalBundleProvider implements WorkspaceProvider {
     const moduleIds = new Set<string>();
     const moduleNames = new Set<string>();
     for (const module of index.modules) {
+      throwIfAborted(signal);
       if (
         !module.id ||
         !module.name ||
@@ -213,6 +368,7 @@ export class LocalBundleProvider implements WorkspaceProvider {
     const sourceIds = new Set<string>();
     const sourcePaths = new Set<string>();
     for (const source of sources) {
+      throwIfAborted(signal);
       const declaration = bundle.declaration(source.entry);
       if (
         !source.id ||
@@ -230,7 +386,8 @@ export class LocalBundleProvider implements WorkspaceProvider {
       sourcePaths.add(source.path);
     }
     const project = projectResponseFromBundle(index, diagnostics);
-    return new LocalBundleProvider(file.name, bundle, index, sources, project);
+    throwIfAborted(signal);
+    return new LocalBundleProvider(file.name, bundle, index, sources, project, cacheLimits);
   }
 
   async getProject(signal?: AbortSignal) {
@@ -243,18 +400,34 @@ export class LocalBundleProvider implements WorkspaceProvider {
     return structuredClone(this.tree);
   }
 
+  async getSourceInventory(signal?: AbortSignal) {
+    throwIfAborted(signal);
+    return structuredClone(this.sourceInventory);
+  }
+
   async getSource(fileId: string, signal?: AbortSignal): Promise<SourceResponse> {
     throwIfAborted(signal);
     const source = this.sourcesById.get(fileId);
     if (!source) throw new Error(`Source ${fileId} is not in this bundle`);
     let content = this.sourceContents.get(source.entry);
     if (content === undefined) {
-      const bytes = await this.bundle.read(source.entry);
+      content = await this.sharedLoad(
+        this.sourceLoads,
+        source.entry,
+        async (loadSignal) => {
+          const bytes = await this.bundle.read(source.entry, loadSignal);
+          throwIfAborted(loadSignal);
+          if (bytes.length !== source.size) {
+            throw new Error(`Source ${source.path} has an invalid size`);
+          }
+          const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          throwIfAborted(loadSignal);
+          this.sourceContents.set(source.entry, decoded, bytes.length);
+          return decoded;
+        },
+        signal,
+      );
       throwIfAborted(signal);
-      if (bytes.length !== source.size)
-        throw new Error(`Source ${source.path} has an invalid size`);
-      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      this.sourceContents.set(source.entry, content, bytes.length);
     }
     return {
       fileId: source.id,
@@ -298,11 +471,53 @@ export class LocalBundleProvider implements WorkspaceProvider {
   }
 
   private async loadModule(entry: string, signal?: AbortSignal) {
+    throwIfAborted(signal);
     const cached = this.modules.get(entry);
     if (cached) return structuredClone(cached);
+    const slice = await this.sharedLoad(
+      this.moduleLoads,
+      entry,
+      (loadSignal) => this.decodeModule(entry, loadSignal),
+      signal,
+    );
+    throwIfAborted(signal);
+    return structuredClone(slice);
+  }
+
+  private sharedLoad<T>(
+    loads: Map<string, PendingLoad<T>>,
+    entry: string,
+    load: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ) {
+    throwIfAborted(signal);
+    let pending = loads.get(entry);
+    if (!pending) {
+      const controller = new AbortController();
+      const created: PendingLoad<T> = {
+        controller,
+        promise: this.loadLimiter.run(() => load(controller.signal), controller.signal),
+        waiters: 0,
+        settled: false,
+      };
+      created.promise = created.promise.finally(() => {
+        created.settled = true;
+        if (loads.get(entry) === created) loads.delete(entry);
+      });
+      loads.set(entry, created);
+      pending = created;
+    }
+    return waitForSharedLoad(pending, signal, () => {
+      pending.controller.abort();
+      if (loads.get(entry) === pending) loads.delete(entry);
+    });
+  }
+
+  private async decodeModule(entry: string, signal: AbortSignal) {
+    throwIfAborted(signal);
     const summary = this.index.modules.find((module) => module.entry === entry);
     if (!summary) throw new Error(`Module entry ${entry} is not indexed`);
-    const bytes = await this.bundle.read(entry);
+    const bytes = await this.bundle.read(entry, signal);
     throwIfAborted(signal);
     const slice = decodeGraphSlice(bytes);
     for (const node of slice.nodes) {
@@ -342,7 +557,8 @@ export class LocalBundleProvider implements WorkspaceProvider {
     ) {
       throw new Error(`Module ${summary.name} exceeds browser graph resource limits`);
     }
+    throwIfAborted(signal);
     this.modules.set(entry, slice, bytes.length);
-    return structuredClone(slice);
+    return slice;
   }
 }

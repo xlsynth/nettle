@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ApiGraphSlice, ProjectResponse, TreeResponse } from "./contracts";
 import {
   findSourceReference,
+  findUniquePathMatch,
   normalizeGraphSlice,
   normalizeProject,
   pathsReferToSameFile,
@@ -215,5 +216,8 @@ describe("server DTO normalization", () => {
       path: "rtl/top.sv",
     });
     expect(pathsReferToSameFile("rtl\\top.sv", "/repo/rtl/top.sv")).toBe(true);
+    const paths = ["rtl/a/foo.sv", "rtl/b/foo.sv"];
+    expect(findUniquePathMatch(paths, "rtl/a/foo.sv", (path) => path)).toBe("rtl/a/foo.sv");
+    expect(findUniquePathMatch(paths, "foo.sv", (path) => path)).toBeUndefined();
   });
 });

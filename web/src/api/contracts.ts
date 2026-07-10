@@ -189,6 +189,14 @@ export interface SourceResponse {
   content: string;
 }
 
+/** Metadata available without loading a bundled source file's contents. */
+export interface SourceInventoryEntry {
+  id: string;
+  path: string;
+  sha256: string;
+  size: number;
+}
+
 export interface ApiErrorBody {
   error?: {
     code?: string;

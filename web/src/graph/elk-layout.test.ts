@@ -4,13 +4,35 @@ import { describe, expect, it } from "vitest";
 import { demoSlice } from "../data/demo";
 import type { GraphSlice } from "../model/graph";
 import { makeLayeredBenchmarkSlice } from "./benchmark-fixture";
-import { runElkLayout, toElkGraph } from "./elk-layout";
+import { packDisconnectedComponents, runElkLayout, toElkGraph } from "./elk-layout";
 import { effectiveLayoutProfile } from "./layout-profile";
+import type { LayoutResult } from "./layout-types";
 
 describe("ELK schematic layout", () => {
+  it("rejects an obsolete layout request before starting work", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      runElkLayout(demoSlice, "auto", "grouped", controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("automatically chooses a fast overview for large flattened graphs", async () => {
     expect(effectiveLayoutProfile(demoSlice, "auto")).toBe("detailed");
     expect(effectiveLayoutProfile(makeLayeredBenchmarkSlice(2_000), "auto")).toBe("fast");
+    expect(
+      effectiveLayoutProfile(
+        {
+          ...demoSlice,
+          edges: Array.from({ length: 1_000 }, (_, index) => ({
+            ...demoSlice.edges[0],
+            id: `dense-edge-${index}`,
+          })),
+        },
+        "auto",
+      ),
+    ).toBe("fast");
 
     const layout = await runElkLayout(makeLayeredBenchmarkSlice(2_000), "auto");
     expect(layout.nodes).toHaveLength(2_000);
@@ -61,6 +83,61 @@ describe("ELK schematic layout", () => {
     expect(outputs.every((node) => node.x + node.width === layout.width - 8)).toBe(true);
   });
 
+  it("separates disconnected fast-overview nodes from routed geometry", async () => {
+    const slice = {
+      snapshotId: "fast-disconnected",
+      module: {
+        id: "top",
+        name: "top",
+        instancePath: "top",
+        definitionName: "top",
+        parameters: {},
+      },
+      nodes: [
+        {
+          id: "source",
+          kind: "operator",
+          label: "source",
+          glyph: "+",
+          ports: [{ id: "out", name: "Y", direction: "output" }],
+        },
+        {
+          id: "island",
+          kind: "operator",
+          label: "island",
+          glyph: "+",
+          ports: [],
+        },
+        {
+          id: "target",
+          kind: "operator",
+          label: "target",
+          glyph: "+",
+          ports: [{ id: "in", name: "A", direction: "input" }],
+        },
+      ],
+      edges: [
+        {
+          id: "routed",
+          sourceNode: "source",
+          sourcePort: "out",
+          targetNode: "target",
+          targetPort: "in",
+        },
+      ],
+    } satisfies GraphSlice;
+
+    const layout = await runElkLayout(slice, "fast", "grouped", undefined, true);
+    const source = layout.nodes.find((node) => node.id === "source");
+    const target = layout.nodes.find((node) => node.id === "target");
+    const island = layout.nodes.find((node) => node.id === "island");
+    expect(layout.disconnectedRegion?.componentCount).toBe(1);
+    expect(layout.edges[0].sections).not.toHaveLength(0);
+    expect(island?.y ?? 0).toBeGreaterThan(
+      Math.max((source?.y ?? 0) + (source?.height ?? 0), (target?.y ?? 0) + (target?.height ?? 0)),
+    );
+  });
+
   it("places every semantic node and routes every net", async () => {
     const layout = await runElkLayout(demoSlice);
     expect(layout.nodes).toHaveLength(demoSlice.nodes.length);
@@ -105,6 +182,241 @@ describe("ELK schematic layout", () => {
         (node) => node.layoutOptions?.["elk.layered.layering.layerConstraint"] === "LAST_SEPARATE",
       ),
     ).toBe(true);
+  });
+
+  it("can ask ELK to pack disconnected comparison components independently", () => {
+    expect(toElkGraph(demoSlice).layoutOptions?.["elk.separateConnectedComponents"]).toBe("false");
+    expect(
+      toElkGraph(demoSlice, "auto", "grouped", true).layoutOptions?.[
+        "elk.separateConnectedComponents"
+      ],
+    ).toBe("true");
+  });
+
+  it("packs disconnected islands without changing their internal routed geometry", () => {
+    const slice = {
+      snapshotId: "comparison-islands",
+      module: {
+        id: "top",
+        name: "top",
+        instancePath: "top",
+        definitionName: "top",
+        parameters: {},
+      },
+      nodes: ["main-a", "main-b", "island-a", "island-b", "island-c", "island-d", "island-e"].map(
+        (id) => ({ id, kind: "operator" as const, label: id, glyph: "+", ports: [] }),
+      ),
+      edges: [{ id: "main-edge", sourceNode: "main-a", targetNode: "main-b" }],
+    } satisfies GraphSlice;
+    const layout = {
+      width: 200,
+      height: 900,
+      elapsedMs: 1,
+      groups: [],
+      nodes: slice.nodes.map((node, index) => ({
+        ...node,
+        x: node.id === "main-a" ? 0 : node.id === "main-b" ? 100 : 100,
+        y: node.id.startsWith("main") ? 100 : 250 + index * 100,
+        width: 50,
+        height: 50,
+        ports: [],
+      })),
+      edges: [
+        {
+          ...slice.edges[0],
+          sections: [
+            {
+              startPoint: { x: 50, y: 125 },
+              bendPoints: [],
+              endPoint: { x: 100, y: 125 },
+            },
+          ],
+        },
+      ],
+    };
+
+    const packed = packDisconnectedComponents(layout, slice);
+    const islandXs = new Set(
+      packed.nodes.filter((node) => node.id.startsWith("island")).map((node) => node.x),
+    );
+    expect(islandXs.size).toBeGreaterThan(1);
+    expect(packed.height).toBeLessThan(layout.height);
+    expect(packed.disconnectedRegion?.componentCount).toBe(5);
+    expect(packed.disconnectedRegion?.componentEntityIds).toHaveLength(5);
+    expect(packed.disconnectedRegion?.width).toBeGreaterThan(0);
+    expect(packed.disconnectedRegion?.height).toBeGreaterThan(0);
+    const source = packed.nodes.find((node) => node.id === "main-a");
+    const target = packed.nodes.find((node) => node.id === "main-b");
+    const section = packed.edges[0].sections[0];
+    expect(section.startPoint.x - (source?.x ?? 0)).toBe(50);
+    expect(section.endPoint.x - (target?.x ?? 0)).toBe(0);
+    expect(section.startPoint.y - (source?.y ?? 0)).toBe(25);
+    expect(section.endPoint.y - (target?.y ?? 0)).toBe(25);
+  });
+
+  it("keeps groups aligned with their routed component while packing", () => {
+    const slice = {
+      snapshotId: "comparison-group-island",
+      module: {
+        id: "top",
+        name: "top",
+        instancePath: "top",
+        definitionName: "top",
+        parameters: {},
+      },
+      nodes: ["main-a", "main-b", "island"].map((id) => ({
+        id,
+        kind: "operator" as const,
+        label: id,
+        glyph: "+",
+        ports: [],
+      })),
+      edges: [{ id: "main-edge", sourceNode: "main-a", targetNode: "main-b" }],
+      groups: [
+        {
+          id: "main-group",
+          name: "u_main",
+          definitionName: "main",
+          parameters: {},
+          childNodeIds: ["main-a", "main-b"],
+        },
+      ],
+    } satisfies GraphSlice;
+    const layout = {
+      width: 500,
+      height: 500,
+      elapsedMs: 1,
+      groups: [{ ...slice.groups[0], x: 20, y: 30, width: 220, height: 120 }],
+      nodes: slice.nodes.map((node, index) => ({
+        ...node,
+        x: index === 0 ? 40 : index === 1 ? 160 : 420,
+        y: index === 2 ? 400 : 60,
+        width: 50,
+        height: 50,
+        ports: [],
+      })),
+      edges: [
+        {
+          ...slice.edges[0],
+          sections: [
+            {
+              startPoint: { x: 90, y: 85 },
+              bendPoints: [],
+              endPoint: { x: 160, y: 85 },
+            },
+          ],
+        },
+      ],
+    } satisfies LayoutResult;
+
+    const packed = packDisconnectedComponents(layout, slice);
+    const originalGroup = layout.groups[0];
+    const originalNode = layout.nodes[0];
+    const packedGroup = packed.groups[0];
+    const packedNode = packed.nodes.find((node) => node.id === originalNode.id);
+    expect(packedGroup.x - (packedNode?.x ?? 0)).toBe(originalGroup.x - originalNode.x);
+    expect(packedGroup.y - (packedNode?.y ?? 0)).toBe(originalGroup.y - originalNode.y);
+    expect(packed.disconnectedRegion?.componentCount).toBe(1);
+  });
+
+  it("labels a view made entirely of isolated components", () => {
+    const slice = {
+      snapshotId: "comparison-all-isolated",
+      module: {
+        id: "top",
+        name: "top",
+        instancePath: "top",
+        definitionName: "top",
+        parameters: {},
+      },
+      nodes: ["a", "b", "c"].map((id) => ({
+        id,
+        kind: "operator" as const,
+        label: id,
+        glyph: "+",
+        ports: [],
+      })),
+      edges: [],
+    } satisfies GraphSlice;
+    const layout = {
+      width: 100,
+      height: 400,
+      elapsedMs: 1,
+      groups: [],
+      nodes: slice.nodes.map((node, index) => ({
+        ...node,
+        x: 10,
+        y: index * 120,
+        width: 50,
+        height: 50,
+        ports: [],
+      })),
+      edges: [],
+    } satisfies LayoutResult;
+
+    const packed = packDisconnectedComponents(layout, slice);
+    const region = packed.disconnectedRegion;
+    expect(region?.componentCount).toBe(3);
+    expect(
+      Math.min(...packed.nodes.map((node) => node.y)) - (region?.y ?? 0),
+    ).toBeGreaterThanOrEqual(56);
+    expect(
+      packed.nodes.every(
+        (node) =>
+          region &&
+          node.x >= region.x &&
+          node.y >= region.y &&
+          node.x + node.width <= region.x + region.width &&
+          node.y + node.height <= region.y + region.height,
+      ),
+    ).toBe(true);
+  });
+
+  it("packs a long reverse-directed chain without recursive union-find overflow", () => {
+    const chainLength = 25_000;
+    const nodes = Array.from({ length: chainLength + 1 }, (_, index) => ({
+      id: index === chainLength ? "island" : `chain-${index}`,
+      kind: "operator" as const,
+      label: "+",
+      glyph: "+",
+      ports: [],
+    }));
+    const edges = Array.from({ length: chainLength - 1 }, (_, index) => ({
+      id: `edge-${index}`,
+      sourceNode: `chain-${index + 1}`,
+      targetNode: `chain-${index}`,
+    }));
+    const slice = {
+      snapshotId: "comparison-long-chain",
+      module: {
+        id: "top",
+        name: "top",
+        instancePath: "top",
+        definitionName: "top",
+        parameters: {},
+      },
+      nodes,
+      edges,
+    } satisfies GraphSlice;
+    const layout = {
+      width: chainLength,
+      height: 2,
+      elapsedMs: 1,
+      groups: [],
+      nodes: nodes.map((node, index) => ({
+        ...node,
+        x: index,
+        y: 0,
+        width: 1,
+        height: 1,
+        ports: [],
+      })),
+      edges: edges.map((edge) => ({ ...edge, sections: [] })),
+    } satisfies LayoutResult;
+
+    const packed = packDisconnectedComponents(layout, slice);
+    expect(packed.nodes).toHaveLength(chainLength + 1);
+    expect(packed.disconnectedRegion?.componentCount).toBe(1);
   });
 
   it("places top-level input and output symbols flush with the module boundary", async () => {

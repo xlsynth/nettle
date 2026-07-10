@@ -11,6 +11,10 @@ design. Only the native builder runs Slang and Yosys/yosys-slang. Viewers read
 normalized Nettle IR, so they need neither compiler binaries nor access to the
 original project or its filesystem.
 
+Each bundle represents exactly one snapshot. Schematic comparison is a viewer
+operation over two independently validated bundles; diff status, correspondence
+confidence, and union-layout identities are not persisted in format 1.
+
 The format optimizes for long-lived compatibility, independent module loading,
 local source cross-probing, deterministic builds, and safe handling of
 untrusted archives. It is not a cache of compiler implementation details.

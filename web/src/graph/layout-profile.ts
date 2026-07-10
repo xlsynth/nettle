@@ -4,6 +4,8 @@ import type { GraphSlice } from "../model/graph";
 
 const AUTO_OVERVIEW_COMPLEXITY = 2_000;
 
+const layoutComplexity = (slice: GraphSlice) => slice.nodes.length + 2 * slice.edges.length;
+
 export type LayoutProfile = "auto" | "fast" | "detailed" | "balanced" | "wide";
 export type EffectiveLayoutProfile = Exclude<LayoutProfile, "auto">;
 
@@ -18,7 +20,7 @@ export const LAYOUT_PROFILE_OPTIONS: readonly LayoutProfileOption[] = [
     value: "auto",
     label: "Auto",
     description:
-      "Chooses a high-quality layout for normal graphs and fast draft mode for very large graphs. Pro: a safe default. Con: the layout style can change with graph size.",
+      "Chooses a high-quality layout for normal graphs and fast draft mode for very large or densely connected graphs. Pro: a safe default. Con: the layout style can change with graph complexity.",
   },
   {
     value: "fast",
@@ -51,7 +53,7 @@ export const effectiveLayoutProfile = (
   profile: LayoutProfile,
 ): EffectiveLayoutProfile =>
   profile === "auto"
-    ? slice.nodes.length + slice.edges.length >= AUTO_OVERVIEW_COMPLEXITY
+    ? layoutComplexity(slice) >= AUTO_OVERVIEW_COMPLEXITY
       ? "fast"
       : "detailed"
     : profile;

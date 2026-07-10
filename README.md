@@ -288,10 +288,13 @@ Pass a bundle to open it directly:
 cargo run --locked -- view br_counter.nettle --web-root web/dist --port 8090
 ```
 
-This exposes that validated bundle at a fixed, non-cacheable route. Keep the
-default loopback bind for sensitive designs. A non-loopback bind makes the
-bundle downloadable by reachable clients and therefore requires the
-deployment's normal authentication and TLS protections.
+This copies the bundle into a private, size-bounded anonymous temporary
+snapshot, validates that exact copy, and exposes it at a fixed, non-cacheable
+route. Anonymous storage has no pathname to orphan and is reclaimed by the
+operating system when its final handle closes, including after abrupt process
+termination. Keep the default loopback bind for sensitive designs. A
+non-loopback bind makes the bundle downloadable by reachable clients and
+therefore requires the deployment's normal authentication and TLS protections.
 
 `render` combines build and view while leaving the bundle on disk:
 
@@ -304,6 +307,56 @@ cargo run --locked -- render \
   --web-root web/dist \
   --port 8090
 ```
+
+### Compare two elaborated designs
+
+Build the reference and candidate as independent snapshots, then open schematic
+diff mode:
+
+```sh
+cargo run --locked -- compare reference.nettle candidate.nettle \
+  --matching conservative \
+  --web-root web/dist \
+  --port 8090
+```
+
+![Nettle schematic diff of the br_enc_priority_encoder design](assets/schematic_diff_conservative.jpg)
+
+The command copies and validates both inputs in anonymous delete-on-close
+storage before starting the viewer and exposes the private snapshots only
+through separate non-cacheable startup routes. The two snapshots can consume
+up to twice the configured per-bundle temporary-storage ceiling; the operating
+system reclaims them when their final handles close, including after abrupt
+termination. The default conservative policy accepts exact and uniquely
+determined graph correspondence. Pass
+`--matching aggressive`, or switch policy in the viewer, to add visibly marked
+heuristic matches for logic whose compiler-generated identities changed.
+
+The viewer constructs one union graph and lays it out once: reference-only
+objects are red and dashed, candidate-only objects are green, matched changes
+are yellow, and unchanged logic remains neutral. `−`, `+`, and `±` badges keep
+status independent of color, while `≈` identifies heuristic correspondence.
+The single View menu selects a neutral reference or candidate snapshot, the
+complete diff overlay, changes-only presentation, or custom status visibility;
+every view reuses the union geometry. Matching is a structural review aid, not
+a functional-equivalence result.
+
+Hierarchy navigation and flattening use the same selected policy. Recursive
+flattening compares child modules before splicing their union through paired
+boundaries, including one-sided instances, and a policy change recomputes the
+visible projection. Decoded children are reused while they remain in the
+bounded provider caches; evicted modules may be decoded again.
+
+The left pane compares the UTF-8 compilation sources embedded in the two
+bundles. This is intentionally a **bundled source diff**, not a complete Git
+tree diff: files not included in either snapshot and version-control rename
+metadata are unavailable. Different defines, parameters, tops, or compiler
+versions are reported separately because they can change the elaborated graph
+without changing source text. Diff hunks are labeled `source-only` only after
+neither direct source origins nor indirect evidence anywhere in the reachable
+paired hierarchy connects them to a schematic change; selecting a
+graph-affecting hunk highlights every directly intersecting object in the
+visible overlay.
 
 ### Parameters, defines, and configuration files
 
@@ -408,8 +461,6 @@ suite in the known-good container environment.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) describes the software architecture,
   trust boundaries, data flow, and tool design.
-- [`COMPARISON.md`](COMPARISON.md) compares Nettle's features with other
-  schematic viewers.
 - [`NETTLE_FILE_FORMAT.md`](NETTLE_FILE_FORMAT.md) defines the `.nettle` interchange
   format and its security rules.
 - [`INPUT_CONFIG_FILE_FORMAT.md`](INPUT_CONFIG_FILE_FORMAT.md) defines the YAML build

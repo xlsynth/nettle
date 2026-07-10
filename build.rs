@@ -100,6 +100,8 @@ struct YosysImportLimits {
 #[serde(deny_unknown_fields)]
 struct BrowserLimits {
     cache: BrowserCacheLimits,
+    load: BrowserLoadLimits,
+    comparison: BrowserComparisonLimits,
     display: BrowserDisplayLimits,
 }
 
@@ -108,6 +110,25 @@ struct BrowserLimits {
 struct BrowserCacheLimits {
     modules_bytes: usize,
     sources_bytes: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserLoadLimits {
+    entry_concurrency: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserComparisonLimits {
+    source_diff_timeout_ms: usize,
+    source_diff_max_edit_length: usize,
+    source_diff_concurrency: usize,
+    source_mapping_files: usize,
+    source_evidence_module_pairs: usize,
+    source_evidence_timeout_ms: usize,
+    matcher_timeout_ms: usize,
+    fuzzy_candidates_per_node: usize,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +200,15 @@ fn validate_limits(limits: &ResourceLimits) -> Result<(), Box<dyn std::error::Er
         limits.native.yosys_import.endpoint_pairs as u64,
         limits.browser.cache.modules_bytes as u64,
         limits.browser.cache.sources_bytes as u64,
+        limits.browser.load.entry_concurrency as u64,
+        limits.browser.comparison.source_diff_timeout_ms as u64,
+        limits.browser.comparison.source_diff_max_edit_length as u64,
+        limits.browser.comparison.source_diff_concurrency as u64,
+        limits.browser.comparison.source_mapping_files as u64,
+        limits.browser.comparison.source_evidence_module_pairs as u64,
+        limits.browser.comparison.source_evidence_timeout_ms as u64,
+        limits.browser.comparison.matcher_timeout_ms as u64,
+        limits.browser.comparison.fuzzy_candidates_per_node as u64,
         limits.browser.display.decimal_conversion_bits as u64,
         limits.browser.display.formattable_constant_bits as u64,
         limits.browser.display.metadata_depth as u64,
@@ -271,9 +301,17 @@ fn generate_rust_limits(limits: &ResourceLimits) -> String {
     .expect("writing to String cannot fail");
     writeln!(
         output,
-        "#[allow(dead_code)]\npub(crate) mod browser {{\n    pub(crate) mod cache {{\n        pub(crate) const MODULES_BYTES: usize = {};\n        pub(crate) const SOURCES_BYTES: usize = {};\n    }}\n    pub(crate) mod display {{\n        pub(crate) const DECIMAL_CONVERSION_BITS: usize = {};\n        pub(crate) const FORMATTABLE_CONSTANT_BITS: usize = {};\n        pub(crate) const METADATA_DEPTH: usize = {};\n        pub(crate) const METADATA_NODES: usize = {};\n        pub(crate) const METADATA_CHARACTERS: usize = {};\n    }}\n}}",
+        "#[allow(dead_code)]\npub(crate) mod browser {{\n    pub(crate) mod cache {{\n        pub(crate) const MODULES_BYTES: usize = {};\n        pub(crate) const SOURCES_BYTES: usize = {};\n    }}\n    pub(crate) mod load {{ pub(crate) const ENTRY_CONCURRENCY: usize = {}; }}\n    pub(crate) mod comparison {{\n        pub(crate) const SOURCE_DIFF_TIMEOUT_MS: usize = {};\n        pub(crate) const SOURCE_DIFF_MAX_EDIT_LENGTH: usize = {};\n        pub(crate) const SOURCE_DIFF_CONCURRENCY: usize = {};\n        pub(crate) const SOURCE_MAPPING_FILES: usize = {};\n        pub(crate) const SOURCE_EVIDENCE_MODULE_PAIRS: usize = {};\n        pub(crate) const SOURCE_EVIDENCE_TIMEOUT_MS: usize = {};\n        pub(crate) const FUZZY_CANDIDATES_PER_NODE: usize = {};\n    }}\n    pub(crate) mod display {{\n        pub(crate) const DECIMAL_CONVERSION_BITS: usize = {};\n        pub(crate) const FORMATTABLE_CONSTANT_BITS: usize = {};\n        pub(crate) const METADATA_DEPTH: usize = {};\n        pub(crate) const METADATA_NODES: usize = {};\n        pub(crate) const METADATA_CHARACTERS: usize = {};\n    }}\n}}",
         browser.cache.modules_bytes,
         browser.cache.sources_bytes,
+        browser.load.entry_concurrency,
+        browser.comparison.source_diff_timeout_ms,
+        browser.comparison.source_diff_max_edit_length,
+        browser.comparison.source_diff_concurrency,
+        browser.comparison.source_mapping_files,
+        browser.comparison.source_evidence_module_pairs,
+        browser.comparison.source_evidence_timeout_ms,
+        browser.comparison.fuzzy_candidates_per_node,
         browser.display.decimal_conversion_bits,
         browser.display.formattable_constant_bits,
         browser.display.metadata_depth,

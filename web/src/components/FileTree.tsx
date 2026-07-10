@@ -4,10 +4,13 @@ import { ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, RefreshCw } f
 import { memo, useState } from "react";
 import type { FileTreeEntry } from "../model/graph";
 
+export type FileTreeDiffStatus = "unchanged" | "added" | "removed" | "modified" | "renamed";
+
 interface FileTreeProps {
   entries: FileTreeEntry[];
   selectedPath: string;
   onSelect: (path: string, fileId?: string) => void;
+  statusByPath?: Readonly<Record<string, FileTreeDiffStatus | undefined>>;
   onRefresh?: () => void;
   refreshing?: boolean;
 }
@@ -17,10 +20,33 @@ interface TreeRowProps extends FileTreeProps {
   depth: number;
 }
 
-const TreeRow = memo(function TreeRow({ entry, depth, selectedPath, onSelect }: TreeRowProps) {
+const fileStatusMarker = (status: FileTreeDiffStatus) => {
+  switch (status) {
+    case "added":
+      return { marker: "A", label: "Added in candidate" };
+    case "removed":
+      return { marker: "D", label: "Missing from candidate" };
+    case "modified":
+      return { marker: "M", label: "Modified" };
+    case "renamed":
+      return { marker: "R", label: "Renamed" };
+    case "unchanged":
+      return { marker: "=", label: "Unchanged" };
+  }
+};
+
+const TreeRow = memo(function TreeRow({
+  entry,
+  depth,
+  selectedPath,
+  onSelect,
+  statusByPath,
+}: TreeRowProps) {
   const [open, setOpen] = useState(depth < 2);
   const directory = entry.kind === "directory";
   const selected = entry.path === selectedPath;
+  const status = directory ? undefined : statusByPath?.[entry.path];
+  const statusMarker = status ? fileStatusMarker(status) : undefined;
   const activate = () => {
     if (directory) setOpen((value) => !value);
     else onSelect(entry.path, entry.fileId);
@@ -47,7 +73,13 @@ const TreeRow = memo(function TreeRow({ entry, depth, selectedPath, onSelect }: 
         ) : (
           <FileCode2 size={14} strokeWidth={1.5} />
         )}
-        <span>{entry.name}</span>
+        <span className="tree-entry-name">{entry.name}</span>
+        {status && statusMarker ? (
+          <span className={`tree-diff-badge ${status}`} title={statusMarker.label}>
+            <span aria-hidden="true">{statusMarker.marker}</span>
+            <span className="visually-hidden">{statusMarker.label}</span>
+          </span>
+        ) : null}
       </button>
       {directory && open
         ? entry.children?.map((child) => (
@@ -58,6 +90,7 @@ const TreeRow = memo(function TreeRow({ entry, depth, selectedPath, onSelect }: 
               depth={depth + 1}
               selectedPath={selectedPath}
               onSelect={onSelect}
+              statusByPath={statusByPath}
             />
           ))
         : null}
@@ -69,6 +102,7 @@ export function FileTree({
   entries,
   selectedPath,
   onSelect,
+  statusByPath,
   onRefresh,
   refreshing = false,
 }: FileTreeProps) {
@@ -97,6 +131,7 @@ export function FileTree({
             depth={0}
             selectedPath={selectedPath}
             onSelect={onSelect}
+            statusByPath={statusByPath}
           />
         ))}
       </div>

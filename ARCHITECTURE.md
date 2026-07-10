@@ -15,17 +15,27 @@ flowchart LR
     Y --> I
     I --> N["Deterministic .nettle bundle"]
     N --> P["Browser file picker / drop"]
-    N --> H["Optional nettle view startup route"]
+    N --> H["Optional view / compare startup routes"]
     P --> V["In-memory browser provider"]
     H --> V
-    V --> U["Source + schematic UI"]
+    V --> U["Single-design source + schematic UI"]
+    V --> C["Two-provider comparison layer"]
+    C --> D["Source diff + matched union graph"]
+    D --> U2["Diff source + one-layout schematic UI"]
 ```
 
 The versioned `.nettle` format separates compilation from viewing. In the
-default hosted viewer, a selected bundle moves from the browser's file API into
+default hosted viewer, selected bundles move from the browser's file API into
 browser memory and nowhere else. For local use, `nettle view BUNDLE` serves one
-explicit bundle from a fixed `no-store` route. `nettle render` builds, validates,
-and serves a durable bundle. Neither command exposes the HDL project or adds a
+explicit bundle from a fixed `no-store` route. `nettle compare REFERENCE
+CANDIDATE` serves a non-cacheable descriptor and two fixed non-cacheable bundle
+routes after validating both inputs. `nettle render` builds, validates, and
+serves a durable bundle. Before binding, each startup mode copies its selected
+archive into private, anonymous delete-on-close storage and validates that
+exact copy. Route handlers stream only the snapshot, so replacing or rewriting
+the caller-owned path cannot change a running workspace. Anonymous snapshots
+have no pathname to orphan and are reclaimed by the operating system after
+abrupt termination. None of these commands exposes the HDL project or adds a
 compilation or upload API.
 
 ## Repository ownership
@@ -111,10 +121,12 @@ Compatibility rules:
 ## Browser-local provider
 
 The application starts with no project or example. The user selects or drops a
-`.nettle` file. If the host provides `/startup.nettle`, the viewer wraps it in
-the same File/Blob provider. The provider first reads the ZIP central directory
-and manifest, checks the entry set and resource limits, and then verifies each
-payload's SHA-256 before decoding it.
+`.nettle` file, or chooses a reference and candidate in the comparison dialog.
+If the host provides `/startup.nettle`, the viewer wraps it in the same File/Blob
+provider. A comparison startup descriptor names two fixed bundle routes, and
+each response is independently passed through that same provider. The provider
+first reads the ZIP central directory and manifest, checks the entry set and
+resource limits, and then verifies each payload's SHA-256 before decoding it.
 
 The design index, source index, and diagnostics are eager because they are
 small navigation metadata. Module graphs and source bodies are lazy. Separate
@@ -132,6 +144,107 @@ layout profile. Label, clock/reset visibility, and constant-radix changes are
 presentation-only operations which do not recompile or re-read the bundle;
 signal hiding also avoids relayout.
 
+## Comparison workspace
+
+Schematic diff mode composes two normal single-snapshot providers; it does not
+change the `.nettle` format or merge snapshots at the archive boundary. Source
+inventories are paired by project-relative path and content digest, while graph
+correspondence is computed from stable IDs, names, source-line mappings, and
+local topology. Conservative matching accepts only unique correspondence;
+aggressive matching adds bounded, scored, visibly identified heuristics.
+Legacy Yosys operator IDs are accepted as exact anchors only when their glyph
+class is also compatible, because older source-position IDs can survive while
+naming a different operator after a refactor. Source and aggressive stages may
+still recover those changes without treating the legacy ID as proof.
+
+The comparison layer retains both original graphs and produces a transient
+union `GraphSlice` with side-qualified identities. Matched objects occupy one
+layout object, while reference-only and candidate-only objects remain distinct.
+The selected layout engine receives that union once—ELK for ordinary views or
+the bounded fast overview for large views—ensuring that every visible
+connection is routed in one coherent layout. Diff status and before/after
+provenance stay outside the canonical graph schema.
+
+For each paired module slice, comparison proceeds in a fixed order: establish
+node correspondence, pair ports inside matched nodes, remap both snapshots onto
+the shared node/port identities, pair edges by those remapped endpoints, build
+the union, and invoke layout. Matching policy answers _whether two objects
+correspond_; diff status then answers _whether the paired payloads differ_.
+Consequently, switching from conservative to aggressive can collapse a red
+removal and green addition into one matched object marked `≈`; payload
+comparison then classifies that object as unchanged or yellow modified. This is
+an inferred correspondence, not a functional-equivalence result, and changing
+the correspondence can change union topology and require a new layout.
+
+Status classification deliberately excludes snapshot IDs, source ranges,
+placement, and volatile compiler provenance:
+
+- an unmatched reference or candidate object is `removed` or `added`;
+- node correspondence requires the same broad kind; once paired, a node is
+  `modified` when its label, glyph, referenced definition, parameters, or ports
+  differ; port payload includes name, direction, role, index, and width;
+- different broad node kinds therefore remain removal plus addition, while a
+  same-kind operator change such as add-to-subtract may be modified only when
+  a unique source-line mapping or aggressive heuristic evidence establishes
+  correspondence;
+- edges correspond only when their remapped endpoint node/port pairs agree;
+  label, width, signal-type, or role changes then make one modified edge, while
+  rewiring produces one removed and one added edge; and
+- groups compare name, definition, parameters, and mapped child membership;
+  the top module compares name, definition, and parameters.
+
+The header's current-slice schematic-change total is unfiltered and includes
+nodes, edges, groups, and a changed top module. The schematic footer reports
+the corresponding counts after the active View preset and status filters are
+applied. Ports roll up into their owning node and are not counted separately.
+Connectivity-only changes do not automatically mark their endpoint nodes
+modified.
+
+The single View menu combines presets and status visibility controls:
+
+| View               | Semantics on the fixed union geometry                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration.                                                                                             |
+| Diff overlay       | Shows the complete union: removed red/dashed with `−`, added green with `+`, modified yellow with `±`, unchanged neutral, and heuristic correspondence additionally marked `≈`. |
+| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration.                                                                                             |
+| Changes only       | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change.                                               |
+
+Matched union objects use candidate-visible payloads in Diff overlay. All four
+views reuse the same union geometry and do not relayout merely to change a
+preset. Reference and Candidate are therefore side-specific semantic
+projections, not independently laid-out standalone schematics. Color is never
+the sole status signal: line patterns, `−`/`+`/`±` badges, accessible status
+text, and `≈` confidence markers remain visible where applicable. Status
+toggles are offered for overlay views and omitted when they have no entities in
+the active projection; the UI does not assume that `modified` is globally
+impossible under conservative matching.
+
+Hierarchy projection is comparison-aware. For selected or recursive
+flattening, the viewer loads and compares each child pair first, then splices
+the child union through the paired boundary ports. Union and side-qualified
+identities are scoped at every instance depth, so matched and one-sided children
+retain their correspondence and source origins without re-matching two
+independently flattened snapshots. A one-sided instance compares its existing
+child against an empty peer. Logic moved across unrelated hierarchy boundaries
+is not matched globally, and a descendant-only change need not modify the
+collapsed instance payload; hierarchy navigation reports that the instance
+contains changes.
+
+Comparison source bodies and hierarchy modules remain lazy. The two providers
+share the existing browser cache envelope, and the union graph must satisfy the
+same visible-object ceiling as a single projected graph. Source-diff and fuzzy
+candidate limits are generated from `resource-limits.yaml`. Bounded source
+diffing and graph matching run in disposable workers; policy, hierarchy, and
+workspace changes terminate obsolete work before it can publish a stale
+result. The viewer retains side-qualified selection identity across a policy
+change and resolves it onto the newly laid-out union.
+
+Opening the comparison hierarchy starts one abortable root traversal shared by
+all mounted instance rows. It indexes descendant-change status by stable paired
+instance identity, reuses repeated child specializations, and applies the same
+reachable-hierarchy pair and time ceilings as source-only evidence. Exhaustion
+is presented as an explicit unknown status rather than as an unchanged subtree.
+
 ## Static distribution
 
 `npm run build` produces a self-contained `web/dist`. It may be deployed to any
@@ -146,9 +259,10 @@ session storage.
 The static host is not an authentication boundary. Cluster deployments should
 apply their normal ingress authentication, authorization, TLS, CSP, and asset
 cache policy. Picker/drop bundles never leave the browser, so the host needs no
-cloud credentials or design-data tenancy controls. A startup bundle is
-downloadable by every client that can reach the local host, so keep that mode
-on loopback unless another access-control layer protects it.
+cloud credentials or design-data tenancy controls. A startup bundle, and both
+sides of a startup comparison, are downloadable by every client that can reach
+the local host, so keep those modes on loopback unless another access-control
+layer protects them.
 
 ## Security invariants
 
@@ -160,9 +274,13 @@ on loopback unless another access-control layer protects it.
 - Sources are displayed as text in read-only Monaco models; they are not
   executed or injected as HTML.
 - The browser does not persist bundles in cookies, IndexedDB, or local storage,
-  and the viewer has no upload/persistence API. A startup bundle remains the
-  caller-owned file explicitly passed to `view` or written by `render`; the
-  static host does not copy it into a session store.
+  and the viewer has no upload/persistence API. For `view`, `render`, and
+  `compare`, the native host makes one anonymous delete-on-close archive
+  snapshot per startup side and validates it. Each copy is capped by
+  `bundle.archive.totalBytes`; comparison can therefore consume up to twice
+  that temporary-storage ceiling. The snapshots have no filesystem pathname
+  to orphan, and the operating system reclaims them when their final handles
+  close, including after abrupt process termination.
 - Replacing a bundle is atomic from the user's perspective: a failed candidate
   does not discard the active provider.
 
