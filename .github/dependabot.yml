@@ -4,20 +4,20 @@ updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: quarterly
     cooldown:
       default-days: 30
 
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
+      interval: quarterly
     cooldown:
       default-days: 30
 
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
+      interval: quarterly
     cooldown:
       default-days: 30
