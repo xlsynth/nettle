@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: quarterly
+    cooldown:
+      default-days: 30
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: quarterly
+    cooldown:
+      default-days: 30
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: quarterly
+    cooldown:
+      default-days: 30
