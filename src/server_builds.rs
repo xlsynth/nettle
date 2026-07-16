@@ -47,7 +47,7 @@ pub(crate) fn router() -> Router {
 }
 
 pub(crate) fn enabled() -> bool {
-    enabled_value(std::env::var("ENABLE_AZURE_BUNDLES").ok().as_deref())
+    enabled_value(std::env::var("NETTLE_ENABLE_AZURE_BUNDLES").ok().as_deref())
 }
 
 fn enabled_value(value: Option<&str>) -> bool {
@@ -137,9 +137,7 @@ fn build_bundle(request: &AzureBuildRequest) -> Result<Vec<u8>> {
 }
 
 fn copy_azure_directory(remote: &str, destination: &Path) -> Result<()> {
-    let program = std::env::var_os("NETTLE_AZURE_FETCH_BIN")
-        .context("NETTLE_AZURE_FETCH_BIN is not configured")?;
-    let mut command = Command::new(program);
+    let mut command = Command::new("bbb");
     command
         .arg("cptree")
         .arg("--quiet")
@@ -151,16 +149,16 @@ fn copy_azure_directory(remote: &str, destination: &Path) -> Result<()> {
 }
 
 fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<()> {
-    let mut child = command.spawn().context("starting Azure copy helper")?;
+    let mut child = command.spawn().context("starting bbb")?;
     let start = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().context("waiting for Azure copy helper")? {
+        if let Some(status) = child.try_wait().context("waiting for bbb")? {
             let output = child.wait_with_output().context("reading copy output")?;
             if status.success() {
                 return Ok(());
             }
             bail!(
-                "Azure copy helper exited with {status}: {}",
+                "bbb exited with {status}: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }

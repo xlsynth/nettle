@@ -79,6 +79,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Compile the static browser viewer once for the viewer and combined targets.
 FROM node:24-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203 AS web-builder
+ARG NETTLE_ENABLE_AZURE_BUNDLES=false
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY web/package.json web/package.json
@@ -87,7 +88,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY resource-limits.yaml ./
 COPY scripts/generate-resource-limits.mjs scripts/generate-resource-limits.mjs
 COPY web web
-RUN npm run build
+RUN NETTLE_ENABLE_AZURE_BUNDLES="$NETTLE_ENABLE_AZURE_BUNDLES" npm run build
 
 # Publishable build-only runtime: CLI plus HDL compilers, without web assets.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
@@ -112,12 +113,16 @@ ENTRYPOINT ["nettle"]
 FROM builder AS nettle
 USER root
 RUN apt-get update \
-  && apt-get install --yes --no-install-recommends curl \
-  && rm -rf /var/lib/apt/lists/*
+  && apt-get install --yes --no-install-recommends curl python3 python3-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && python3 -m venv /opt/boostedblob \
+  && /opt/boostedblob/bin/pip install --no-cache-dir boostedblob==1.0.0 \
+  && /opt/boostedblob/bin/bbb --version
 COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \
   NETTLE_BIND_ADDRESS=0.0.0.0 \
-  NETTLE_PORT=8080
+  NETTLE_PORT=8080 \
+  PATH=/opt/boostedblob/bin:/opt/oss-cad-suite/bin:/opt/slang:/usr/local/bin:/usr/bin:/bin
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null || exit 1

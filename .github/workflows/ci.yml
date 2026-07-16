@@ -177,6 +177,8 @@ jobs:
         if: matrix.image == 'nettle'
         run: |
           set -euo pipefail
+          docker run --rm --entrypoint bbb \
+            "nettle-${{ matrix.image }}:${{ github.sha }}" --version
           # Build the smoke HDL design through `nettle render`, then confirm
           # that the image serves both its health check and startup bundle.
           container=nettle-smoke

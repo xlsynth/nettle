@@ -75,6 +75,10 @@ docker build --platform linux/amd64 \
   -f Dockerfile --target nettle -t nettle:latest .
 ```
 
+To compile the optional Azure controls into a local image, add
+`--build-arg NETTLE_ENABLE_AZURE_BUNDLES=true`. The API remains disabled until
+the container is also started with `-e NETTLE_ENABLE_AZURE_BUNDLES=true`.
+
 ### Specialized images
 
 All three published images come from named targets in the root `Dockerfile`.
@@ -372,7 +376,7 @@ user's browser.
 
 ### Hosted Azure builds
 
-Set `ENABLE_AZURE_BUNDLES=true` for both the native server and the Vite build
+Set `NETTLE_ENABLE_AZURE_BUNDLES=true` for both the native server and the Vite build
 to enable this optional workflow. It is disabled by default, preserving the
 standard bundle-only viewer and its API behavior.
 
@@ -380,15 +384,37 @@ The welcome screen can submit an `az://` RTL directory and top module to the
 native viewer server. The server downloads the directory, builds it with the
 normal Nettle toolchain, and returns the generated `.nettle` bundle.
 
-The server process requires a copy helper supporting `cptree`, standalone
-Slang, and Yosys with the yosys-slang plugin on `PATH`. These environment
-variables configure the hosted path:
+The server process requires the `bbb` command from
+[`boostedblob`](https://pypi.org/project/boostedblob/), standalone Slang, and
+Yosys with the yosys-slang plugin on `PATH`. These environment variables
+configure the hosted path:
 
-- `ENABLE_AZURE_BUNDLES`: set to `true` to expose the controls and API.
-- `NETTLE_AZURE_FETCH_BIN`: required copy-helper executable.
+- `NETTLE_ENABLE_AZURE_BUNDLES`: set to `true` to expose the controls and API.
 - `NETTLE_AZURE_ROOTS`: comma-separated allowed Azure path prefixes.
 - `NETTLE_AZURE_TIMEOUT_SECONDS`: download timeout, defaulting to 600 seconds.
 - `NETTLE_SLANG_BIN` and `NETTLE_YOSYS_BIN`: optional explicit compiler paths.
+
+`boostedblob` is a public MIT-licensed Python package. Install the same pinned
+version used by the combined Nettle image when running directly on the host:
+
+```sh
+python -m pip install boostedblob==1.0.0
+```
+
+The combined `nettle` Docker image already includes this version and exposes
+`bbb` on `PATH`; the build-only and static-viewer images do not need it.
+
+For each request, Nettle runs the equivalent of:
+
+```sh
+bbb cptree --quiet \
+  az://account/container/path/to/rtl/ \
+  /tmp/nettle-azure-.../source
+```
+
+`bbb` obtains Azure credentials from its normal environment; Nettle does not
+store or forward credentials. Access to a container must already work for the
+server account.
 
 The Vite development server proxies `/api` to `127.0.0.1:8080`. Production
 deployments should route the page and `/api` to the same native viewer server.

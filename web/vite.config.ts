@@ -4,14 +4,14 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
 export default defineConfig(({ mode }) => {
-  const environment = loadEnv(mode, ".", ["NETTLE_", "ENABLE_"]);
+  const environment = loadEnv(mode, ".", "NETTLE_");
   const allowedHosts = environment.NETTLE_ALLOWED_HOSTS?.split(",")
     .map((host) => host.trim())
     .filter(Boolean);
   return {
     define: {
-      "import.meta.env.ENABLE_AZURE_BUNDLES": JSON.stringify(
-        mode === "test" || environment.ENABLE_AZURE_BUNDLES === "true" ? "true" : "false",
+      "import.meta.env.NETTLE_ENABLE_AZURE_BUNDLES": JSON.stringify(
+        mode === "test" || environment.NETTLE_ENABLE_AZURE_BUNDLES === "true" ? "true" : "false",
       ),
     },
     plugins: [react()],

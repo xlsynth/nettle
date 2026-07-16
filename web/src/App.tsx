@@ -43,7 +43,7 @@ import type { LabelSettings } from "./graph/SchematicCanvas";
 import type { GraphNode, GraphSlice, SourceFileRef } from "./model/graph";
 import { entityForSourceSelection } from "./source/cross-probe";
 
-const azureBundlesEnabled = import.meta.env.ENABLE_AZURE_BUNDLES === "true";
+const azureBundlesEnabled = import.meta.env.NETTLE_ENABLE_AZURE_BUNDLES === "true";
 
 interface SourceView {
   path: string;
