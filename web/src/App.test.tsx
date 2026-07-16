@@ -138,6 +138,9 @@ describe("App comparison installation", () => {
     fireEvent.change(screen.getByLabelText("Azure path"), {
       target: { value: "az://storage.example/container/project/hdl/" },
     });
+    fireEvent.change(screen.getByLabelText("Project filelist"), {
+      target: { value: "rtl/project.f" },
+    });
     fireEvent.change(screen.getByLabelText("Top module"), {
       target: { value: "rtx" },
     });
@@ -152,6 +155,7 @@ describe("App comparison installation", () => {
     expect(create?.[1]?.body).toBe(
       JSON.stringify({
         azurePath: "az://storage.example/container/project/hdl/",
+        filelist: "rtl/project.f",
         top: "rtx",
       }),
     );

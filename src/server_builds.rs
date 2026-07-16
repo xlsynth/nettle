@@ -2,10 +2,10 @@
 
 //! Builds a Nettle bundle from an Azure RTL directory.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -15,15 +15,21 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
 use crate::{BuildOptions, ElaborationOverrides, build_project};
 
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 600;
+const MAX_CONCURRENT_AZURE_BUILDS: usize = 2;
+
+static AZURE_BUILD_PERMITS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_AZURE_BUILDS)));
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AzureBuildRequest {
     azure_path: String,
+    filelist: String,
     top: String,
 }
 
@@ -57,10 +63,18 @@ fn enabled_value(value: Option<&str>) -> bool {
 async fn build_azure(Json(request): Json<AzureBuildRequest>) -> Result<Response, ApiError> {
     validate_request(&request).map_err(bad_request)?;
     let top = request.top.clone();
-    let bytes = tokio::task::spawn_blocking(move || build_bundle(&request))
+    let permit = AZURE_BUILD_PERMITS
+        .clone()
+        .acquire_owned()
         .await
-        .map_err(|error| internal_error(format!("Azure build task failed: {error}")))?
-        .map_err(|error| internal_error(format!("{error:#}")))?;
+        .map_err(|_| internal_error("Azure build service is shutting down".to_owned()))?;
+    let bytes = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        build_bundle(&request)
+    })
+    .await
+    .map_err(|error| internal_error(format!("Azure build task failed: {error}")))?
+    .map_err(|error| internal_error(format!("{error:#}")))?;
     let mut response = Body::from(bytes).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -116,11 +130,7 @@ fn build_bundle(request: &AzureBuildRequest) -> Result<Vec<u8>> {
     fs::create_dir(&source_root).context("creating source directory")?;
     copy_azure_directory(&request.azure_path, &source_root)?;
 
-    let source_files = collect_source_files(&source_root)?;
-    if source_files.is_empty() {
-        bail!("Azure path contains no .v or .sv files");
-    }
-    let filelist = write_filelist(&source_root, &source_files, &request.top)?;
+    let filelist = resolve_filelist(&source_root, &request.filelist)?;
     let output = workspace.path().join("design.nettle");
     build_project(&BuildOptions {
         filelist,
@@ -180,44 +190,23 @@ fn download_timeout() -> Duration {
     )
 }
 
-fn collect_source_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut pending = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .with_context(|| format!("reading source directory {}", directory.display()))?
-        {
-            let path = entry?.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| matches!(extension, "v" | "sv"))
-            {
-                files.push(path);
-            }
-        }
+fn resolve_filelist(root: &Path, value: &str) -> Result<PathBuf> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("filelist must be a non-empty relative path inside the Azure directory");
     }
-    files.sort();
-    Ok(files)
-}
-
-fn write_filelist(root: &Path, source_files: &[PathBuf], top: &str) -> Result<PathBuf> {
-    let filelist = root.join("nettle-generated.f");
-    let directories: BTreeSet<&Path> = source_files
-        .iter()
-        .filter_map(|path| path.parent())
-        .collect();
-    let mut contents = format!("--top {top}\n");
-    for directory in directories {
-        contents.push_str(&format!("+incdir+{}\n", directory.display()));
+    if path.extension().and_then(|extension| extension.to_str()) != Some("f") {
+        bail!("filelist must name a .f file");
     }
-    for path in source_files {
-        contents.push_str(&format!("{}\n", path.display()));
+    let filelist = root.join(path);
+    if !filelist.is_file() {
+        bail!("filelist {} does not exist", value);
     }
-    fs::write(&filelist, contents)
-        .with_context(|| format!("writing filelist {}", filelist.display()))?;
     Ok(filelist)
 }
 
@@ -256,5 +245,19 @@ mod tests {
         assert!(!enabled_value(None));
         assert!(!enabled_value(Some("false")));
         assert!(enabled_value(Some("true")));
+    }
+
+    #[test]
+    fn filelist_must_stay_inside_the_downloaded_tree() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("design.f"), "top.sv\n").unwrap();
+
+        assert_eq!(
+            resolve_filelist(root.path(), "design.f").unwrap(),
+            root.path().join("design.f")
+        );
+        assert!(resolve_filelist(root.path(), "../design.f").is_err());
+        assert!(resolve_filelist(root.path(), "/tmp/design.f").is_err());
+        assert!(resolve_filelist(root.path(), "top.sv").is_err());
     }
 }

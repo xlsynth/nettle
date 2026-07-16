@@ -253,7 +253,7 @@ export default function App() {
   );
 
   const buildAzure = useCallback(
-    async (azurePath: string, top: string) => {
+    async (azurePath: string, filelist: string, top: string) => {
       const request = ++generation.current;
       const controller = openOwner.current.begin();
       setLoading(true);
@@ -264,7 +264,7 @@ export default function App() {
         const response = await fetch("/api/build", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ azurePath, top }),
+          body: JSON.stringify({ azurePath, filelist, top }),
           redirect: "manual",
           signal: controller.signal,
         });
@@ -436,7 +436,9 @@ export default function App() {
             onSelect={(file) => void openBundle(file)}
             onCompare={openCompareDialog}
             onBuildAzure={
-              azureBundlesEnabled ? (azurePath, top) => void buildAzure(azurePath, top) : undefined
+              azureBundlesEnabled
+                ? (azurePath, filelist, top) => void buildAzure(azurePath, filelist, top)
+                : undefined
             }
           />
         </>

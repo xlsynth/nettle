@@ -81,11 +81,12 @@ function BundleDropTarget({ loading, error, onSelect }: BundlePickerProps) {
 
 interface BundleWelcomeProps extends BundlePickerProps {
   onCompare?: () => void;
-  onBuildAzure?: (azurePath: string, top: string) => void;
+  onBuildAzure?: (azurePath: string, filelist: string, top: string) => void;
 }
 
 export function BundleWelcome({ onCompare, onBuildAzure, ...pickerProps }: BundleWelcomeProps) {
   const [azurePath, setAzurePath] = useState("");
+  const [filelist, setFilelist] = useState("");
   const [top, setTop] = useState("");
   return (
     <main className="bundle-welcome">
@@ -104,8 +105,9 @@ export function BundleWelcome({ onCompare, onBuildAzure, ...pickerProps }: Bundl
             onSubmit={(event) => {
               event.preventDefault();
               const path = azurePath.trim();
+              const list = filelist.trim();
               const module = top.trim();
-              if (path && module) onBuildAzure(path, module);
+              if (path && list && module) onBuildAzure(path, list, module);
             }}
           >
             <label className="dialog-field">
@@ -116,6 +118,16 @@ export function BundleWelcome({ onCompare, onBuildAzure, ...pickerProps }: Bundl
                 placeholder="az://account/container/path/to/rtl/"
                 disabled={pickerProps.loading}
                 onChange={(event) => setAzurePath(event.target.value)}
+              />
+            </label>
+            <label className="dialog-field">
+              <span>Project filelist</span>
+              <input
+                type="text"
+                value={filelist}
+                placeholder="rtl/design.f"
+                disabled={pickerProps.loading}
+                onChange={(event) => setFilelist(event.target.value)}
               />
             </label>
             <label className="dialog-field">
@@ -131,7 +143,7 @@ export function BundleWelcome({ onCompare, onBuildAzure, ...pickerProps }: Bundl
             <button
               className="dialog-button primary"
               type="submit"
-              disabled={pickerProps.loading || !azurePath.trim() || !top.trim()}
+              disabled={pickerProps.loading || !azurePath.trim() || !filelist.trim() || !top.trim()}
             >
               {pickerProps.loading ? "Building…" : "Build"}
             </button>

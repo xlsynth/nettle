@@ -380,9 +380,11 @@ Set `NETTLE_ENABLE_AZURE_BUNDLES=true` for both the native server and the Vite b
 to enable this optional workflow. It is disabled by default, preserving the
 standard bundle-only viewer and its API behavior.
 
-The welcome screen can submit an `az://` RTL directory and top module to the
-native viewer server. The server downloads the directory, builds it with the
-normal Nettle toolchain, and returns the generated `.nettle` bundle.
+The welcome screen submits an `az://` RTL directory, its relative project
+filelist, and top module to the native viewer server. The server downloads the
+directory, builds the declared filelist with the normal Nettle toolchain, and
+returns the generated `.nettle` bundle. Supplying the filelist preserves the
+project's source ordering, header-only include directories, and quoting rules.
 
 The server process requires the `bbb` command from
 [`boostedblob`](https://pypi.org/project/boostedblob/), standalone Slang, and
@@ -393,6 +395,10 @@ configure the hosted path:
 - `NETTLE_AZURE_ROOTS`: comma-separated allowed Azure path prefixes.
 - `NETTLE_AZURE_TIMEOUT_SECONDS`: download timeout, defaulting to 600 seconds.
 - `NETTLE_SLANG_BIN` and `NETTLE_YOSYS_BIN`: optional explicit compiler paths.
+
+At most two Azure builds run concurrently; additional requests wait for an
+available build slot. The supplied filelist must be a relative `.f` path inside
+the downloaded directory.
 
 `boostedblob` is a public MIT-licensed Python package. Install the same pinned
 version used by the combined Nettle image when running directly on the host:
