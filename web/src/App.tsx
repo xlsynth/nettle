@@ -250,6 +250,58 @@ export default function App() {
     [],
   );
 
+  const buildAzure = useCallback(
+    async (azurePath: string, top: string) => {
+      const request = ++generation.current;
+      const controller = openOwner.current.begin();
+      setLoading(true);
+      setError(undefined);
+      setStatusDetail(`Building ${top} from ${azurePath}`);
+      let handedOff = false;
+      try {
+        const response = await fetch("/api/build", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ azurePath, top }),
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          let message = `Build request failed (${response.status})`;
+          try {
+            const failure = JSON.parse(text) as { error?: string };
+            message = failure.error ?? message;
+          } catch {
+            // Use the status message when the server did not return JSON.
+          }
+          throw new Error(message);
+        }
+        const bundle = await response.blob();
+        if (request !== generation.current || controller.signal.aborted) return;
+        openOwner.current.finish(controller);
+        setLoading(false);
+        handedOff = true;
+        await openBundle(
+          new File([bundle], `${top}.nettle`, {
+            type: "application/octet-stream",
+          }),
+        );
+      } catch (reason) {
+        if (request !== generation.current || controller.signal.aborted) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setError(message);
+        setStatusDetail(`Could not build Azure RTL: ${message}`);
+      } finally {
+        if (!handedOff) openOwner.current.finish(controller);
+        if (request === generation.current && !handedOff) {
+          setLoading(false);
+        }
+      }
+    },
+    [openBundle],
+  );
+
   const openDialog = useCallback(() => {
     setError(undefined);
     setDialogOpen(true);
@@ -381,6 +433,7 @@ export default function App() {
             error={error}
             onSelect={(file) => void openBundle(file)}
             onCompare={openCompareDialog}
+            onBuildAzure={(azurePath, top) => void buildAzure(azurePath, top)}
           />
         </>
       )}

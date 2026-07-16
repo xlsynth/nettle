@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 8090,
-    strictPort: true,
-  },
-  worker: {
-    format: "es",
-  },
+export default defineConfig(({ mode }) => {
+  const environment = loadEnv(mode, ".", "NETTLE_");
+  const allowedHosts = environment.NETTLE_ALLOWED_HOSTS?.split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  return {
+    plugins: [react()],
+    server: {
+      ...(allowedHosts?.length ? { allowedHosts } : {}),
+      port: 8090,
+      proxy: {
+        "/api": environment.NETTLE_API_PROXY_TARGET ?? "http://127.0.0.1:8080",
+      },
+      strictPort: true,
+    },
+    worker: {
+      format: "es",
+    },
+  };
 });

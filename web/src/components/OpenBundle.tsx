@@ -81,9 +81,12 @@ function BundleDropTarget({ loading, error, onSelect }: BundlePickerProps) {
 
 interface BundleWelcomeProps extends BundlePickerProps {
   onCompare?: () => void;
+  onBuildAzure?: (azurePath: string, top: string) => void;
 }
 
-export function BundleWelcome({ onCompare, ...pickerProps }: BundleWelcomeProps) {
+export function BundleWelcome({ onCompare, onBuildAzure, ...pickerProps }: BundleWelcomeProps) {
+  const [azurePath, setAzurePath] = useState("");
+  const [top, setTop] = useState("");
   return (
     <main className="bundle-welcome">
       <div className="bundle-welcome-card">
@@ -95,6 +98,48 @@ export function BundleWelcome({ onCompare, ...pickerProps }: BundleWelcomeProps)
           Nettle reads the bundle directly in this browser. Sources and schematic metadata are never
           uploaded.
         </p>
+        {onBuildAzure ? (
+          <form
+            className="azure-build-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const path = azurePath.trim();
+              const module = top.trim();
+              if (path && module) onBuildAzure(path, module);
+            }}
+          >
+            <label className="dialog-field">
+              <span>Azure path</span>
+              <input
+                type="text"
+                value={azurePath}
+                placeholder="az://account/container/path/to/rtl/"
+                disabled={pickerProps.loading}
+                onChange={(event) => setAzurePath(event.target.value)}
+              />
+            </label>
+            <label className="dialog-field">
+              <span>Top module</span>
+              <input
+                type="text"
+                value={top}
+                placeholder="Required"
+                disabled={pickerProps.loading}
+                onChange={(event) => setTop(event.target.value)}
+              />
+            </label>
+            <button
+              className="dialog-button primary"
+              type="submit"
+              disabled={pickerProps.loading || !azurePath.trim() || !top.trim()}
+            >
+              {pickerProps.loading ? "Building…" : "Build"}
+            </button>
+          </form>
+        ) : null}
+        <div className="bundle-open-divider">
+          <span>or open an existing bundle</span>
+        </div>
         <BundleDropTarget {...pickerProps} />
         {onCompare ? (
           <button className="compare-welcome-action" type="button" onClick={onCompare}>

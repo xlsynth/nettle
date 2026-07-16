@@ -9,6 +9,7 @@ pub mod ir;
 mod builder;
 mod compiler;
 mod resource_limits;
+mod server_builds;
 
 use std::fmt;
 use std::fs::File;
@@ -21,7 +22,7 @@ use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{MethodRouter, any, get};
+use axum::routing::{MethodRouter, get};
 use axum::{Json, Router};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -211,14 +212,7 @@ fn static_router(web_root: &Path, startup_workspace: &StartupWorkspace) -> Resul
     }
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route(
-            "/api",
-            any(|| async { (StatusCode::NOT_FOUND, "Nettle has no viewer API") }),
-        )
-        .route(
-            "/api/{*path}",
-            any(|| async { (StatusCode::NOT_FOUND, "Nettle has no viewer API") }),
-        );
+        .merge(server_builds::router());
     let app = match startup_workspace {
         StartupWorkspace::Empty => app
             .route(STARTUP_BUNDLE_ROUTE, no_store_route(get(startup_not_found)))

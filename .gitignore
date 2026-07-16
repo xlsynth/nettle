@@ -3,6 +3,10 @@
 .vscode/
 .tools/
 .cache/
+.env
+.env.*
+!.env.example
+!web/.env.example
 *.nettle
 __pycache__/
 *.py[cod]

@@ -14,9 +14,10 @@ environment.
 Nettle deliberately separates compilation from viewing. The native CLI runs
 standalone Slang and Yosys with yosys-slang to normalize a design into a
 versioned ZIP + Protobuf bundle. The React viewer validates and renders that
-bundle entirely in browser memory. It does not upload the design, call a
-project API, or need HDL compiler binaries, making Nettle useful for local
-investigation, design review, and static-site deployment.
+bundle entirely in browser memory. Bundles selected with the file picker are
+not uploaded and do not require HDL compiler binaries. A hosted server can
+also enable the Azure build API described below, which resolves RTL into a
+bundle before handing it to the same browser validation path.
 
 ## Demo
 
@@ -368,6 +369,35 @@ See [Specialized images](#specialized-images) for when to use the stripped-down
 In a shared deployment, place the static site behind the normal authentication
 and HTTPS boundary. Design bytes selected with the file picker remain in each
 user's browser.
+
+### Hosted Azure builds
+
+The welcome screen can submit an `az://` RTL directory and top module to the
+native viewer server. The server downloads the directory, builds it with the
+normal Nettle toolchain, and returns the generated `.nettle` bundle.
+
+The server process requires a copy helper supporting `cptree`, standalone
+Slang, and Yosys with the yosys-slang plugin on `PATH`. These environment
+variables configure the hosted path:
+
+- `NETTLE_AZURE_FETCH_BIN`: required copy-helper executable.
+- `NETTLE_AZURE_ROOTS`: comma-separated allowed Azure path prefixes.
+- `NETTLE_AZURE_TIMEOUT_SECONDS`: download timeout, defaulting to 600 seconds.
+- `NETTLE_SLANG_BIN` and `NETTLE_YOSYS_BIN`: optional explicit compiler paths.
+
+The Vite development server proxies `/api` to `127.0.0.1:8080`. Production
+deployments should route the page and `/api` to the same native viewer server.
+Copy `.env.example` and `web/.env.example` to ignored `.env.local` files for
+deployment-specific values; do not commit those local files. Vite loads
+`web/.env.local` automatically. Source the native server environment before
+launching it:
+
+```sh
+set -a
+. ./.env.local
+set +a
+cargo run --locked -- view --bind-address 0.0.0.0 --port 8080
+```
 
 ### Validation
 

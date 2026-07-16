@@ -305,6 +305,42 @@ button:focus-visible {
   line-height: 20px;
 }
 
+.azure-build-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.35fr);
+  gap: 10px;
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.azure-build-form button {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.bundle-open-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.bundle-open-divider::before,
+.bundle-open-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+  content: "";
+}
+
+@media (max-width: 700px) {
+  .azure-build-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .bundle-drop-target {
   display: flex;
   flex-direction: column;

@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("./bundle/provider", () => ({
   COMPARISON_BUNDLE_CACHE_LIMITS: { modulesBytes: 1, sourcesBytes: 1 },
+  DEFAULT_BUNDLE_CACHE_LIMITS: { modulesBytes: 1, sourcesBytes: 1 },
   LocalBundleProvider: { open: harness.open },
 }));
 
@@ -111,6 +112,42 @@ afterEach(() => {
 });
 
 describe("App comparison installation", () => {
+  it("builds an Azure RTL directory and opens the generated bundle", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/build" && init?.method === "POST") {
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Azure path"), {
+      target: { value: "az://storage.example/container/project/hdl/" },
+    });
+    fireEvent.change(screen.getByLabelText("Top module"), {
+      target: { value: "rtx" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Build" }));
+
+    await waitFor(() => expect(harness.open).toHaveBeenCalled());
+    const generated = harness.open.mock.calls.at(-1)?.[0] as File;
+    expect(generated.name).toBe("rtx.nettle");
+    const create = fetch.mock.calls.find(
+      ([input, init]) => String(input) === "/api/build" && init?.method === "POST",
+    );
+    expect(create?.[1]?.body).toBe(
+      JSON.stringify({
+        azurePath: "az://storage.example/container/project/hdl/",
+        top: "rtx",
+      }),
+    );
+  });
+
   it("aborts eager validation when a rapid bundle replacement supersedes it", () => {
     const owner = new OpenRequestOwner();
     const first = owner.begin();
