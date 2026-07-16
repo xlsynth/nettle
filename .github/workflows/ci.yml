@@ -103,7 +103,7 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
-          file: Dockerfile.builder
+          file: Dockerfile
           # The precompiled Slang and yosys-slang toolchains currently support
           # linux/amd64 only, so this target cannot yet run on linux/arm64.
           target: integration-tests
@@ -120,19 +120,30 @@ jobs:
       matrix:
         include:
           # The precompiled Slang and yosys-slang toolchains currently support
-          # linux/amd64 only. The viewer itself supports both architectures.
+          # Builder and combined images are linux/amd64 only; the viewer is
+          # built and published for linux/amd64 and linux/arm64.
           - image: nettle-builder
-            dockerfile: Dockerfile.builder
+            dockerfile: Dockerfile
+            target: builder
+            arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          # Combined compiler-and-viewer runtime published as ghcr.io/xlsynth/nettle.
+          - image: nettle
+            dockerfile: Dockerfile
+            target: nettle
             arch: amd64
             runner: ubuntu-24.04
             platform: linux/amd64
           - image: nettle-viewer
-            dockerfile: Dockerfile.viewer
+            dockerfile: Dockerfile
+            target: viewer
             arch: amd64
             runner: ubuntu-24.04
             platform: linux/amd64
           - image: nettle-viewer
-            dockerfile: Dockerfile.viewer
+            dockerfile: Dockerfile
+            target: viewer
             arch: arm64
             runner: ubuntu-24.04-arm
             platform: linux/arm64
@@ -151,6 +162,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
           platforms: ${{ matrix.platform }}
           load: true
           # Publish only the tested image manifests. BuildKit provenance
@@ -160,6 +172,31 @@ jobs:
           tags: nettle-${{ matrix.image }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+      - name: Smoke-test combined image
+        if: matrix.image == 'nettle'
+        run: |
+          set -euo pipefail
+          # Build the smoke HDL design through `nettle render`, then confirm
+          # that the image serves both its health check and startup bundle.
+          container=nettle-smoke
+          trap 'docker logs "$container"; docker rm --force "$container" || true' EXIT
+          docker run --detach --name "$container" \
+            --user 10001:10001 \
+            -p 127.0.0.1:8080:8080 \
+            -v "$PWD:/work:ro" -w /work \
+            "nettle-${{ matrix.image }}:${{ github.sha }}" render \
+            --filelist integration_tests/smoke/project.f \
+            --project-root integration_tests/smoke \
+            --top top \
+            --output /tmp/nettle-smoke.nettle
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/healthz; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error http://127.0.0.1:8080/startup.nettle --output /dev/null
 
       - name: Save tested image
         run: docker save "nettle-${{ matrix.image }}:${{ github.sha }}" --output "/tmp/${{ matrix.image }}-${{ matrix.arch }}.tar"
@@ -207,8 +244,11 @@ jobs:
       matrix:
         include:
           # The precompiled Slang and yosys-slang toolchains currently support
-          # linux/amd64 only. The viewer itself supports both architectures.
+          # Builder and combined images are linux/amd64 only; the viewer is
+          # built and published for linux/amd64 and linux/arm64.
           - image: nettle-builder
+            runner: ubuntu-24.04
+          - image: nettle
             runner: ubuntu-24.04
           - image: nettle-viewer
             runner: ubuntu-24.04
@@ -276,6 +316,7 @@ jobs:
       matrix:
         include:
           - image: nettle-builder
+          - image: nettle
           - image: nettle-viewer
 
     steps:

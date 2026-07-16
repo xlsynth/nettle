@@ -12,7 +12,7 @@
     "build": "npm --workspace web run build",
     "format": "npm --workspace web run format && npm run format:docs && npm run format:dockerfiles",
     "format:docs": "prettier --write \"**/*.{md,yaml,yml}\" --ignore-path .gitignore",
-    "format:dockerfiles": "prettier --write --plugin=prettier-plugin-sh --parser=dockerfile Dockerfile.builder Dockerfile.viewer",
+    "format:dockerfiles": "prettier --write --plugin=prettier-plugin-sh --parser=dockerfile Dockerfile",
     "lint": "npm --workspace web run check",
     "test": "npm --workspace web run test",
     "test:designs": "scripts/check-design-corpus.py",

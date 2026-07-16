@@ -230,16 +230,30 @@ struct RenderArgs {
 
 #[derive(Debug, Args)]
 struct ViewerServerArgs {
-    /// Production Vite build containing index.html and assets/.
-    #[arg(long, default_value = "web/dist")]
+    /// Production Vite build containing index.html and assets.
+    ///
+    /// The combined container image sets `NETTLE_WEB_ROOT` to its bundled
+    /// static viewer so `nettle render` needs no image-specific CLI flag.
+    #[arg(long, env = "NETTLE_WEB_ROOT", default_value = "web/dist")]
     web_root: PathBuf,
 
-    /// Loopback address used by the optional local static server.
-    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+    /// Address used by the optional local static server.
+    ///
+    /// The combined container image sets `NETTLE_BIND_ADDRESS` to `0.0.0.0` so
+    /// its published port is reachable from the host; native runs stay on
+    /// loopback by default.
+    #[arg(
+        long,
+        env = "NETTLE_BIND_ADDRESS",
+        default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST)
+    )]
     bind_address: IpAddr,
 
     /// TCP port. Use 0 to let the operating system select one.
-    #[arg(long, default_value_t = 8787)]
+    ///
+    /// The combined container image sets `NETTLE_PORT` to its exposed port
+    /// 8080, while native runs retain the 8787 default.
+    #[arg(long, env = "NETTLE_PORT", default_value_t = 8787)]
     port: u16,
 }
 
@@ -352,6 +366,8 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use clap::{CommandFactory, Parser, error::ErrorKind};
     use nettle::bundle::{BuildMetadata, BundleContents, write_bundle};
     use nettle::ir::{DesignSnapshot, GraphEdge, GraphModule, GraphSlice};
@@ -677,5 +693,22 @@ debug_artifacts: true
         assert_eq!(invocation.output, PathBuf::from("top.nettle"));
         assert_eq!(args.server.web_root, PathBuf::from("dist"));
         assert_eq!(args.server.port, 9001);
+    }
+
+    #[test]
+    fn viewer_server_options_accept_container_environment_defaults() {
+        let command = <ViewerServerArgs as clap::Args>::augment_args(clap::Command::new("viewer"));
+
+        for (name, environment) in [
+            ("web_root", "NETTLE_WEB_ROOT"),
+            ("bind_address", "NETTLE_BIND_ADDRESS"),
+            ("port", "NETTLE_PORT"),
+        ] {
+            let argument = command
+                .get_arguments()
+                .find(|argument| argument.get_id() == name)
+                .unwrap_or_else(|| panic!("missing {name} argument"));
+            assert_eq!(argument.get_env(), Some(OsStr::new(environment)));
+        }
     }
 }
