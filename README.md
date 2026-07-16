@@ -21,16 +21,9 @@ investigation, design review, and static-site deployment.
 ## Demo
 
 The demo builds `br_counter.nettle` from the manifest-pinned upstream
-`br_counter.sv` design and starts the viewer at <http://127.0.0.1:8090>. Choose
-one of these paths:
+`br_counter.sv` design and starts the viewer at <http://127.0.0.1:8090>.
 
 ![Nettle rendering the br_counter design](assets/br_counter.png)
-
-| Path                                                                           | What you need                                       | What runs                                            |
-| ------------------------------------------------------------------------------ | --------------------------------------------------- | ---------------------------------------------------- |
-| [Prebuilt container images](#option-1-use-prebuilt-container-images)           | Git, Docker or Podman, and a browser                | Published builder and viewer images from GHCR        |
-| [Locally built container images](#option-2-build-the-container-images-locally) | Git, Docker or Podman, a browser, and this checkout | Builder and viewer images built from your checkout   |
-| [No containers](#option-3-run-without-containers)                              | Git, the native system dependencies, and a browser  | The CLI and viewer built directly from your checkout |
 
 Run all commands from the repository root.
 
@@ -43,122 +36,54 @@ scripts/check-design-corpus.py --prepare-only --corpus bedrock-rtl \
   --workspace target/design-corpora
 ```
 
-### Option 1: use prebuilt container images
+### Build and view with the combined image
 
-These commands pull the published images from GHCR automatically. The builder
-image is Linux/amd64 because the pinned standalone Slang release does not
-publish a Linux/arm64 archive. The viewer image is multi-platform. Stop the
-background viewer afterward with `docker stop nettle-viewer-demo` or
-`podman stop nettle-viewer-demo`.
-
-#### Docker Desktop on macOS/arm64
-
-Docker Desktop supplies amd64 emulation for the builder. A checkout below your
-macOS home directory is shared with Docker Desktop by default.
+The combined Nettle image is the recommended quickstart. It is
+Linux/amd64 because the pinned HDL compiler toolchain does not publish a
+Linux/arm64 archive. `render` leaves the generated bundle in the mounted
+checkout and serves it until you stop the foreground container.
 
 ```sh
 docker run --rm --platform linux/amd64 \
+  -p 127.0.0.1:8090:8080 \
   -v "$PWD:/work" -w /work \
-  ghcr.io/xlsynth/nettle-builder:latest build \
+  ghcr.io/xlsynth/nettle:latest render \
   --filelist target/design-corpora/bedrock-rtl/br_counter.f \
   --project-root target/design-corpora/bedrock-rtl \
   --top br_counter \
-  --output br_counter.nettle && \
-docker run --rm -d \
-  --name nettle-viewer-demo \
-  -p 127.0.0.1:8090:8080 \
-  ghcr.io/xlsynth/nettle-viewer:latest && \
-open http://127.0.0.1:8090
+  --output br_counter.nettle
 ```
 
-#### Docker Engine on Linux/amd64
+Open <http://127.0.0.1:8090> while the container runs.
 
-Use this only when `docker --version` reports Docker Engine. If it begins with
-`podman version`, use the Podman command below.
+On Docker Engine for Linux, add `--user "$(id -u):$(id -g)"` to keep the output
+bundle owned by the calling user. The same command works with `podman` in place
+of `docker`; add `--userns=keep-id:uid=10001,gid=10001` and mount the checkout
+with `:Z` when SELinux relabeling is required.
 
-```sh
-docker run --rm --platform linux/amd64 \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD:/work" -w /work \
-  ghcr.io/xlsynth/nettle-builder:latest build \
-  --filelist target/design-corpora/bedrock-rtl/br_counter.f \
-  --project-root target/design-corpora/bedrock-rtl \
-  --top br_counter \
-  --output br_counter.nettle && \
-docker run --rm -d \
-  --name nettle-viewer-demo \
-  -p 127.0.0.1:8090:8080 \
-  ghcr.io/xlsynth/nettle-viewer:latest && \
-xdg-open http://127.0.0.1:8090
-```
+### Build the combined image locally
 
-#### Podman on Linux/amd64
-
-The fully qualified GHCR image names avoid Podman's short-name registry prompt.
-The user namespace mapping lets the container's UID/GID 10001 account write a
-bundle owned by the calling host user; `:Z` supplies the expected SELinux
-relabeling.
-
-```sh
-podman run --rm --platform linux/amd64 \
-  --userns=keep-id:uid=10001,gid=10001 \
-  -v "$PWD:/work:Z" -w /work \
-  ghcr.io/xlsynth/nettle-builder:latest build \
-  --filelist target/design-corpora/bedrock-rtl/br_counter.f \
-  --project-root target/design-corpora/bedrock-rtl \
-  --top br_counter \
-  --output br_counter.nettle && \
-podman run --rm -d \
-  --name nettle-viewer-demo \
-  -p 127.0.0.1:8090:8080 \
-  ghcr.io/xlsynth/nettle-viewer:latest && \
-xdg-open http://127.0.0.1:8090
-```
-
-### Option 2: build the container images locally
-
-Build both images from the checkout, then run the matching command from
-[Option 1](#option-1-use-prebuilt-container-images) with the local image names
-in place of the GHCR image names. This exercises local source changes while
-keeping the compiler and viewer dependencies inside containers.
-
-For Docker Desktop on macOS/arm64:
+Build the `nettle` target, then use `nettle:latest` in place of
+`ghcr.io/xlsynth/nettle:latest` in the command above:
 
 ```sh
 docker build --platform linux/amd64 \
-  -f Dockerfile.builder -t nettle-builder:latest .
-docker build --platform linux/arm64 \
-  -f Dockerfile.viewer -t nettle-viewer:latest .
+  -f Dockerfile --target nettle -t nettle:latest .
 ```
 
-For Docker Engine on Linux/amd64:
+### Specialized images
 
-```sh
-docker build --platform linux/amd64 \
-  -f Dockerfile.builder -t nettle-builder:latest .
-docker build --platform linux/amd64 \
-  -f Dockerfile.viewer -t nettle-viewer:latest .
-```
+All three published images come from named targets in the root `Dockerfile`.
+Use the smaller specialized images only when one half of the workflow is all
+you need.
 
-For either Docker variant, replace
-`ghcr.io/xlsynth/nettle-builder:latest` with `nettle-builder:latest` and
-`ghcr.io/xlsynth/nettle-viewer:latest` with `nettle-viewer:latest`.
+| Image            | Use when                                                    | Omits                                                                         |
+| ---------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `nettle`         | Building and viewing in one local container                 | Nothing needed for the interactive workflow; linux/amd64 only                 |
+| `nettle-builder` | Producing `.nettle` bundles without hosting a viewer        | Static viewer assets and server dependencies; linux/amd64 only                |
+| `nettle-viewer`  | Hosting or deploying the static viewer for existing bundles | Slang, Yosys, HDL toolchain, and project sources; linux/amd64 and linux/arm64 |
 
-For Podman on Linux/amd64:
-
-```sh
-podman build --platform linux/amd64 \
-  -f Dockerfile.builder -t localhost/nettle-builder:latest .
-podman build --platform linux/amd64 \
-  -f Dockerfile.viewer -t localhost/nettle-viewer:latest .
-```
-
-For Podman, replace the GHCR image names with
-`localhost/nettle-builder:latest` and `localhost/nettle-viewer:latest`,
-respectively. The explicit `localhost/` tags avoid Podman's short-name
-registry prompt.
-
-### Option 3: run without containers
+### Run without containers
 
 This path builds and runs Nettle directly on the host. First install the
 [native system dependencies](#native-system-requirements), then verify the HDL
@@ -171,32 +96,32 @@ npm ci
 npm run build
 ```
 
-Build the demo bundle and start the viewer:
+Build and view the demo bundle:
 
 ```sh
-cargo run --locked -- build \
+cargo run --locked -- render \
   --filelist target/design-corpora/bedrock-rtl/br_counter.f \
   --project-root target/design-corpora/bedrock-rtl \
   --top br_counter \
-  --output br_counter.nettle
-cargo run --locked -- view --web-root web/dist --port 8090
+  --output br_counter.nettle \
+  --web-root web/dist \
+  --port 8090
 ```
 
-Open <http://127.0.0.1:8090> and choose `br_counter.nettle` in the file picker.
+Open <http://127.0.0.1:8090>; Nettle opens `br_counter.nettle` directly.
 Press Ctrl-C in the terminal to stop the viewer.
 
 ## Development
 
 ### With containers
 
-See [Option 2](#option-2-build-the-container-images-locally) for image
-build and run commands matching each supported host. To run the complete test
-suite in its known-good toolchain container, build the builder Dockerfile's
-`test` target:
+See [Build the combined image locally](#build-the-combined-image-locally) for
+the interactive image build command. To run the complete test suite in its
+known-good toolchain container, build the root Dockerfile's `test` target:
 
 ```sh
 docker build --platform linux/amd64 \
-  -f Dockerfile.builder --target test -t nettle-test .
+  -f Dockerfile --target test -t nettle-test .
 ```
 
 ### Native system requirements
@@ -222,13 +147,13 @@ amd64-only. Install:
 - A modern web browser to use the viewer. Chromium is additionally required to
   run the browser end-to-end tests.
 
-The [`Dockerfile.builder`](Dockerfile.builder) and
-[`Dockerfile.viewer`](Dockerfile.viewer) pins are the source of truth for
-known-good toolchains and build environments. They record the exact Slang
-release/source commit and checksums, the checksummed OSS CAD Suite artifact,
-and the Rust and Node image versions. Nettle never downloads HDL compilers at
-runtime. Run `scripts/check-toolchain.sh` after installing native compiler
-tools to exercise their capabilities end to end.
+The [`Dockerfile`](Dockerfile) is the source of truth for known-good
+toolchains and build environments. Its `builder`, `viewer`, and `nettle`
+targets record the exact Slang release/source commit and checksums, the
+checksummed OSS CAD Suite artifact, and the Rust and Node image versions.
+Nettle never downloads HDL compilers at runtime. Run
+`scripts/check-toolchain.sh` after installing native compiler tools to exercise
+their capabilities end to end.
 
 Install the locked JavaScript dependencies and build the static viewer:
 
@@ -426,12 +351,16 @@ compatibility rules.
 ### Viewer containers and deployment
 
 The viewer image contains only the static web build and a small file server; it
-contains no Slang, Yosys, HDL sources, example projects, or default bundle:
+contains no Slang, Yosys, HDL sources, example projects, or default bundle. It
+is published for both linux/amd64 and linux/arm64:
 
 ```sh
 docker run --rm -p 127.0.0.1:8090:8080 \
   ghcr.io/xlsynth/nettle-viewer:latest
 ```
+
+See [Specialized images](#specialized-images) for when to use the stripped-down
+`nettle-builder` and `nettle-viewer` images instead of the combined workflow.
 
 In a shared deployment, place the static site behind the normal authentication
 and HTTPS boundary. Design bytes selected with the file picker remain in each

@@ -2,8 +2,12 @@
 # check=error=true
 # SPDX-License-Identifier: Apache-2.0
 
-# The bundle builder currently targets linux/amd64 because standalone Slang 11
-# does not publish a Linux arm64 archive. The viewer image is multi-platform.
+# Nettle publishes three images from this Dockerfile: the compiler-equipped
+# linux/amd64 builder, the linux/amd64 and linux/arm64 static viewer, and their
+# combined linux/amd64 interactive runtime.
+
+# Download, verify, and isolate the HDL toolchain used only by the linux/amd64
+# builder, combined runtime, and integration-test targets.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS eda-toolchain
 ARG TARGETARCH
 ARG SLANG_RELEASE=v11.0
@@ -60,6 +64,7 @@ RUN set -eu; \
     /opt/slang/slang --version; \
     /opt/oss-cad-suite/bin/yosys -Q -m slang -p "help read_slang" >/dev/null
 
+# Compile the native CLI once for the builder, viewer, and combined targets.
 FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS rust-builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -72,6 +77,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
   cargo build --locked --release --bin nettle \
   && cp target/release/nettle /tmp/nettle
 
+# Compile the static browser viewer once for the viewer and combined targets.
+FROM node:24-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203 AS web-builder
+WORKDIR /src
+COPY package.json package-lock.json ./
+COPY web/package.json web/package.json
+RUN --mount=type=cache,target=/root/.npm \
+  npm ci
+COPY resource-limits.yaml ./
+COPY scripts/generate-resource-limits.mjs scripts/generate-resource-limits.mjs
+COPY web web
+RUN npm run build
+
+# Publishable build-only runtime: CLI plus HDL compilers, without web assets.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends bash ca-certificates coreutils libgcc-s1 passwd \
@@ -89,6 +107,48 @@ USER nettle
 WORKDIR /work
 ENTRYPOINT ["nettle"]
 
+# The interactive image combines the compiler toolchain with the static viewer
+# so `nettle render` can build and serve a bundle in one container.
+FROM builder AS nettle
+USER root
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends curl \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=web-builder /src/web/dist /opt/nettle/web
+ENV NETTLE_WEB_ROOT=/opt/nettle/web \
+  NETTLE_BIND_ADDRESS=0.0.0.0 \
+  NETTLE_PORT=8080
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null || exit 1
+USER nettle
+CMD ["view"]
+
+# The deployable viewer contains no HDL compiler or project source. It remains
+# published for linux/amd64 and linux/arm64 because it carries only the Nettle
+# CLI and static web build.
+FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS viewer
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends ca-certificates curl passwd \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd --create-home --home-dir /home/nettle --uid 10001 --user-group nettle
+COPY --from=rust-builder /tmp/nettle /usr/local/bin/nettle
+COPY --from=web-builder /src/web/dist /opt/nettle/web
+RUN chmod 0555 /usr/local/bin/nettle \
+  && chown -R nettle:nettle /home/nettle
+
+ENV HOME=/home/nettle
+USER nettle
+WORKDIR /opt/nettle
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["nettle", "view", "--bind-address", "0.0.0.0", "--port", "8080", "--web-root", "/opt/nettle/web"]
+
+# Assemble the full integration environment from the checked-out source and
+# verified HDL toolchain; it is not a published runtime image.
+#
 # Shared environment for the integration-only and comprehensive test targets.
 # The precompiled Slang and yosys-slang distributions currently have Linux
 # amd64 binaries only; add linux/arm64 when both upstream toolchains provide it.

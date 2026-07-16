@@ -9,7 +9,7 @@ default-run = "nettle"
 anyhow = "=1.0.102"
 async-stream = "=0.3.6"
 axum = "=0.8.9"
-clap = { version = "=4.6.1", features = ["derive"] }
+clap = { version = "=4.6.1", features = ["derive", "env"] }
 hex = "=0.4.3"
 prost = "=0.13.5"
 serde = { version = "=1.0.228", features = ["derive"] }
