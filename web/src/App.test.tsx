@@ -5,6 +5,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { OpenRequestOwner } from "./App";
+import { BundleWelcome } from "./components/OpenBundle";
 
 const harness = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
@@ -112,6 +113,14 @@ afterEach(() => {
 });
 
 describe("App comparison installation", () => {
+  it("keeps the original welcome UI when Azure bundles are disabled", () => {
+    render(<BundleWelcome loading={false} onSelect={vi.fn()} />);
+
+    expect(screen.queryByLabelText("Azure path")).toBeNull();
+    expect(screen.queryByText("or open an existing bundle")).toBeNull();
+    expect(screen.getByText("Choose a .nettle bundle")).toBeTruthy();
+  });
+
   it("builds an Azure RTL directory and opens the generated bundle", async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

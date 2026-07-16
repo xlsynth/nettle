@@ -46,6 +46,14 @@ pub(crate) fn router() -> Router {
     Router::new().route("/api/build", post(build_azure))
 }
 
+pub(crate) fn enabled() -> bool {
+    enabled_value(std::env::var("ENABLE_AZURE_BUNDLES").ok().as_deref())
+}
+
+fn enabled_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
+
 async fn build_azure(Json(request): Json<AzureBuildRequest>) -> Result<Response, ApiError> {
     validate_request(&request).map_err(bad_request)?;
     let top = request.top.clone();
@@ -243,5 +251,12 @@ mod tests {
             "az://account/container/project-other/",
             "az://account/container/project/"
         ));
+    }
+
+    #[test]
+    fn azure_bundles_are_disabled_by_default() {
+        assert!(!enabled_value(None));
+        assert!(!enabled_value(Some("false")));
+        assert!(enabled_value(Some("true")));
     }
 }

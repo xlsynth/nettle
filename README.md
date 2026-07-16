@@ -372,6 +372,10 @@ user's browser.
 
 ### Hosted Azure builds
 
+Set `ENABLE_AZURE_BUNDLES=true` for both the native server and the Vite build
+to enable this optional workflow. It is disabled by default, preserving the
+standard bundle-only viewer and its API behavior.
+
 The welcome screen can submit an `az://` RTL directory and top module to the
 native viewer server. The server downloads the directory, builds it with the
 normal Nettle toolchain, and returns the generated `.nettle` bundle.
@@ -380,6 +384,7 @@ The server process requires a copy helper supporting `cptree`, standalone
 Slang, and Yosys with the yosys-slang plugin on `PATH`. These environment
 variables configure the hosted path:
 
+- `ENABLE_AZURE_BUNDLES`: set to `true` to expose the controls and API.
 - `NETTLE_AZURE_FETCH_BIN`: required copy-helper executable.
 - `NETTLE_AZURE_ROOTS`: comma-separated allowed Azure path prefixes.
 - `NETTLE_AZURE_TIMEOUT_SECONDS`: download timeout, defaulting to 600 seconds.

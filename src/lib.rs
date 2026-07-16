@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{MethodRouter, get};
+use axum::routing::{MethodRouter, any, get};
 use axum::{Json, Router};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -210,9 +210,19 @@ fn static_router(web_root: &Path, startup_workspace: &StartupWorkspace) -> Resul
     if !index.is_file() {
         anyhow::bail!("web root {} has no index.html", web_root.display());
     }
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .merge(server_builds::router());
+    let app = Router::new().route("/healthz", get(|| async { "ok" }));
+    let app = if server_builds::enabled() {
+        app.merge(server_builds::router())
+    } else {
+        app.route(
+            "/api",
+            any(|| async { (StatusCode::NOT_FOUND, "Nettle has no viewer API") }),
+        )
+        .route(
+            "/api/{*path}",
+            any(|| async { (StatusCode::NOT_FOUND, "Nettle has no viewer API") }),
+        )
+    };
     let app = match startup_workspace {
         StartupWorkspace::Empty => app
             .route(STARTUP_BUNDLE_ROUTE, no_store_route(get(startup_not_found)))

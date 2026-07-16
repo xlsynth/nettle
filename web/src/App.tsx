@@ -43,6 +43,8 @@ import type { LabelSettings } from "./graph/SchematicCanvas";
 import type { GraphNode, GraphSlice, SourceFileRef } from "./model/graph";
 import { entityForSourceSelection } from "./source/cross-probe";
 
+const azureBundlesEnabled = import.meta.env.ENABLE_AZURE_BUNDLES === "true";
+
 interface SourceView {
   path: string;
   source: string;
@@ -433,7 +435,9 @@ export default function App() {
             error={error}
             onSelect={(file) => void openBundle(file)}
             onCompare={openCompareDialog}
-            onBuildAzure={(azurePath, top) => void buildAzure(azurePath, top)}
+            onBuildAzure={
+              azureBundlesEnabled ? (azurePath, top) => void buildAzure(azurePath, top) : undefined
+            }
           />
         </>
       )}

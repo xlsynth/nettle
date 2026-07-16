@@ -137,9 +137,11 @@ export function BundleWelcome({ onCompare, onBuildAzure, ...pickerProps }: Bundl
             </button>
           </form>
         ) : null}
-        <div className="bundle-open-divider">
-          <span>or open an existing bundle</span>
-        </div>
+        {onBuildAzure ? (
+          <div className="bundle-open-divider">
+            <span>or open an existing bundle</span>
+          </div>
+        ) : null}
         <BundleDropTarget {...pickerProps} />
         {onCompare ? (
           <button className="compare-welcome-action" type="button" onClick={onCompare}>
