@@ -450,7 +450,8 @@ export class NettleBundle {
 const sha256 = async (bytes: Uint8Array) => {
   if (!globalThis.crypto?.subtle) {
     throw new Error(
-      "This browser does not provide the Web Crypto API needed for bundle validation",
+      "This browser does not provide the Web Crypto API needed for bundle validation. Open Nettle " +
+        "at https, http://localhost, or http://127.0.0.1; do not use http://0.0.0.0.",
     );
   }
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes as BufferSource);

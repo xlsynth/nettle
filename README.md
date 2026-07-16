@@ -55,6 +55,9 @@ docker run --rm --platform linux/amd64 \
 ```
 
 Open <http://127.0.0.1:8090> while the container runs.
+Do not open `http://0.0.0.0:8080`: it is the container's bind address, not a
+browser URL. Browsers treat it as an insecure origin and disable the Web Crypto
+API Nettle uses to validate bundles.
 
 On Docker Engine for Linux, add `--user "$(id -u):$(id -g)"` to keep the output
 bundle owned by the calling user. The same command works with `podman` in place
