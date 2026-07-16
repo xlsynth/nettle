@@ -151,13 +151,24 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
-          push: false
-          tags: ghcr.io/xlsynth/${{ matrix.image }}:ci-${{ github.sha }}
+          load: true
+          tags: nettle-${{ matrix.image }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
 
+      - name: Save tested image
+        run: docker save "nettle-${{ matrix.image }}:${{ github.sha }}" --output "/tmp/${{ matrix.image }}-${{ matrix.arch }}.tar"
+
+      - name: Upload tested image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.image }}-${{ matrix.arch }}-image
+          path: /tmp/${{ matrix.image }}-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
   publish-images:
-    name: Publish ${{ matrix.image }} image (${{ matrix.arch }})
+    name: Publish ${{ matrix.image }} image
     if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs:
       - pre-commit
@@ -176,70 +187,51 @@ jobs:
           # The precompiled Slang and yosys-slang toolchains currently support
           # linux/amd64 only. The viewer itself supports both architectures.
           - image: nettle-builder
-            dockerfile: Dockerfile.builder
-            arch: amd64
             runner: ubuntu-24.04
-            platform: linux/amd64
           - image: nettle-viewer
-            dockerfile: Dockerfile.viewer
-            arch: amd64
             runner: ubuntu-24.04
-            platform: linux/amd64
-          - image: nettle-viewer
-            dockerfile: Dockerfile.viewer
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Download tested images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+          pattern: ${{ matrix.image }}-*-image
+          path: /tmp/images
+          merge-multiple: true
 
       - name: Log in to GHCR
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
-        with:
-          images: ghcr.io/xlsynth/${{ matrix.image }}
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=sha-
-
-      - name: Publish architecture image
-        id: build
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,name=ghcr.io/xlsynth/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
-          provenance: true
-          sbom: true
-
-      - name: Export image digest
+      - name: Publish tested architecture images
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/xlsynth/${{ matrix.image }}
+          LOCAL_IMAGE: nettle-${{ matrix.image }}:${{ github.sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
         run: |
+          set -euo pipefail
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${DIGEST#sha256:}"
+          archives=(/tmp/images/${{ matrix.image }}-*.tar)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "No tested image archives found" >&2
+            exit 1
+          fi
+          for archive in "${archives[@]}"; do
+            docker load --input "$archive"
+            image="${IMAGE}:${IMAGE_TAG}"
+            docker tag "$LOCAL_IMAGE" "$image"
+            docker push "$image"
+            digest="$(docker image inspect --format='{{index .RepoDigests 0}}' "$image" | sed 's/.*@//')"
+            touch "/tmp/digests/${digest#sha256:}"
+          done
 
-      - name: Upload image digest
+      - name: Upload image digests
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ matrix.image }}-${{ matrix.arch }}-digest
+          name: ${{ matrix.image }}-digest
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
