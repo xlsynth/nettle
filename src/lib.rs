@@ -192,9 +192,10 @@ fn viewer_listening_message(address: SocketAddr) -> String {
     if address.ip().is_unspecified() {
         return format!(
             "Nettle viewer listening on all interfaces (port {}).\n\
-             Open the published host URL (for example, http://127.0.0.1:8090 for \
-             `-p 127.0.0.1:8090:{}`). Do not open http://{address}: browsers treat it as \
-             an insecure origin, so bundle validation cannot run.",
+             Open http://127.0.0.1:{} when running directly. In Docker, open the published host \
+             URL (for example, http://127.0.0.1:8090 for `-p 127.0.0.1:8090:{}`). Do not open \
+             http://{address}: browsers treat it as an insecure origin, so bundle validation cannot run.",
+            address.port(),
             address.port(),
             address.port(),
         );
