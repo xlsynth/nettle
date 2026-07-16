@@ -153,6 +153,10 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           load: true
+          # Publish only the tested image manifests. BuildKit provenance
+          # attestations appear as unknown/unknown entries in GHCR's platform
+          # view and are not part of the runnable multi-platform image.
+          provenance: false
           tags: nettle-${{ matrix.image }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
@@ -168,8 +172,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish-images:
-    name: Publish ${{ matrix.image }} image
+  publish-context:
+    name: Resolve published image tag
     if: >-
       success() &&
       (github.event_name == 'workflow_dispatch' ||
@@ -180,6 +184,20 @@ jobs:
       - npm-test
       - integration-tests
       - image-build
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create dated immutable tag
+        id: tag
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: echo "image_tag=$(date --utc +%F)-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  publish-images:
+    name: Publish ${{ matrix.image }} image
+    needs:
+      - publish-context
     permissions:
       contents: read
       packages: write
@@ -214,7 +232,7 @@ jobs:
         env:
           IMAGE: ghcr.io/xlsynth/${{ matrix.image }}
           LOCAL_IMAGE: nettle-${{ matrix.image }}:${{ github.sha }}
-          IMAGE_TAG: sha-${{ github.sha }}
+          IMAGE_TAG: ${{ needs.publish-context.outputs.image_tag }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/digests
@@ -247,6 +265,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     needs:
+      - publish-context
       - publish-images
     permissions:
       contents: read
@@ -277,27 +296,17 @@ jobs:
           path: /tmp/digests
           merge-multiple: true
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
-        with:
-          images: ghcr.io/xlsynth/${{ matrix.image }}
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=sha-
-
       - name: Publish manifest
         env:
           IMAGE: ghcr.io/xlsynth/${{ matrix.image }}
-          TAGS: ${{ steps.metadata.outputs.tags }}
+          IMAGE_TAG: ${{ needs.publish-context.outputs.image_tag }}
         run: |
           set -euo pipefail
-          tag_args=()
-          while IFS= read -r tag; do
-            tag_args+=(--tag "$tag")
-          done <<< "$TAGS"
           sources=()
           for digest in /tmp/digests/*; do
             sources+=("${IMAGE}@sha256:$(basename "$digest")")
           done
-          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:${IMAGE_TAG}" \
+            "${sources[@]}"
