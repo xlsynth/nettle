@@ -183,9 +183,24 @@ pub async fn serve_static(
         .await
         .with_context(|| format!("binding static viewer to {bind_address}:{port}"))?;
     let address = listener.local_addr()?;
-    println!("Nettle viewer listening on http://{address}");
+    println!("{}", viewer_listening_message(address));
     axum::serve(listener, app).await?;
     Ok(address)
+}
+
+fn viewer_listening_message(address: SocketAddr) -> String {
+    if address.ip().is_unspecified() {
+        return format!(
+            "Nettle viewer listening on all interfaces (port {}).\n\
+             Open the published host URL (for example, http://127.0.0.1:8090 for \
+             `-p 127.0.0.1:8090:{}`). Do not open http://{address}: browsers treat it as \
+             an insecure origin, so bundle validation cannot run.",
+            address.port(),
+            address.port(),
+        );
+    }
+
+    format!("Nettle viewer listening on http://{address}")
 }
 
 fn static_router(web_root: &Path, startup_workspace: &StartupWorkspace) -> Result<Router> {
