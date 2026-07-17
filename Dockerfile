@@ -138,6 +138,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD python3 -c 'from urllib.request import urlopen; urlopen("http://127.0.0.1:8080/healthz").read()' || exit 1
 USER 10001:10001
+WORKDIR /work
 ENTRYPOINT ["nettle"]
 CMD ["view"]
 

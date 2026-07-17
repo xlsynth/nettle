@@ -486,16 +486,15 @@ fn visit_hosted_source_inputs(
                 }
             }
             [b'$', ..] => {
-                let name_start = index + 1;
-                let mut name_end = name_start;
-                while name_end < bytes.len()
-                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
-                {
-                    name_end += 1;
-                }
-                let name = &bytes[name_start..name_end];
-                if name.is_empty() && bytes.get(name_start) == Some(&b'`') {
+                let (name_buffer, name_length, name_end) = scan_source_identifier(bytes, index + 1);
+                let name = &name_buffer[..name_length];
+                if name.is_empty() && bytes.get(name_end) == Some(&b'`') {
                     bail!("hosted builds reject macro-computed system task names");
+                }
+                if name.is_empty() {
+                    bail!(
+                        "hosted builds reject standalone '$' tokens that can construct system task names"
+                    );
                 }
                 if matches!(name, b"readmemh" | b"readmemb" | b"fopen") {
                     bail!(
@@ -505,15 +504,12 @@ fn visit_hosted_source_inputs(
                 }
                 index = name_end.max(index + 1);
             }
+            [b'`', b'`', ..] => {
+                bail!("hosted builds reject macro token concatenation");
+            }
             [b'`', ..] => {
-                let name_start = index + 1;
-                let mut name_end = name_start;
-                while name_end < bytes.len()
-                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
-                {
-                    name_end += 1;
-                }
-                if &bytes[name_start..name_end] != b"include" {
+                let (name_buffer, name_length, name_end) = scan_source_identifier(bytes, index + 1);
+                if &name_buffer[..name_length] != b"include" {
                     index = name_end;
                     continue;
                 }
@@ -536,6 +532,29 @@ fn visit_hosted_source_inputs(
         }
     }
     Ok(())
+}
+
+fn scan_source_identifier(bytes: &[u8], mut index: usize) -> ([u8; 9], usize, usize) {
+    // The longest security-relevant identifier is "readmemh"/"readmemb".
+    // Retain one additional byte so longer identifiers cannot compare equal,
+    // while avoiding per-token heap allocation for pathological input.
+    let mut identifier = [0_u8; 9];
+    let mut length = 0_usize;
+    while index < bytes.len() {
+        match bytes[index..] {
+            [byte, ..] if byte.is_ascii_alphanumeric() || byte == b'_' => {
+                if length < identifier.len() {
+                    identifier[length] = byte;
+                    length += 1;
+                }
+                index += 1;
+            }
+            [b'\\', b'\r', b'\n', ..] => index += 3,
+            [b'\\', b'\n', ..] => index += 2,
+            _ => break,
+        }
+    }
+    (identifier, length, index)
 }
 
 fn skip_quoted_source_string(bytes: &[u8], quote: usize) -> Result<usize> {
@@ -1131,6 +1150,44 @@ string text = "$fopen";
             |_| Ok(()),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn hosted_source_scan_splices_continued_security_tokens() {
+        for source in [
+            "`define LOAD $read\\\nmemh\n`LOAD(\"/etc/machine-id\", memory);",
+            "$read\\\r\nmemb(\"/etc/machine-id\", memory);",
+        ] {
+            let error = visit_hosted_source_inputs(source, |_| Ok(())).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("synthesis-time file I/O system task"),
+                "{error:#}"
+            );
+        }
+
+        for (source, message) in [
+            (
+                "`define DOLLAR $\n`define TASK readmemh\n`DOLLAR`TASK(\"secret\", memory);",
+                "standalone '$'",
+            ),
+            (
+                "`define LOAD $read``memh\n`LOAD(\"secret\", memory);",
+                "macro token concatenation",
+            ),
+        ] {
+            let error = visit_hosted_source_inputs(source, |_| Ok(())).unwrap_err();
+            assert!(error.to_string().contains(message), "{error:#}");
+        }
+
+        let mut includes = Vec::new();
+        visit_hosted_source_inputs("`inc\\\nlude \"/etc/machine-id\"", |include| {
+            includes.push(include.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(includes, ["/etc/machine-id"]);
     }
 
     #[test]
