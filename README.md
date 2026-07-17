@@ -397,8 +397,9 @@ configure the hosted path:
 - `NETTLE_SLANG_BIN` and `NETTLE_YOSYS_BIN`: optional explicit compiler paths.
 
 At most two Azure builds run concurrently; additional requests wait for an
-available build slot. The supplied filelist must be a relative `.f` path inside
-the downloaded directory.
+available build slot. Before compilation, Nettle rejects downloaded trees over
+512 MiB or 10,000 files. The supplied filelist must be a relative `.f` path
+inside the downloaded directory.
 
 `boostedblob` is a public MIT-licensed Python package. Install the same pinned
 version used by the combined Nettle image when running directly on the host:

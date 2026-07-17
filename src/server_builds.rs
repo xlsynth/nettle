@@ -21,6 +21,8 @@ use crate::{BuildOptions, ElaborationOverrides, build_project};
 
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 600;
 const MAX_CONCURRENT_AZURE_BUILDS: usize = 2;
+const MAX_AZURE_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_AZURE_DOWNLOAD_FILES: usize = 10_000;
 
 static AZURE_BUILD_PERMITS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_AZURE_BUILDS)));
@@ -129,6 +131,11 @@ fn build_bundle(request: &AzureBuildRequest) -> Result<Vec<u8>> {
     let source_root = workspace.path().join("source");
     fs::create_dir(&source_root).context("creating source directory")?;
     copy_azure_directory(&request.azure_path, &source_root)?;
+    ensure_tree_within_limits(
+        &source_root,
+        MAX_AZURE_DOWNLOAD_BYTES,
+        MAX_AZURE_DOWNLOAD_FILES,
+    )?;
 
     let filelist = resolve_filelist(&source_root, &request.filelist)?;
     let output = workspace.path().join("design.nettle");
@@ -210,6 +217,54 @@ fn resolve_filelist(root: &Path, value: &str) -> Result<PathBuf> {
     Ok(filelist)
 }
 
+fn ensure_tree_within_limits(root: &Path, maximum_bytes: u64, maximum_files: usize) -> Result<()> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut total_bytes = 0_u64;
+    let mut total_files = 0_usize;
+
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("reading downloaded directory {}", directory.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("reading downloaded entry {}", path.display()))?;
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                bail!(
+                    "downloaded tree contains unsupported entry {}",
+                    path.display()
+                );
+            }
+
+            total_files = total_files
+                .checked_add(1)
+                .context("counting downloaded files")?;
+            if total_files > maximum_files {
+                bail!("Azure download exceeds the {maximum_files}-file limit");
+            }
+            total_bytes = total_bytes
+                .checked_add(
+                    entry
+                        .metadata()
+                        .with_context(|| format!("reading downloaded file {}", path.display()))?
+                        .len(),
+                )
+                .context("counting downloaded bytes")?;
+            if total_bytes > maximum_bytes {
+                bail!("Azure download exceeds the {maximum_bytes}-byte limit");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn bad_request(error: anyhow::Error) -> ApiError {
     ApiError {
         status: StatusCode::BAD_REQUEST,
@@ -259,5 +314,17 @@ mod tests {
         assert!(resolve_filelist(root.path(), "../design.f").is_err());
         assert!(resolve_filelist(root.path(), "/tmp/design.f").is_err());
         assert!(resolve_filelist(root.path(), "top.sv").is_err());
+    }
+
+    #[test]
+    fn downloaded_tree_must_fit_the_configured_limits() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("first.sv"), "1234").unwrap();
+        fs::create_dir(root.path().join("nested")).unwrap();
+        fs::write(root.path().join("nested/second.sv"), "56").unwrap();
+
+        assert!(ensure_tree_within_limits(root.path(), 6, 2).is_ok());
+        assert!(ensure_tree_within_limits(root.path(), 5, 2).is_err());
+        assert!(ensure_tree_within_limits(root.path(), 6, 1).is_err());
     }
 }

@@ -206,13 +206,29 @@ fn viewer_listening_message(address: SocketAddr) -> String {
 }
 
 fn static_router(web_root: &Path, startup_workspace: &StartupWorkspace) -> Result<Router> {
+    static_router_with_azure_builds(web_root, startup_workspace, server_builds::enabled())
+}
+
+fn static_router_with_azure_builds(
+    web_root: &Path,
+    startup_workspace: &StartupWorkspace,
+    azure_builds_enabled: bool,
+) -> Result<Router> {
     let index = web_root.join("index.html");
     if !index.is_file() {
         anyhow::bail!("web root {} has no index.html", web_root.display());
     }
     let app = Router::new().route("/healthz", get(|| async { "ok" }));
-    let app = if server_builds::enabled() {
+    let app = if azure_builds_enabled {
         app.merge(server_builds::router())
+            .route(
+                "/api",
+                any(|| async { (StatusCode::NOT_FOUND, "Nettle has no viewer API") }),
+            )
+            .route(
+                "/api/{*path}",
+                any(|| async { (StatusCode::NOT_FOUND, "Nettle has no viewer API") }),
+            )
     } else {
         app.route(
             "/api",
@@ -545,6 +561,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(index.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn azure_static_host_returns_not_found_for_unknown_api_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("index.html"), "<h1>Nettle</h1>").unwrap();
+        let router =
+            static_router_with_azure_builds(directory.path(), &StartupWorkspace::Empty, true)
+                .unwrap();
+
+        let unknown = router
+            .oneshot(Request::get("/api/v1/project").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
