@@ -39,7 +39,7 @@ const expectedShape = {
     sourcePathComponents: 0,
   },
   native: {
-    builder: { sourceBytes: 0 },
+    builder: { sourceBytes: 0, hostedSourceBytes: 0 },
     compiler: {
       errorOutputBytes: 0,
       processOutputBytes: 0,

@@ -57,6 +57,7 @@ TypeScript equivalents because the browser never executes these operations.
 | YAML path                              | Default      | Purpose and rationale                                                                           |
 | -------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------- |
 | `native.builder.sourceBytes`           | 4 MiB        | Bounds each embedded HDL source; unusually large generated sources should be split or excluded. |
+| `native.builder.hostedSourceBytes`     | 32 MiB       | Bounds cumulative source bytes retained and encoded by one untrusted hosted build.              |
 | `native.compiler.errorOutputBytes`     | 32 KiB       | Keeps displayed failure messages actionable and bounded.                                        |
 | `native.compiler.processOutputBytes`   | 4 MiB/stream | Retains useful transcripts while continuously draining larger child-process output.             |
 | `native.compiler.diagnosticsJsonBytes` | 64 MiB       | Matches the maximum bundle-entry scale and bounds diagnostics parsing.                          |

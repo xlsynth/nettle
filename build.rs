@@ -70,6 +70,7 @@ struct NativeLimits {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BuilderLimits {
     source_bytes: u64,
+    hosted_source_bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -189,6 +190,7 @@ fn validate_limits(limits: &ResourceLimits) -> Result<(), Box<dyn std::error::Er
         limits.bundle.protobuf.diagnostics,
         limits.bundle.source_path_components as u64,
         limits.native.builder.source_bytes,
+        limits.native.builder.hosted_source_bytes,
         limits.native.compiler.error_output_bytes as u64,
         limits.native.compiler.process_output_bytes as u64,
         limits.native.compiler.diagnostics_json_bytes as u64,
@@ -225,6 +227,14 @@ fn validate_limits(limits: &ResourceLimits) -> Result<(), Box<dyn std::error::Er
     }
     if limits.native.builder.source_bytes > limits.bundle.archive.entry_bytes {
         return Err("native source byte limit cannot exceed bundle entry byte limit".into());
+    }
+    if limits.native.builder.source_bytes > limits.native.builder.hosted_source_bytes
+        || limits.native.builder.hosted_source_bytes > limits.bundle.archive.total_bytes
+    {
+        return Err(
+            "hosted source byte limit must be between the per-source and archive-total limits"
+                .into(),
+        );
     }
     if limits.bundle.protobuf.string_bytes as u64 > limits.bundle.archive.entry_bytes {
         return Err("Protobuf string byte limit cannot exceed bundle entry byte limit".into());
@@ -286,8 +296,9 @@ fn generate_rust_limits(limits: &ResourceLimits) -> String {
     .expect("writing to String cannot fail");
     writeln!(
         output,
-        "pub(crate) mod native {{\n    pub(crate) mod builder {{ pub(crate) const SOURCE_BYTES: u64 = {}; }}\n    pub(crate) mod compiler {{\n        pub(crate) const ERROR_OUTPUT_BYTES: usize = {};\n        pub(crate) const PROCESS_OUTPUT_BYTES: usize = {};\n        pub(crate) const DIAGNOSTICS_JSON_BYTES: usize = {};\n        pub(crate) const MODEL_JSON_BYTES: usize = {};\n    }}\n    pub(crate) mod filelist {{\n        pub(crate) const DEPTH: usize = {};\n        pub(crate) const FILES: usize = {};\n        pub(crate) const BYTES: usize = {};\n        pub(crate) const TOKENS: usize = {};\n    }}\n    pub(crate) mod yosys_import {{ pub(crate) const ENDPOINT_PAIRS: usize = {}; }}\n}}",
+        "pub(crate) mod native {{\n    pub(crate) mod builder {{\n        pub(crate) const SOURCE_BYTES: u64 = {};\n        pub(crate) const HOSTED_SOURCE_BYTES: u64 = {};\n    }}\n    pub(crate) mod compiler {{\n        pub(crate) const ERROR_OUTPUT_BYTES: usize = {};\n        pub(crate) const PROCESS_OUTPUT_BYTES: usize = {};\n        pub(crate) const DIAGNOSTICS_JSON_BYTES: usize = {};\n        pub(crate) const MODEL_JSON_BYTES: usize = {};\n    }}\n    pub(crate) mod filelist {{\n        pub(crate) const DEPTH: usize = {};\n        pub(crate) const FILES: usize = {};\n        pub(crate) const BYTES: usize = {};\n        pub(crate) const TOKENS: usize = {};\n    }}\n    pub(crate) mod yosys_import {{ pub(crate) const ENDPOINT_PAIRS: usize = {}; }}\n}}",
         native.builder.source_bytes,
+        native.builder.hosted_source_bytes,
         native.compiler.error_output_bytes,
         native.compiler.process_output_bytes,
         native.compiler.diagnostics_json_bytes,

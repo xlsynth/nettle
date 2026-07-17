@@ -401,11 +401,13 @@ At most two Azure builds run concurrently; additional requests wait for an
 available build slot. Before compilation, Nettle rejects downloaded trees over
 512 MiB or 10,000 files. The supplied filelist must be a relative `.f` path
 inside the downloaded directory, and Azure paths must use traversal-free,
-unescaped path components under an allowed prefix. Hosted builds also confine filelist and
-preprocessor inputs, reject synthesis-time `$readmemh`, `$readmemb`, and
-`$fopen` file access, and apply the bundle model-size limit while compiler
-outputs are being written. If the HTTP request is dropped, Nettle terminates
-the active download and compiler process groups and releases its build slot.
+unescaped path components under an allowed prefix. Hosted builds also confine
+filelist and preprocessor inputs, reject macro replacements that can construct
+compiler file I/O, reject synthesis-time `$readmemh`, `$readmemb`, and `$fopen`
+file access, cap cumulative embedded source text at 32 MiB, and apply the bundle
+model-size limit while compiler outputs are being written. If the HTTP request
+is dropped, Nettle terminates the active download and compiler process groups
+and releases its build slot.
 
 `boostedblob` is a public MIT-licensed Python package. Its direct requirement
 is recorded in `requirements.in`; `uv` compiles that input into the checked-in

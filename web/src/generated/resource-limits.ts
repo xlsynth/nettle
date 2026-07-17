@@ -35,6 +35,7 @@ export const RESOURCE_LIMITS = {
   native: {
     builder: {
       sourceBytes: 4194304,
+      hostedSourceBytes: 33554432,
     },
     compiler: {
       errorOutputBytes: 32768,

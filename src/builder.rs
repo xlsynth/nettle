@@ -25,7 +25,9 @@ use crate::compiler::{
     CompilerOptions, DefineOverride, ElaborationOverrides, ParameterOverride,
     compile_filelist_with_timeout, compile_untrusted_filelist_with_timeout,
 };
-use crate::resource_limits::native::builder::SOURCE_BYTES as MAX_SOURCE_BYTES;
+use crate::resource_limits::native::builder::{
+    HOSTED_SOURCE_BYTES as MAX_HOSTED_SOURCE_BYTES, SOURCE_BYTES as MAX_SOURCE_BYTES,
+};
 
 #[derive(Debug, Clone)]
 /// Inputs for one source-to-bundle build.
@@ -130,7 +132,7 @@ fn build_project_impl(
             .expect("untrusted builds have a cancellation flag");
         require_active_hosted_build(cancelled)?;
         require_compiler_inputs_within(&root, &project)?;
-        require_hosted_source_inputs(&root, &project, cancelled)?;
+        require_hosted_source_inputs(&root, &project, &options.elaboration, cancelled)?;
     }
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
@@ -147,11 +149,11 @@ fn build_project_impl(
         slang_bin: options.slang_bin.clone(),
         yosys_bin: options.yosys_bin.clone(),
     };
-    let artifacts = if let Some(cancelled) = cancellation {
+    let artifacts = if let Some(cancelled) = cancellation.as_ref() {
         compile_untrusted_filelist_with_timeout(
             &compiler_options,
             options.compiler_timeout,
-            cancelled,
+            Arc::clone(cancelled),
         )
     } else {
         compile_filelist_with_timeout(&compiler_options, options.compiler_timeout)
@@ -181,6 +183,8 @@ fn build_project_impl(
         &project,
         &mut snapshot,
         Some(&artifacts.source_path_base),
+        confine_untrusted_inputs.then_some(MAX_HOSTED_SOURCE_BYTES),
+        cancellation.as_deref(),
     )?;
     let tools = artifacts
         .tools
@@ -270,8 +274,10 @@ fn require_compiler_inputs_within(root: &Path, project: &NormalizedProject) -> R
 fn require_hosted_source_inputs(
     root: &Path,
     project: &NormalizedProject,
+    overrides: &ElaborationOverrides,
     cancelled: &AtomicBool,
 ) -> Result<()> {
+    require_safe_hosted_define_replacements(project, overrides)?;
     let include_directories = project
         .include_directories
         .iter()
@@ -342,6 +348,33 @@ fn require_hosted_source_inputs(
             Ok(())
         })
         .with_context(|| format!("parsing source {} for includes", source.display()))?;
+    }
+    Ok(())
+}
+
+fn require_safe_hosted_define_replacements(
+    project: &NormalizedProject,
+    overrides: &ElaborationOverrides,
+) -> Result<()> {
+    let filelist_defines = project.defines.iter().filter_map(|define| {
+        define
+            .value
+            .as_deref()
+            .map(|value| (define.name.as_str(), value))
+    });
+    let override_defines = overrides.defines.iter().filter_map(|define| {
+        define
+            .value
+            .as_deref()
+            .map(|value| (define.name.as_str(), value))
+    });
+    for (name, value) in filelist_defines.chain(override_defines) {
+        if value.bytes().any(|byte| matches!(byte, b'$' | b'`')) {
+            bail!(
+                "hosted build macro {name:?} replacement contains '$' or '`'; \
+                 hosted macro replacements may not construct compiler file I/O"
+            );
+        }
     }
     Ok(())
 }
@@ -617,6 +650,8 @@ fn collect_sources(
     project: &NormalizedProject,
     snapshot: &mut DesignSnapshot,
     compiler_source_base: Option<&Path>,
+    max_total_bytes: Option<u64>,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<Vec<BundleSource>> {
     let mut spellings = BTreeSet::new();
     spellings.extend(project.sources.iter().map(|source| source.path.clone()));
@@ -635,7 +670,11 @@ fn collect_sources(
     let filelist_directory = Path::new(&project.root_filelist).parent();
     let mut by_relative = BTreeMap::<String, BundleSource>::new();
     let mut spelling_to_ref = BTreeMap::<String, SourceFileRef>::new();
+    let mut total_bytes = 0_u64;
     for spelling in spellings {
+        if let Some(cancelled) = cancelled {
+            require_active_hosted_build(cancelled)?;
+        }
         let Some(canonical) =
             resolve_source_path(root, compiler_source_base.or(filelist_directory), &spelling)
         else {
@@ -646,21 +685,48 @@ fn collect_sources(
         if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
             continue;
         }
-        let contents = fs::read(&canonical)?;
-        if std::str::from_utf8(&contents).is_err() || contents.contains(&0) {
-            continue;
-        }
         let relative = relative_string(root, &canonical);
         let file_ref = SourceFileRef {
             id: stable_id("file", &relative),
             path: relative.clone(),
         };
         spelling_to_ref.insert(spelling, file_ref.clone());
-        by_relative.entry(relative.clone()).or_insert(BundleSource {
-            id: file_ref.id,
-            path: relative,
-            contents,
-        });
+        if by_relative.contains_key(&relative) {
+            continue;
+        }
+        if let Some(limit) = max_total_bytes
+            && total_bytes.saturating_add(metadata.len()) > limit
+        {
+            bail!(
+                "hosted bundle sources exceed the {}-byte cumulative limit at {}",
+                limit,
+                canonical.display()
+            );
+        }
+        let contents = fs::read(&canonical)?;
+        if std::str::from_utf8(&contents).is_err() || contents.contains(&0) {
+            continue;
+        }
+        let source_bytes = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+        let next_total = total_bytes.saturating_add(source_bytes);
+        if let Some(limit) = max_total_bytes
+            && next_total > limit
+        {
+            bail!(
+                "hosted bundle sources exceed the {}-byte cumulative limit at {}",
+                limit,
+                canonical.display()
+            );
+        }
+        total_bytes = next_total;
+        by_relative.insert(
+            relative.clone(),
+            BundleSource {
+                id: file_ref.id,
+                path: relative,
+                contents,
+            },
+        );
     }
 
     for graph in snapshot.modules.values_mut() {
@@ -958,8 +1024,13 @@ mod tests {
 
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let root = fs::canonicalize(root).unwrap();
-        let error =
-            require_hosted_source_inputs(&root, &project, &AtomicBool::new(false)).unwrap_err();
+        let error = require_hosted_source_inputs(
+            &root,
+            &project,
+            &ElaborationOverrides::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("absolute"), "{error:#}");
     }
 
@@ -983,9 +1054,40 @@ mod tests {
 
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let root = fs::canonicalize(root).unwrap();
-        let error =
-            require_hosted_source_inputs(&root, &project, &AtomicBool::new(false)).unwrap_err();
+        let error = require_hosted_source_inputs(
+            &root,
+            &project,
+            &ElaborationOverrides::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("absolute"), "{error:#}");
+    }
+
+    #[test]
+    fn hosted_macro_replacements_cannot_construct_file_io() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("project.f"),
+            "-D LOAD=$readmemh\ntop.sv\n",
+        )
+        .unwrap();
+        fs::write(directory.path().join("top.sv"), "module top; endmodule\n").unwrap();
+
+        let project =
+            crate::ir::normalize_filelist(directory.path().join("project.f"), Some("top")).unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let error = require_hosted_source_inputs(
+            &root,
+            &project,
+            &ElaborationOverrides::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("macro \"LOAD\" replacement"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -1046,5 +1148,33 @@ string text = "$fopen";
             error.to_string().contains("hosted source-scan limit"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn hosted_embedded_sources_have_a_cumulative_byte_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("project.f"), "a.sv\nb.sv\n").unwrap();
+        fs::write(directory.path().join("a.sv"), "a\n").unwrap();
+        fs::write(directory.path().join("b.sv"), "b\n").unwrap();
+        let project =
+            crate::ir::normalize_filelist(directory.path().join("project.f"), Some("top")).unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let mut snapshot = DesignSnapshot {
+            snapshot_id: "snapshot".to_owned(),
+            top: "top".to_owned(),
+            tops: vec!["top".to_owned()],
+            modules: BTreeMap::new(),
+        };
+
+        let error = collect_sources(
+            &root,
+            &project,
+            &mut snapshot,
+            None,
+            Some(3),
+            Some(&AtomicBool::new(false)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cumulative limit"), "{error:#}");
     }
 }
