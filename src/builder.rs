@@ -95,6 +95,7 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
     let project = normalize_filelist_within(&filelist, options.top.as_deref(), &root)
         .context("normalizing filelist")?;
     require_compiler_inputs_within(&root, &project)?;
+    require_source_includes_within(&root, &project)?;
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
         .top
@@ -222,6 +223,143 @@ fn require_compiler_inputs_within(root: &Path, project: &NormalizedProject) -> R
         require_within(root, &path, "filelist input")?;
     }
     Ok(())
+}
+
+fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> Result<()> {
+    let include_directories = project
+        .include_directories
+        .iter()
+        .map(|directory| {
+            fs::canonicalize(&directory.path).with_context(|| {
+                format!(
+                    "locating include directory {:?} declared at {}:{}:{}",
+                    directory.path,
+                    directory.origin.file,
+                    directory.origin.line,
+                    directory.origin.column
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut pending = project
+        .sources
+        .iter()
+        .chain(&project.library_files)
+        .map(|source| {
+            fs::canonicalize(&source.path).with_context(|| {
+                format!(
+                    "locating source {:?} declared at {}:{}:{}",
+                    source.path, source.origin.file, source.origin.line, source.origin.column
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut checked = BTreeSet::new();
+
+    while let Some(source) = pending.pop() {
+        if !checked.insert(source.clone()) {
+            continue;
+        }
+        require_within(root, &source, "source include input")?;
+        let contents = fs::read_to_string(&source)
+            .with_context(|| format!("reading source {} for includes", source.display()))?;
+        for include in source_include_paths(&contents)
+            .with_context(|| format!("parsing source {} for includes", source.display()))?
+        {
+            let include = Path::new(&include);
+            if include.is_absolute() {
+                bail!(
+                    "source include {} in {} is absolute; Azure builds require project-relative includes",
+                    include.display(),
+                    source.display()
+                );
+            }
+            let mut candidates = std::iter::once(
+                source
+                    .parent()
+                    .ok_or_else(|| anyhow!("source {} has no parent directory", source.display()))?
+                    .join(include),
+            )
+            .chain(
+                include_directories
+                    .iter()
+                    .map(|directory| directory.join(include)),
+            );
+            if let Some(resolved) =
+                candidates.find_map(|candidate| fs::canonicalize(candidate).ok())
+            {
+                require_within(root, &resolved, "source include")?;
+                pending.push(resolved);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn source_include_paths(contents: &str) -> Result<Vec<String>> {
+    let bytes = contents.as_bytes();
+    let mut includes = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index..] {
+            [b'/', b'/', ..] => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            [b'/', b'*', ..] => {
+                index += 2;
+                while index + 1 < bytes.len() && bytes[index..index + 2] != *b"*/" {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+            }
+            [b'"', ..] => index = skip_quoted_source_string(bytes, index)?,
+            [b'`', ..] => {
+                let name_start = index + 1;
+                let mut name_end = name_start;
+                while name_end < bytes.len()
+                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+                {
+                    name_end += 1;
+                }
+                if &bytes[name_start..name_end] != b"include" {
+                    index = name_end;
+                    continue;
+                }
+                index = name_end;
+                while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                    index += 1;
+                }
+                if index == bytes.len() || bytes[index] != b'"' {
+                    bail!("source-level `include directives must use literal double-quoted paths");
+                }
+                let path_start = index + 1;
+                let path_end = skip_quoted_source_string(bytes, index)? - 1;
+                if bytes[path_start..path_end].contains(&b'\\') {
+                    bail!("source-level `include paths must not use escape sequences");
+                }
+                includes.push(contents[path_start..path_end].to_owned());
+                index = path_end + 1;
+            }
+            _ => index += 1,
+        }
+    }
+    Ok(includes)
+}
+
+fn skip_quoted_source_string(bytes: &[u8], quote: usize) -> Result<usize> {
+    let mut index = quote + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'"' => return Ok(index + 1),
+            b'\n' | b'\r' => bail!("unterminated source string"),
+            _ => index += 1,
+        }
+    }
+    bail!("unterminated source string")
 }
 
 fn reject_ineffective_define_overrides(
@@ -583,5 +721,32 @@ mod tests {
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let error = require_compiler_inputs_within(&root, &project).unwrap_err();
         assert!(error.to_string().contains("outside project root"));
+    }
+
+    #[test]
+    fn source_includes_cannot_escape_the_project_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("project.f"), "top.sv\n").unwrap();
+        fs::write(
+            root.join("top.sv"),
+            "// `include \"ignored.svh\"\n`include \"/proc/self/environ\"\nmodule top; endmodule\n",
+        )
+        .unwrap();
+
+        let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let error = require_source_includes_within(&root, &project).unwrap_err();
+        assert!(error.to_string().contains("absolute"), "{error:#}");
+    }
+
+    #[test]
+    fn source_include_parser_ignores_comments_and_strings() {
+        let includes = source_include_paths(
+            "// `include \"ignored.svh\"\nstring value = \"`include \\\"also-ignored.svh\\\"\";\n`include \"used.svh\"\n",
+        )
+        .unwrap();
+        assert_eq!(includes, ["used.svh"]);
     }
 }
