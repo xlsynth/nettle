@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useEffect, useId, useRef, useState } from "react";
+import type { Demo } from "../demos";
 import type { MatchingPolicy } from "./comparison-types";
 
 interface BundlePickerProps {
@@ -81,9 +82,17 @@ function BundleDropTarget({ loading, error, onSelect }: BundlePickerProps) {
 
 interface BundleWelcomeProps extends BundlePickerProps {
   onCompare?: () => void;
+  demos?: readonly Demo[];
+  onOpenDemo?: (demo: Demo) => void;
 }
 
-export function BundleWelcome({ onCompare, ...pickerProps }: BundleWelcomeProps) {
+export function BundleWelcome({
+  onCompare,
+  demos,
+  onOpenDemo,
+  ...pickerProps
+}: BundleWelcomeProps) {
+  const demoTitleId = useId();
   return (
     <main className="bundle-welcome">
       <div className="bundle-welcome-card">
@@ -96,6 +105,25 @@ export function BundleWelcome({ onCompare, ...pickerProps }: BundleWelcomeProps)
           uploaded.
         </p>
         <BundleDropTarget {...pickerProps} />
+        {demos && onOpenDemo ? (
+          <section className="demo-examples" aria-labelledby={demoTitleId}>
+            <h2 id={demoTitleId}>Try an example</h2>
+            <div className="demo-example-list">
+              {demos.map((demo) => (
+                <button
+                  key={demo.id}
+                  className="demo-example"
+                  type="button"
+                  disabled={pickerProps.loading}
+                  onClick={() => onOpenDemo(demo)}
+                >
+                  <strong>{demo.title}</strong>
+                  <span>{demo.description}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
         {onCompare ? (
           <button className="compare-welcome-action" type="button" onClick={onCompare}>
             <GitCompareArrows size={15} /> Compare two bundles

@@ -18,6 +18,15 @@ bundle entirely in browser memory. It does not upload the design, call a
 project API, or need HDL compiler binaries, making Nettle useful for local
 investigation, design review, and static-site deployment.
 
+## Try the public demo
+
+The GitHub Pages deployment at <https://xlsynth.github.io/nettle> hosts the
+browser viewer with public bundles generated from Nettle-owned integration
+fixtures. Choose an example to explore a single design or schematic diff, or
+open a local `.nettle` file; local files are read and rendered entirely in the
+browser and are never uploaded. The demo is a static viewer, not a hosted HDL
+compiler, and its bundled examples (including their sources) are public.
+
 ## Demo
 
 The demo builds `br_counter.nettle` from the manifest-pinned upstream

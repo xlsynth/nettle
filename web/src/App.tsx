@@ -20,7 +20,7 @@ import {
   normalizePath,
   pathsReferToSameFile,
 } from "./api/normalize";
-import { decodeComparisonStartup, startupFile } from "./api/startup";
+import { decodeComparisonStartup, startupFile, staticAssetRoute } from "./api/startup";
 import { loadWorkspace } from "./api/workspace";
 import {
   COMPARISON_BUNDLE_CACHE_LIMITS,
@@ -35,6 +35,7 @@ import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
 import { Inspector } from "./components/Inspector";
 import { InstanceHierarchy } from "./components/InstanceHierarchy";
 import { BundleWelcome, CompareBundlesDialog, OpenBundleDialog } from "./components/OpenBundle";
+import { DEMOS, type Demo } from "./demos";
 import type { ConstantRadix } from "./graph/constant-format";
 import { TOP_MODULE_ID } from "./graph/constants";
 import type { LayoutProfile } from "./graph/layout-profile";
@@ -260,6 +261,31 @@ export default function App() {
     setCompareDialogOpen(true);
   }, []);
 
+  const openDemo = useCallback(
+    async (demo: Demo) => {
+      setLoading(true);
+      setError(undefined);
+      setStatusDetail(`Loading ${demo.title}`);
+      try {
+        if (demo.kind === "bundle") {
+          await openBundle(await startupFile(demo.bundle));
+          return;
+        }
+        const [reference, candidate] = await Promise.all([
+          startupFile(demo.reference),
+          startupFile(demo.candidate),
+        ]);
+        await openComparison(reference, candidate, "conservative");
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setError(message);
+        setStatusDetail(`Could not load ${demo.title}: ${message}`);
+        setLoading(false);
+      }
+    },
+    [openBundle, openComparison],
+  );
+
   useEffect(
     () => () => {
       openOwner.current.abort();
@@ -273,7 +299,10 @@ export default function App() {
     const controller = new AbortController();
     const startupGeneration = generation.current;
     const ownsStartupRequest = () => generation.current === startupGeneration;
-    void fetch("/startup-comparison.json", { cache: "no-store", signal: controller.signal })
+    void fetch(staticAssetRoute("/startup-comparison.json"), {
+      cache: "no-store",
+      signal: controller.signal,
+    })
       .then(async (comparisonResponse) => {
         if (!ownsStartupRequest()) return;
         const comparisonAvailable =
@@ -293,7 +322,7 @@ export default function App() {
         if (comparisonResponse.status !== 404 && !comparisonResponse.ok) {
           throw new Error(`startup comparison request failed (${comparisonResponse.status})`);
         }
-        const response = await fetch("/startup.nettle", {
+        const response = await fetch(staticAssetRoute("/startup.nettle"), {
           cache: "no-store",
           signal: controller.signal,
         });
@@ -381,6 +410,8 @@ export default function App() {
             error={error}
             onSelect={(file) => void openBundle(file)}
             onCompare={openCompareDialog}
+            demos={DEMOS}
+            onOpenDemo={(demo) => void openDemo(demo)}
           />
         </>
       )}

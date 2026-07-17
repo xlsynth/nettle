@@ -347,6 +347,59 @@ button:focus-visible {
   font-size: 11px;
 }
 
+.demo-examples {
+  margin-top: 20px;
+  text-align: left;
+}
+
+.demo-examples h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.demo-example-list {
+  display: grid;
+  gap: 8px;
+}
+
+.demo-example {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.demo-example:hover:not(:disabled) {
+  border-color: var(--green);
+  background: var(--green-faint);
+}
+
+.demo-example:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.demo-example strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.demo-example span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .bundle-open-error {
   display: flex;
   gap: 8px;

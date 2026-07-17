@@ -13,6 +13,10 @@ export interface ComparisonStartupDescriptor {
   matching: StartupMatchingPolicy;
 }
 
+/** Resolves a static asset under the Vite deployment base path. */
+export const staticAssetRoute = (route: string) =>
+  `${import.meta.env.BASE_URL}${route.replace(/^\/+/, "")}`;
+
 const startupBundle = (value: unknown, side: string): StartupBundleDescriptor => {
   if (!value || typeof value !== "object") {
     throw new Error(`Comparison startup ${side} descriptor is missing`);
@@ -53,7 +57,7 @@ export const startupFile = async (
   descriptor: StartupBundleDescriptor,
   signal?: AbortSignal,
 ): Promise<File> => {
-  const response = await fetch(descriptor.route, { cache: "no-store", signal });
+  const response = await fetch(staticAssetRoute(descriptor.route), { cache: "no-store", signal });
   if (!response.ok) {
     throw new Error(`startup bundle request failed (${response.status})`);
   }
