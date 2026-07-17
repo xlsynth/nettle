@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -13,8 +14,8 @@ use crate::bundle::{
 };
 use crate::ir::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, NormalizedArgumentKind, NormalizedProject,
-    SourceFileRef, import_yosys_json, merge_slang_instance_parameters, normalize_filelist_within,
-    stable_id,
+    SourceFileRef, import_yosys_json, merge_slang_instance_parameters, normalize_filelist,
+    normalize_filelist_within, stable_id,
 };
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -77,17 +78,17 @@ impl BuiltProject {
 
 /// Compiles a filelist and collects everything needed for a portable bundle.
 pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
-    build_project_with_source_include_confinement(options, false)
+    build_project_impl(options, false)
 }
 
 /// Compiles an untrusted hosted filelist after confining source-level includes.
 pub(crate) fn build_untrusted_project(options: &BuildOptions) -> Result<BuiltProject> {
-    build_project_with_source_include_confinement(options, true)
+    build_project_impl(options, true)
 }
 
-fn build_project_with_source_include_confinement(
+fn build_project_impl(
     options: &BuildOptions,
-    strict_source_include_confinement: bool,
+    confine_untrusted_inputs: bool,
 ) -> Result<BuiltProject> {
     options
         .elaboration
@@ -105,10 +106,14 @@ fn build_project_with_source_include_confinement(
     }
     require_within(&root, &filelist, "root filelist")?;
 
-    let project = normalize_filelist_within(&filelist, options.top.as_deref(), &root)
-        .context("normalizing filelist")?;
-    require_compiler_inputs_within(&root, &project)?;
-    if strict_source_include_confinement {
+    let project = if confine_untrusted_inputs {
+        normalize_filelist_within(&filelist, options.top.as_deref(), &root)
+    } else {
+        normalize_filelist(&filelist, options.top.as_deref())
+    }
+    .context("normalizing filelist")?;
+    if confine_untrusted_inputs {
+        require_compiler_inputs_within(&root, &project)?;
         require_source_includes_within(&root, &project)?;
     }
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
@@ -270,19 +275,14 @@ fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> R
         })
         .collect::<Result<Vec<_>>>()?;
     pending.extend(library_source_files(&project.library_directories)?);
-    let mut checked = BTreeSet::new();
+    let mut discovered = pending.into_iter().collect::<BTreeSet<_>>();
+    let mut pending = discovered.iter().cloned().collect::<Vec<_>>();
 
     while let Some(source) = pending.pop() {
-        if !checked.insert(source.clone()) {
-            continue;
-        }
         require_within(root, &source, "source include input")?;
-        let contents = fs::read_to_string(&source)
-            .with_context(|| format!("reading source {} for includes", source.display()))?;
-        for include in source_include_paths(&contents)
-            .with_context(|| format!("parsing source {} for includes", source.display()))?
-        {
-            let include = Path::new(&include);
+        let contents = read_bounded_source_text(&source)?;
+        visit_source_include_paths(&contents, |include| {
+            let include = Path::new(include);
             if include.is_absolute() {
                 bail!(
                     "source include {} in {} is absolute; Azure builds require project-relative includes",
@@ -305,11 +305,33 @@ fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> R
                 candidates.find_map(|candidate| fs::canonicalize(candidate).ok())
             {
                 require_within(root, &resolved, "source include")?;
-                pending.push(resolved);
+                if discovered.insert(resolved.clone()) {
+                    pending.push(resolved);
+                }
             }
-        }
+            Ok(())
+        })
+        .with_context(|| format!("parsing source {} for includes", source.display()))?;
     }
     Ok(())
+}
+
+fn read_bounded_source_text(path: &Path) -> Result<String> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("opening source {} for includes", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_SOURCE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading source {} for includes", path.display()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SOURCE_BYTES {
+        bail!(
+            "source {} exceeds the {}-byte hosted include-scan limit",
+            path.display(),
+            MAX_SOURCE_BYTES
+        );
+    }
+    String::from_utf8(bytes)
+        .with_context(|| format!("source {} is not valid UTF-8", path.display()))
 }
 
 /// Returns HDL source files that a `-y` / `--libdir` compiler option may load.
@@ -357,9 +379,11 @@ fn library_source_files(library_directories: &[crate::ir::InputPath]) -> Result<
     Ok(sources)
 }
 
-fn source_include_paths(contents: &str) -> Result<Vec<String>> {
+fn visit_source_include_paths(
+    contents: &str,
+    mut visit: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
     let bytes = contents.as_bytes();
-    let mut includes = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index..] {
@@ -401,13 +425,13 @@ fn source_include_paths(contents: &str) -> Result<Vec<String>> {
                 if bytes[path_start..path_end].contains(&b'\\') {
                     bail!("source-level `include paths must not use escape sequences");
                 }
-                includes.push(contents[path_start..path_end].to_owned());
+                visit(&contents[path_start..path_end])?;
                 index = path_end + 1;
             }
             _ => index += 1,
         }
     }
-    Ok(includes)
+    Ok(())
 }
 
 fn skip_quoted_source_string(bytes: &[u8], quote: usize) -> Result<usize> {
@@ -742,6 +766,40 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn only_hosted_builds_confine_nested_filelists() {
+        let (directory, slang, yosys, filelist) = crate::compiler::tests::fake_compilers(false);
+        let shared = tempfile::tempdir().unwrap();
+        let shared_filelist = shared.path().join("options.f");
+        fs::write(&shared_filelist, "-D EXTERNAL_OPTIONS=1\n").unwrap();
+        fs::write(
+            &filelist,
+            format!("-F {}\ntop.sv\n", shared_filelist.display()),
+        )
+        .unwrap();
+        let options = BuildOptions {
+            filelist,
+            project_root: Some(directory.path().to_owned()),
+            top: Some("top".to_owned()),
+            elaboration: ElaborationOverrides::default(),
+            slang_bin: Some(slang),
+            yosys_bin: Some(yosys),
+            compiler_timeout: None,
+            debug_artifacts: false,
+        };
+
+        build_project(&options).unwrap();
+        let error = match build_untrusted_project(&options) {
+            Ok(_) => panic!("hosted builds must confine nested filelists"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("outside allowed root"),
+            "{error:#}"
+        );
+    }
+
     #[test]
     fn canonicalizes_graph_origin_paths_with_source_references() {
         let canonical = SourceFileRef {
@@ -830,7 +888,7 @@ mod tests {
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let root = fs::canonicalize(root).unwrap();
         let error = require_source_includes_within(&root, &project).unwrap_err();
-        assert!(error.to_string().contains("absolute"), "{error:#}");
+        assert!(format!("{error:#}").contains("absolute"), "{error:#}");
     }
 
     #[test]
@@ -854,15 +912,37 @@ mod tests {
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let root = fs::canonicalize(root).unwrap();
         let error = require_source_includes_within(&root, &project).unwrap_err();
-        assert!(error.to_string().contains("absolute"), "{error:#}");
+        assert!(format!("{error:#}").contains("absolute"), "{error:#}");
     }
 
     #[test]
     fn source_include_parser_ignores_comments_and_strings() {
-        let includes = source_include_paths(
+        let mut includes = Vec::new();
+        visit_source_include_paths(
             "// `include \"ignored.svh\"\nstring value = \"`include \\\"also-ignored.svh\\\"\";\n`include \"used.svh\"\n",
+            |include| {
+                includes.push(include.to_owned());
+                Ok(())
+            },
         )
         .unwrap();
         assert_eq!(includes, ["used.svh"]);
+    }
+
+    #[test]
+    fn hosted_source_include_scan_is_size_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("large.sv");
+        fs::write(
+            &source,
+            vec![b' '; usize::try_from(MAX_SOURCE_BYTES).unwrap() + 1],
+        )
+        .unwrap();
+
+        let error = read_bounded_source_text(&source).unwrap_err();
+        assert!(
+            error.to_string().contains("hosted include-scan limit"),
+            "{error:#}"
+        );
     }
 }
