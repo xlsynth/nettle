@@ -75,11 +75,16 @@ interface OpenedComparison {
 type UtilityDialog = "search" | "help";
 
 const SourcePane = lazy(() =>
-  import("./components/SourcePane").then((module) => ({ default: module.SourcePane })),
+  import("./components/SourcePane").then((module) => ({
+    default: module.SourcePane,
+  })),
 );
 const SchematicCanvas = lazy(() =>
-  import("./graph/SchematicCanvas").then((module) => ({ default: module.SchematicCanvas })),
+  import("./graph/SchematicCanvas").then((module) => ({
+    default: module.SchematicCanvas,
+  })),
 );
+const publicDemosEnabled = import.meta.env.NETTLE_PUBLIC_DEMOS === "true";
 
 const contextualizeChild = (
   parent: GraphSlice,
@@ -263,24 +268,34 @@ export default function App() {
 
   const openDemo = useCallback(
     async (demo: Demo) => {
+      const request = ++generation.current;
+      const controller = openOwner.current.begin();
+      const ownsRequest = () => request === generation.current && !controller.signal.aborted;
       setLoading(true);
       setError(undefined);
       setStatusDetail(`Loading ${demo.title}`);
       try {
         if (demo.kind === "bundle") {
-          await openBundle(await startupFile(demo.bundle));
+          const bundle = await startupFile(demo.bundle, controller.signal);
+          if (!ownsRequest()) return;
+          await openBundle(bundle);
           return;
         }
         const [reference, candidate] = await Promise.all([
-          startupFile(demo.reference),
-          startupFile(demo.candidate),
+          startupFile(demo.reference, controller.signal),
+          startupFile(demo.candidate, controller.signal),
         ]);
+        if (!ownsRequest()) return;
         await openComparison(reference, candidate, "conservative");
       } catch (reason) {
+        if (!ownsRequest()) return;
+        controller.abort();
         const message = reason instanceof Error ? reason.message : String(reason);
         setError(message);
         setStatusDetail(`Could not load ${demo.title}: ${message}`);
-        setLoading(false);
+      } finally {
+        openOwner.current.finish(controller);
+        if (ownsRequest()) setLoading(false);
       }
     },
     [openBundle, openComparison],
@@ -410,7 +425,7 @@ export default function App() {
             error={error}
             onSelect={(file) => void openBundle(file)}
             onCompare={openCompareDialog}
-            demos={DEMOS}
+            demos={publicDemosEnabled ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
           />
         </>
@@ -853,7 +868,9 @@ function WorkspaceView({
         style={
           sourcePaneWidth === undefined
             ? undefined
-            : ({ "--source-pane-width": `${sourcePaneWidth}px` } as CSSProperties)
+            : ({
+                "--source-pane-width": `${sourcePaneWidth}px`,
+              } as CSSProperties)
         }
       >
         <FileTree

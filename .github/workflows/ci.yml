@@ -389,6 +389,7 @@ jobs:
       - name: Build static viewer
         env:
           NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
+          NETTLE_PUBLIC_DEMOS: "true"
         run: npm run build
 
       - name: Download tested Nettle builder image
