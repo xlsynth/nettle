@@ -403,14 +403,14 @@ available build slot. Before compilation, Nettle rejects downloaded trees over
 inside the downloaded directory.
 
 `boostedblob` is a public MIT-licensed Python package. Its direct requirement
-is recorded in `requirements/boostedblob.in`; `uv` compiles that input into the
-checked-in Linux/amd64 Python 3.11 hash lock. To install the same environment
+is recorded in `requirements.in`; `uv` compiles that input into the checked-in
+Linux/amd64 Python 3.11 `requirements.lock`. To install the same environment
 used by the combined Nettle image:
 
 ```sh
 uv venv --python 3.11 /opt/boostedblob
 uv pip sync --python /opt/boostedblob/bin/python --require-hashes \
-  --only-binary=:all: requirements/boostedblob-linux-amd64-py311.lock
+  --only-binary=:all: requirements.lock
 ```
 
 The combined `nettle` Docker image already includes this locked dependency set

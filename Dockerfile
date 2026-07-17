@@ -119,12 +119,12 @@ COPY --from=builder /usr/local/bin/nettle /usr/local/bin/nettle
 COPY --from=builder /opt/slang /opt/slang
 COPY --from=builder /opt/oss-cad-suite /opt/oss-cad-suite
 COPY --from=builder /opt/nettle/third-party-licenses /opt/nettle/third-party-licenses
-COPY requirements/boostedblob-linux-amd64-py311.lock /opt/nettle/boostedblob.lock
+COPY requirements.lock /opt/nettle/requirements.lock
 RUN --mount=from=ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc,source=/uv,target=/usr/local/bin/uv \
   mkdir --parents /home/nettle \
   && python3 -m venv /opt/boostedblob \
   && uv pip sync --python /opt/boostedblob/bin/python --no-cache --require-hashes \
-    --only-binary=:all: /opt/nettle/boostedblob.lock \
+    --only-binary=:all: /opt/nettle/requirements.lock \
   && /opt/boostedblob/bin/bbb --version \
   && chmod 0555 /usr/local/bin/nettle /opt/slang/slang \
   && chown --recursive 10001:10001 /home/nettle
