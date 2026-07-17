@@ -84,7 +84,7 @@ const SchematicCanvas = lazy(() =>
     default: module.SchematicCanvas,
   })),
 );
-const publicDemosEnabled = import.meta.env.NETTLE_PUBLIC_DEMOS === "true";
+const publicDemosEnabled = import.meta.env.NETTLE_PUBLIC_DEMOS ?? false;
 
 const contextualizeChild = (
   parent: GraphSlice,
@@ -270,7 +270,8 @@ export default function App() {
     async (demo: Demo) => {
       const request = ++generation.current;
       const controller = openOwner.current.begin();
-      const ownsRequest = () => request === generation.current && !controller.signal.aborted;
+      const ownsGeneration = () => request === generation.current;
+      const ownsRequest = () => ownsGeneration() && !controller.signal.aborted;
       setLoading(true);
       setError(undefined);
       setStatusDetail(`Loading ${demo.title}`);
@@ -295,7 +296,7 @@ export default function App() {
         setStatusDetail(`Could not load ${demo.title}: ${message}`);
       } finally {
         openOwner.current.finish(controller);
-        if (ownsRequest()) setLoading(false);
+        if (ownsGeneration()) setLoading(false);
       }
     },
     [openBundle, openComparison],
