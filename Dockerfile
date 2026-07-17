@@ -119,11 +119,12 @@ COPY --from=builder /usr/local/bin/nettle /usr/local/bin/nettle
 COPY --from=builder /opt/slang /opt/slang
 COPY --from=builder /opt/oss-cad-suite /opt/oss-cad-suite
 COPY --from=builder /opt/nettle/third-party-licenses /opt/nettle/third-party-licenses
-COPY requirements/boostedblob.txt /opt/nettle/boostedblob-requirements.txt
-RUN mkdir --parents /home/nettle \
+COPY requirements/boostedblob-linux-amd64-py311.lock /opt/nettle/boostedblob.lock
+RUN --mount=from=ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc,source=/uv,target=/usr/local/bin/uv \
+  mkdir --parents /home/nettle \
   && python3 -m venv /opt/boostedblob \
-  && /opt/boostedblob/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: \
-    -r /opt/nettle/boostedblob-requirements.txt \
+  && uv pip sync --python /opt/boostedblob/bin/python --no-cache --require-hashes \
+    --only-binary=:all: /opt/nettle/boostedblob.lock \
   && /opt/boostedblob/bin/bbb --version \
   && chmod 0555 /usr/local/bin/nettle /opt/slang/slang \
   && chown --recursive 10001:10001 /home/nettle
@@ -137,6 +138,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD python3 -c 'from urllib.request import urlopen; urlopen("http://127.0.0.1:8080/healthz").read()' || exit 1
 USER 10001:10001
+ENTRYPOINT ["nettle"]
 CMD ["view"]
 
 # The deployable viewer contains no HDL compiler or project source. It remains

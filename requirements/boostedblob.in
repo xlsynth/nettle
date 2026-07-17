@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: Apache-2.0
+# Direct dependency for copying hosted Azure RTL trees.
+boostedblob==1.0.0

@@ -402,13 +402,15 @@ available build slot. Before compilation, Nettle rejects downloaded trees over
 512 MiB or 10,000 files. The supplied filelist must be a relative `.f` path
 inside the downloaded directory.
 
-`boostedblob` is a public MIT-licensed Python package. On a Linux/amd64 host
-with Python 3.11, install the same hash-locked dependency set used by the
-combined Nettle image:
+`boostedblob` is a public MIT-licensed Python package. Its direct requirement
+is recorded in `requirements/boostedblob.in`; `uv` compiles that input into the
+checked-in Linux/amd64 Python 3.11 hash lock. To install the same environment
+used by the combined Nettle image:
 
 ```sh
-python -m pip install --require-hashes --only-binary=:all: \
-  -r requirements/boostedblob.txt
+uv venv --python 3.11 /opt/boostedblob
+uv pip sync --python /opt/boostedblob/bin/python --require-hashes \
+  --only-binary=:all: requirements/boostedblob-linux-amd64-py311.lock
 ```
 
 The combined `nettle` Docker image already includes this locked dependency set

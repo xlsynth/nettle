@@ -3,6 +3,7 @@
 //! Builds deterministic bundles from compiler output and referenced sources.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -268,6 +269,7 @@ fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> R
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    pending.extend(library_source_files(&project.library_directories)?);
     let mut checked = BTreeSet::new();
 
     while let Some(source) = pending.pop() {
@@ -308,6 +310,51 @@ fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> R
         }
     }
     Ok(())
+}
+
+/// Returns HDL source files that a `-y` / `--libdir` compiler option may load.
+///
+/// Verilog library lookup searches the directory itself, not its descendants.
+/// Restricting this to source extensions keeps unrelated library collateral from
+/// becoming an input to the include parser while covering the source suffixes
+/// accepted by the supported compiler flow.
+fn library_source_files(library_directories: &[crate::ir::InputPath]) -> Result<Vec<PathBuf>> {
+    let mut sources = Vec::new();
+    for directory in library_directories {
+        let directory = fs::canonicalize(&directory.path).with_context(|| {
+            format!(
+                "locating library directory {:?} declared at {}:{}:{}",
+                directory.path,
+                directory.origin.file,
+                directory.origin.line,
+                directory.origin.column
+            )
+        })?;
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("reading library directory {}", directory.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!(
+                    "reading an entry from library directory {}",
+                    directory.display()
+                )
+            })?;
+            let path = entry.path();
+            if !matches!(
+                path.extension().and_then(OsStr::to_str),
+                Some("v" | "sv" | "vh" | "svh")
+            ) {
+                continue;
+            }
+            let path = fs::canonicalize(&path)
+                .with_context(|| format!("locating library source {}", path.display()))?;
+            if path.is_file() {
+                sources.push(path);
+            }
+        }
+    }
+    sources.sort();
+    Ok(sources)
 }
 
 fn source_include_paths(contents: &str) -> Result<Vec<String>> {
@@ -777,6 +824,30 @@ mod tests {
         fs::write(
             root.join("top.sv"),
             "// `include \"ignored.svh\"\n`include \"/proc/self/environ\"\nmodule top; endmodule\n",
+        )
+        .unwrap();
+
+        let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let error = require_source_includes_within(&root, &project).unwrap_err();
+        assert!(error.to_string().contains("absolute"), "{error:#}");
+    }
+
+    #[test]
+    fn library_source_includes_cannot_escape_the_project_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        let library = root.join("library");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(root.join("project.f"), "top.sv\n-y library\n").unwrap();
+        fs::write(
+            root.join("top.sv"),
+            "module top; child instance(); endmodule\n",
+        )
+        .unwrap();
+        fs::write(
+            library.join("child.sv"),
+            "`include \"/proc/self/environ\"\nmodule child; endmodule\n",
         )
         .unwrap();
 
