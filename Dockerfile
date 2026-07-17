@@ -112,11 +112,13 @@ ENTRYPOINT ["nettle"]
 # so `nettle render` can build and serve a bundle in one container.
 FROM builder AS nettle
 USER root
+COPY requirements/boostedblob.txt /opt/nettle/boostedblob-requirements.txt
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends curl python3 python3-venv \
   && rm -rf /var/lib/apt/lists/* \
   && python3 -m venv /opt/boostedblob \
-  && /opt/boostedblob/bin/pip install --no-cache-dir boostedblob==1.0.0 \
+  && /opt/boostedblob/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: \
+    -r /opt/nettle/boostedblob-requirements.txt \
   && /opt/boostedblob/bin/bbb --version
 COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \

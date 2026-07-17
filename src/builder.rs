@@ -12,7 +12,7 @@ use crate::bundle::{
 };
 use crate::ir::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, NormalizedArgumentKind, NormalizedProject,
-    SourceFileRef, import_yosys_json, merge_slang_instance_parameters, normalize_filelist,
+    SourceFileRef, import_yosys_json, merge_slang_instance_parameters, normalize_filelist_within,
     stable_id,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -92,8 +92,8 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
     }
     require_within(&root, &filelist, "root filelist")?;
 
-    let project =
-        normalize_filelist(&filelist, options.top.as_deref()).context("normalizing filelist")?;
+    let project = normalize_filelist_within(&filelist, options.top.as_deref(), &root)
+        .context("normalizing filelist")?;
     require_compiler_inputs_within(&root, &project)?;
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
@@ -580,7 +580,7 @@ mod tests {
         fs::write(root.join("top.sv"), "module top; endmodule\n").unwrap();
         fs::write(root.join("project.f"), "+incdir+../outside\ntop.sv\n").unwrap();
 
-        let project = normalize_filelist(root.join("project.f"), Some("top")).unwrap();
+        let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let error = require_compiler_inputs_within(&root, &project).unwrap_err();
         assert!(error.to_string().contains("outside project root"));
     }

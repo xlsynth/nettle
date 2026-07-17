@@ -151,6 +151,14 @@ pub struct NormalizedProject {
 #[derive(Debug, Error)]
 /// Failure encountered while reading or tokenizing a nested filelist graph.
 pub enum FileListError {
+    /// A nested filelist would be parsed outside a caller-defined boundary.
+    #[error("filelist {path} is outside allowed root {root}")]
+    OutsideAllowedRoot {
+        /// Rejected filelist path.
+        path: PathBuf,
+        /// Boundary containing allowed filelists.
+        root: PathBuf,
+    },
     /// A filelist could not be read.
     #[error("cannot read filelist {path}: {source}")]
     Read {
@@ -231,7 +239,29 @@ pub fn normalize_filelist(
     filelist: impl AsRef<Path>,
     cli_top: Option<&str>,
 ) -> Result<NormalizedProject, FileListError> {
-    let initial = absolute_lexical(filelist.as_ref(), &current_dir());
+    normalize_filelist_within_impl(filelist.as_ref(), cli_top, None)
+}
+
+/// Expands a Slang-style filelist while requiring every parsed filelist to
+/// remain within `allowed_root`.
+///
+/// This confines filelist parsing itself. Callers still need to validate the
+/// compiler inputs recorded by the filelists, such as sources and include
+/// directories.
+pub(crate) fn normalize_filelist_within(
+    filelist: impl AsRef<Path>,
+    cli_top: Option<&str>,
+    allowed_root: &Path,
+) -> Result<NormalizedProject, FileListError> {
+    normalize_filelist_within_impl(filelist.as_ref(), cli_top, Some(allowed_root))
+}
+
+fn normalize_filelist_within_impl(
+    filelist: &Path,
+    cli_top: Option<&str>,
+    allowed_root: Option<&Path>,
+) -> Result<NormalizedProject, FileListError> {
+    let initial = absolute_lexical(filelist, &current_dir());
     let root = fs::canonicalize(&initial).unwrap_or(initial);
     // The compiler adapter runs both Slang processes from the root filelist's
     // directory. Slang's `-f` form resolves paths inside the nested command
@@ -247,6 +277,7 @@ pub fn normalize_filelist(
         bytes_read: 0,
         tokens_parsed: 0,
         compiler_cwd,
+        allowed_root: allowed_root.map(Path::to_path_buf),
         project: NormalizedProject {
             root_filelist: path_string(&root),
             sources: vec![],
@@ -288,12 +319,21 @@ struct Parser {
     bytes_read: usize,
     tokens_parsed: usize,
     compiler_cwd: PathBuf,
+    allowed_root: Option<PathBuf>,
     project: NormalizedProject,
 }
 
 impl Parser {
     fn parse_file(&mut self, file: &Path, relative_base: &Path) -> Result<(), FileListError> {
         let file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+        if let Some(root) = &self.allowed_root
+            && !file.starts_with(root)
+        {
+            return Err(FileListError::OutsideAllowedRoot {
+                path: file,
+                root: root.clone(),
+            });
+        }
         if self.active.len() >= MAX_FILELIST_DEPTH {
             return Err(FileListError::DepthLimit {
                 path: file,
@@ -964,6 +1004,22 @@ mod tests {
         let error = normalize_filelist(dir.join("a.f"), None).unwrap_err();
         assert!(matches!(error, FileListError::Cycle { .. }));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_nested_filelists_outside_the_allowed_root_before_reading_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("project.f"), "-F ../outside.f\n").unwrap();
+        fs::write(
+            directory.path().join("outside.f"),
+            "--unsupported-outside-option\n",
+        )
+        .unwrap();
+
+        let error = normalize_filelist_within(root.join("project.f"), None, &root).unwrap_err();
+        assert!(matches!(error, FileListError::OutsideAllowedRoot { .. }));
     }
 
     #[test]
