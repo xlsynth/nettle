@@ -8,7 +8,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -244,6 +245,33 @@ struct SlangOutput {
     ast_json: String,
 }
 
+#[derive(Clone, Default)]
+struct ProcessControl {
+    cancelled: Option<Arc<AtomicBool>>,
+    maximum_file_bytes: Option<u64>,
+}
+
+impl ProcessControl {
+    fn hosted(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled: Some(cancelled),
+            maximum_file_bytes: Some(u64::try_from(MAX_COMPILER_MODEL_BYTES).unwrap_or(u64::MAX)),
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Relaxed))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProcessExecution<'a> {
+    timeout: Option<Duration>,
+    control: &'a ProcessControl,
+}
+
 /// Probes the external compilers, then runs them concurrently from the same
 /// root `-F` filelist and with the same elaboration settings.
 pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> {
@@ -255,6 +283,38 @@ pub fn compile_filelist_with_timeout(
     options: &CompilerOptions,
     compiler_timeout: Option<Duration>,
 ) -> Result<CompilerArtifacts> {
+    compile_filelist_with_control(options, compiler_timeout, &ProcessControl::default())
+}
+
+/// Compiles an untrusted hosted filelist with cancellation and output-file limits.
+pub(crate) fn compile_untrusted_filelist_with_timeout(
+    options: &CompilerOptions,
+    compiler_timeout: Option<Duration>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<CompilerArtifacts> {
+    compile_filelist_with_control(
+        options,
+        compiler_timeout,
+        &ProcessControl::hosted(cancelled),
+    )
+}
+
+fn compile_filelist_with_control(
+    options: &CompilerOptions,
+    compiler_timeout: Option<Duration>,
+    control: &ProcessControl,
+) -> Result<CompilerArtifacts> {
+    #[cfg(not(unix))]
+    if control.maximum_file_bytes.is_some() {
+        bail!("hosted compiler output limits require a Unix platform");
+    }
+    if control.is_cancelled() {
+        bail!("compiler build cancelled because the client disconnected");
+    }
+    let execution = ProcessExecution {
+        timeout: compiler_timeout,
+        control,
+    };
     let filelist = fs::canonicalize(&options.filelist)
         .with_context(|| format!("locating root filelist {}", options.filelist.display()))?;
     // Parse before discovering or launching either compiler. The normalizer
@@ -273,8 +333,8 @@ pub fn compile_filelist_with_timeout(
     })?;
 
     let (slang_report, yosys_report) = std::thread::scope(|scope| {
-        let slang_probe = scope.spawn(|| probe_slang(&slang, project_root, compiler_timeout));
-        let yosys_probe = scope.spawn(|| probe_yosys(&yosys, project_root, compiler_timeout));
+        let slang_probe = scope.spawn(|| probe_slang(&slang, project_root, execution));
+        let yosys_probe = scope.spawn(|| probe_yosys(&yosys, project_root, execution));
         (
             join_worker("Slang capability probe", slang_probe),
             join_worker("Yosys capability probe", yosys_probe),
@@ -309,7 +369,7 @@ pub fn compile_filelist_with_timeout(
                 &options.top,
                 &diagnostics_path,
                 &ast_path,
-                compiler_timeout,
+                execution,
             )
         });
         let yosys_worker = scope.spawn(|| {
@@ -318,7 +378,7 @@ pub fn compile_filelist_with_timeout(
                 &compiler_filelist.yosys_cwd,
                 &yosys_script_path,
                 &yosys_json_path,
-                compiler_timeout,
+                execution,
             )
         });
         (
@@ -415,20 +475,22 @@ fn executable_names(requested: &Path) -> Vec<OsString> {
     }
 }
 
-fn probe_slang(program: &Path, cwd: &Path, timeout: Option<Duration>) -> Result<ToolReport> {
+fn probe_slang(program: &Path, cwd: &Path, execution: ProcessExecution<'_>) -> Result<ToolReport> {
     let version = run_checked(
         program,
         [OsStr::new("--version")],
         cwd,
         "Slang version probe",
-        timeout,
+        execution.timeout,
+        execution.control,
     )?;
     let help = run_checked(
         program,
         [OsStr::new("--help")],
         cwd,
         "Slang help probe",
-        timeout,
+        execution.timeout,
+        execution.control,
     )?;
     let capabilities = combined_output(&help);
     for required in ["-F", "--top", "--diag-json", "--ast-json", "-D", "-U", "-G"] {
@@ -446,13 +508,14 @@ fn probe_slang(program: &Path, cwd: &Path, timeout: Option<Duration>) -> Result<
     })
 }
 
-fn probe_yosys(program: &Path, cwd: &Path, timeout: Option<Duration>) -> Result<ToolReport> {
+fn probe_yosys(program: &Path, cwd: &Path, execution: ProcessExecution<'_>) -> Result<ToolReport> {
     let version = run_checked(
         program,
         [OsStr::new("-V")],
         cwd,
         "Yosys version probe",
-        timeout,
+        execution.timeout,
+        execution.control,
     )?;
     let plugin_args = [
         OsStr::new("-Q"),
@@ -466,7 +529,8 @@ fn probe_yosys(program: &Path, cwd: &Path, timeout: Option<Duration>) -> Result<
         plugin_args,
         cwd,
         "yosys-slang plugin capability probe",
-        timeout,
+        execution.timeout,
+        execution.control,
     )
     .with_context(|| {
         format!(
@@ -504,7 +568,7 @@ fn run_slang(
     top: &str,
     diagnostics_path: &Path,
     ast_path: &Path,
-    timeout: Option<Duration>,
+    execution: ProcessExecution<'_>,
 ) -> Result<SlangOutput> {
     let args = vec![
         OsString::from("-F"),
@@ -524,7 +588,8 @@ fn run_slang(
         args.iter().map(OsString::as_os_str),
         cwd,
         "standalone Slang full elaboration",
-        timeout,
+        execution.timeout,
+        execution.control,
     )
     .with_context(|| {
         "Slang rejected the project; inspect the captured diagnostics above, or rerun the displayed command directly"
@@ -550,7 +615,7 @@ fn run_yosys(
     cwd: &Path,
     script_path: &Path,
     output_path: &Path,
-    timeout: Option<Duration>,
+    execution: ProcessExecution<'_>,
 ) -> Result<ProcessCapture> {
     let args = [
         OsStr::new("-Q"),
@@ -559,8 +624,15 @@ fn run_yosys(
         OsStr::new("-s"),
         script_path.as_os_str(),
     ];
-    let capture = run_checked(program, args, cwd, "Yosys + yosys-slang lowering", timeout)
-        .with_context(|| {
+    let capture = run_checked(
+        program,
+        args,
+        cwd,
+        "Yosys + yosys-slang lowering",
+        execution.timeout,
+        execution.control,
+    )
+    .with_context(|| {
             "Yosys failed to lower the project; verify that the selected Yosys and slang plugin versions are compatible"
         })?;
     fs::metadata(output_path).with_context(|| {
@@ -578,7 +650,11 @@ fn run_checked<'a>(
     cwd: &Path,
     purpose: &str,
     timeout: Option<Duration>,
+    control: &ProcessControl,
 ) -> Result<ProcessCapture> {
+    if control.is_cancelled() {
+        bail!("{purpose} cancelled because the client disconnected");
+    }
     let args: Vec<OsString> = args.into_iter().map(OsStr::to_owned).collect();
     let mut command = Command::new(program);
     command
@@ -592,6 +668,24 @@ fn run_checked<'a>(
         use std::os::unix::process::CommandExt;
 
         command.process_group(0);
+        if let Some(maximum_file_bytes) = control.maximum_file_bytes {
+            // SAFETY: `pre_exec` runs after fork and before exec. The closure
+            // only calls the async-signal-safe `setrlimit` syscall and creates
+            // an `io::Error` from the already-set errno on failure.
+            unsafe {
+                command.pre_exec(move || {
+                    let limit = libc::rlimit {
+                        rlim_cur: maximum_file_bytes,
+                        rlim_max: maximum_file_bytes,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    }
+                });
+            }
+        }
     }
     let mut child = command.spawn().with_context(|| {
         format!(
@@ -605,12 +699,28 @@ fn run_checked<'a>(
     let stderr_reader = thread::spawn(move || read_bounded_output(stderr));
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child.try_wait().with_context(|| {
-            format!(
-                "could not wait for {purpose}: {}",
-                format_command(program, &args)
-            )
-        })? {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                terminate_process_group(&mut child);
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(error).with_context(|| {
+                    format!(
+                        "could not wait for {purpose}: {}",
+                        format_command(program, &args)
+                    )
+                });
+            }
+        };
+        if let Some(status) = status {
+            if !status.success() {
+                // A failed compiler should not leave helpers behind. Kill any
+                // remaining members before joining pipe readers so inherited
+                // descriptors cannot keep this build alive.
+                terminate_process_group(&mut child);
+            }
             break status;
         }
         if timeout.is_some_and(|deadline| started.elapsed() >= deadline) {
@@ -629,6 +739,13 @@ fn run_checked<'a>(
                 truncate_output(&stdout),
                 truncate_output(&stderr)
             );
+        }
+        if control.is_cancelled() {
+            terminate_process_group(&mut child);
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            bail!("{purpose} cancelled because the client disconnected");
         }
         thread::sleep(Duration::from_millis(50));
     };
@@ -657,10 +774,13 @@ fn run_checked<'a>(
 
 #[cfg(unix)]
 fn terminate_process_group(child: &mut std::process::Child) {
-    let _ = Command::new("/bin/kill")
-        .arg("-KILL")
-        .arg(format!("-{}", child.id()))
-        .status();
+    if let Ok(process_group) = i32::try_from(child.id()) {
+        // SAFETY: the child was placed in a process group whose id is its pid;
+        // a negative pid targets that group, and SIGKILL needs no shared data.
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
     let _ = child.kill();
 }
 
@@ -1112,9 +1232,74 @@ pub(crate) mod tests {
             directory.path(),
             "test compiler",
             Some(Duration::from_millis(50)),
+            &ProcessControl::default(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("timed out after 0 seconds"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_cancellation_terminates_the_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("slow-compiler");
+        write_executable(&program, "#!/bin/sh\nsleep 30 &\nwait\n");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let control = ProcessControl {
+            cancelled: Some(cancelled.clone()),
+            maximum_file_bytes: None,
+        };
+        let cancellation = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            cancelled.store(true, Ordering::Relaxed);
+        });
+
+        let error = run_checked(
+            &program,
+            std::iter::empty::<&OsStr>(),
+            directory.path(),
+            "test compiler",
+            None,
+            &control,
+        )
+        .unwrap_err();
+        cancellation.join().unwrap();
+        assert!(
+            error.to_string().contains("client disconnected"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_file_size_limit_applies_while_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("large-writer");
+        write_executable(
+            &program,
+            "#!/bin/sh\nset -e\ndd if=/dev/zero of=too-large bs=2048 count=1 2>/dev/null\n",
+        );
+        let control = ProcessControl {
+            cancelled: None,
+            maximum_file_bytes: Some(1024),
+        };
+
+        let error = run_checked(
+            &program,
+            std::iter::empty::<&OsStr>(),
+            directory.path(),
+            "test compiler",
+            None,
+            &control,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("failed with"), "{error:#}");
+        assert!(
+            fs::metadata(directory.path().join("too-large"))
+                .unwrap()
+                .len()
+                <= 1024
+        );
     }
 
     #[cfg(unix)]

@@ -7,6 +7,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::bundle::{
@@ -21,7 +23,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::compiler::{
     CompilerOptions, DefineOverride, ElaborationOverrides, ParameterOverride,
-    compile_filelist_with_timeout,
+    compile_filelist_with_timeout, compile_untrusted_filelist_with_timeout,
 };
 use crate::resource_limits::native::builder::SOURCE_BYTES as MAX_SOURCE_BYTES;
 
@@ -78,18 +80,28 @@ impl BuiltProject {
 
 /// Compiles a filelist and collects everything needed for a portable bundle.
 pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
-    build_project_impl(options, false)
+    build_project_impl(options, None)
 }
 
-/// Compiles an untrusted hosted filelist after confining source-level includes.
+/// Compiles an untrusted hosted filelist after confining compiler and source inputs.
+#[cfg(test)]
 pub(crate) fn build_untrusted_project(options: &BuildOptions) -> Result<BuiltProject> {
-    build_project_impl(options, true)
+    build_project_impl(options, Some(Arc::new(AtomicBool::new(false))))
+}
+
+/// Compiles an untrusted hosted filelist and stops subprocesses when cancelled.
+pub(crate) fn build_cancelable_untrusted_project(
+    options: &BuildOptions,
+    cancelled: Arc<AtomicBool>,
+) -> Result<BuiltProject> {
+    build_project_impl(options, Some(cancelled))
 }
 
 fn build_project_impl(
     options: &BuildOptions,
-    confine_untrusted_inputs: bool,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<BuiltProject> {
+    let confine_untrusted_inputs = cancellation.is_some();
     options
         .elaboration
         .validate()
@@ -113,8 +125,12 @@ fn build_project_impl(
     }
     .context("normalizing filelist")?;
     if confine_untrusted_inputs {
+        let cancelled = cancellation
+            .as_deref()
+            .expect("untrusted builds have a cancellation flag");
+        require_active_hosted_build(cancelled)?;
         require_compiler_inputs_within(&root, &project)?;
-        require_source_includes_within(&root, &project)?;
+        require_hosted_source_inputs(&root, &project, cancelled)?;
     }
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
@@ -124,16 +140,22 @@ fn build_project_impl(
         .ok_or_else(|| anyhow!("pass --top <module> or add --top to the root filelist"))?;
     let effective = effective_elaboration(&project, &options.elaboration);
 
-    let artifacts = compile_filelist_with_timeout(
-        &CompilerOptions {
-            filelist: filelist.clone(),
-            top: top.to_owned(),
-            elaboration: options.elaboration.clone(),
-            slang_bin: options.slang_bin.clone(),
-            yosys_bin: options.yosys_bin.clone(),
-        },
-        options.compiler_timeout,
-    )?;
+    let compiler_options = CompilerOptions {
+        filelist: filelist.clone(),
+        top: top.to_owned(),
+        elaboration: options.elaboration.clone(),
+        slang_bin: options.slang_bin.clone(),
+        yosys_bin: options.yosys_bin.clone(),
+    };
+    let artifacts = if let Some(cancelled) = cancellation {
+        compile_untrusted_filelist_with_timeout(
+            &compiler_options,
+            options.compiler_timeout,
+            cancelled,
+        )
+    } else {
+        compile_filelist_with_timeout(&compiler_options, options.compiler_timeout)
+    }?;
     let mut snapshot =
         import_yosys_json(&artifacts.yosys_json, Some(top)).context("importing Yosys JSON")?;
     merge_slang_instance_parameters(&mut snapshot, &artifacts.slang_ast_json)
@@ -245,7 +267,11 @@ fn require_compiler_inputs_within(root: &Path, project: &NormalizedProject) -> R
     Ok(())
 }
 
-fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> Result<()> {
+fn require_hosted_source_inputs(
+    root: &Path,
+    project: &NormalizedProject,
+    cancelled: &AtomicBool,
+) -> Result<()> {
     let include_directories = project
         .include_directories
         .iter()
@@ -274,14 +300,18 @@ fn require_source_includes_within(root: &Path, project: &NormalizedProject) -> R
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    pending.extend(library_source_files(&project.library_directories)?);
+    pending.extend(library_source_files(
+        &project.library_directories,
+        cancelled,
+    )?);
     let mut discovered = pending.into_iter().collect::<BTreeSet<_>>();
     let mut pending = discovered.iter().cloned().collect::<Vec<_>>();
 
     while let Some(source) = pending.pop() {
+        require_active_hosted_build(cancelled)?;
         require_within(root, &source, "source include input")?;
         let contents = read_bounded_source_text(&source)?;
-        visit_source_include_paths(&contents, |include| {
+        visit_hosted_source_inputs(&contents, |include| {
             let include = Path::new(include);
             if include.is_absolute() {
                 bail!(
@@ -325,7 +355,7 @@ fn read_bounded_source_text(path: &Path) -> Result<String> {
         .with_context(|| format!("reading source {} for includes", path.display()))?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SOURCE_BYTES {
         bail!(
-            "source {} exceeds the {}-byte hosted include-scan limit",
+            "source {} exceeds the {}-byte hosted source-scan limit",
             path.display(),
             MAX_SOURCE_BYTES
         );
@@ -340,9 +370,13 @@ fn read_bounded_source_text(path: &Path) -> Result<String> {
 /// Restricting this to source extensions keeps unrelated library collateral from
 /// becoming an input to the include parser while covering the source suffixes
 /// accepted by the supported compiler flow.
-fn library_source_files(library_directories: &[crate::ir::InputPath]) -> Result<Vec<PathBuf>> {
+fn library_source_files(
+    library_directories: &[crate::ir::InputPath],
+    cancelled: &AtomicBool,
+) -> Result<Vec<PathBuf>> {
     let mut sources = Vec::new();
     for directory in library_directories {
+        require_active_hosted_build(cancelled)?;
         let directory = fs::canonicalize(&directory.path).with_context(|| {
             format!(
                 "locating library directory {:?} declared at {}:{}:{}",
@@ -355,6 +389,7 @@ fn library_source_files(library_directories: &[crate::ir::InputPath]) -> Result<
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("reading library directory {}", directory.display()))?
         {
+            require_active_hosted_build(cancelled)?;
             let entry = entry.with_context(|| {
                 format!(
                     "reading an entry from library directory {}",
@@ -379,7 +414,14 @@ fn library_source_files(library_directories: &[crate::ir::InputPath]) -> Result<
     Ok(sources)
 }
 
-fn visit_source_include_paths(
+fn require_active_hosted_build(cancelled: &AtomicBool) -> Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        bail!("hosted build cancelled because the client disconnected");
+    }
+    Ok(())
+}
+
+fn visit_hosted_source_inputs(
     contents: &str,
     mut visit: impl FnMut(&str) -> Result<()>,
 ) -> Result<()> {
@@ -401,6 +443,35 @@ fn visit_source_include_paths(
                 index = (index + 2).min(bytes.len());
             }
             [b'"', ..] => index = skip_quoted_source_string(bytes, index)?,
+            [b'\\', ..] => {
+                // A SystemVerilog escaped identifier continues through the
+                // next whitespace and may contain otherwise meaningful `$`
+                // or backtick bytes.
+                index += 1;
+                while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
+                    index += 1;
+                }
+            }
+            [b'$', ..] => {
+                let name_start = index + 1;
+                let mut name_end = name_start;
+                while name_end < bytes.len()
+                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+                {
+                    name_end += 1;
+                }
+                let name = &bytes[name_start..name_end];
+                if name.is_empty() && bytes.get(name_start) == Some(&b'`') {
+                    bail!("hosted builds reject macro-computed system task names");
+                }
+                if matches!(name, b"readmemh" | b"readmemb" | b"fopen") {
+                    bail!(
+                        "hosted builds reject synthesis-time file I/O system task ${}",
+                        String::from_utf8_lossy(name)
+                    );
+                }
+                index = name_end.max(index + 1);
+            }
             [b'`', ..] => {
                 let name_start = index + 1;
                 let mut name_end = name_start;
@@ -887,7 +958,8 @@ mod tests {
 
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let root = fs::canonicalize(root).unwrap();
-        let error = require_source_includes_within(&root, &project).unwrap_err();
+        let error =
+            require_hosted_source_inputs(&root, &project, &AtomicBool::new(false)).unwrap_err();
         assert!(format!("{error:#}").contains("absolute"), "{error:#}");
     }
 
@@ -911,14 +983,15 @@ mod tests {
 
         let project = crate::ir::normalize_filelist(root.join("project.f"), Some("top")).unwrap();
         let root = fs::canonicalize(root).unwrap();
-        let error = require_source_includes_within(&root, &project).unwrap_err();
+        let error =
+            require_hosted_source_inputs(&root, &project, &AtomicBool::new(false)).unwrap_err();
         assert!(format!("{error:#}").contains("absolute"), "{error:#}");
     }
 
     #[test]
     fn source_include_parser_ignores_comments_and_strings() {
         let mut includes = Vec::new();
-        visit_source_include_paths(
+        visit_hosted_source_inputs(
             "// `include \"ignored.svh\"\nstring value = \"`include \\\"also-ignored.svh\\\"\";\n`include \"used.svh\"\n",
             |include| {
                 includes.push(include.to_owned());
@@ -927,6 +1000,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(includes, ["used.svh"]);
+    }
+
+    #[test]
+    fn hosted_source_scan_rejects_synthesis_time_file_reads() {
+        for task in ["$readmemh", "$readmemb", "$fopen"] {
+            let source = format!("{task}(\"/etc/machine-id\", memory);");
+            let error = visit_hosted_source_inputs(&source, |_| Ok(())).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("synthesis-time file I/O system task"),
+                "{error:#}"
+            );
+        }
+        let error =
+            visit_hosted_source_inputs("$`FILE_TASK(\"secret\", memory);", |_| Ok(())).unwrap_err();
+        assert!(
+            error.to_string().contains("macro-computed system task"),
+            "{error:#}"
+        );
+        visit_hosted_source_inputs(
+            r#"
+// $readmemh("/etc/machine-id", memory);
+string text = "$fopen";
+\escaped_$readmemb identifier;
+"#,
+            |_| Ok(()),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -941,7 +1043,7 @@ mod tests {
 
         let error = read_bounded_source_text(&source).unwrap_err();
         assert!(
-            error.to_string().contains("hosted include-scan limit"),
+            error.to_string().contains("hosted source-scan limit"),
             "{error:#}"
         );
     }

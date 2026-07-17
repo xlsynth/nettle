@@ -3,9 +3,12 @@
 //! Builds a Nettle bundle from an Azure RTL directory.
 
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -17,13 +20,14 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
-use crate::{BuildOptions, ElaborationOverrides, builder::build_untrusted_project};
+use crate::{BuildOptions, ElaborationOverrides, builder::build_cancelable_untrusted_project};
 
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 600;
 const DEFAULT_COMPILER_TIMEOUT_SECONDS: u64 = 600;
 const MAX_CONCURRENT_AZURE_BUILDS: usize = 2;
 const MAX_AZURE_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_AZURE_DOWNLOAD_FILES: usize = 10_000;
+const MAX_AZURE_COPY_ERROR_BYTES: usize = 32 * 1024;
 
 static AZURE_BUILD_PERMITS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_AZURE_BUILDS)));
@@ -39,6 +43,32 @@ struct AzureBuildRequest {
 struct ApiError {
     status: StatusCode,
     message: String,
+}
+
+struct CancelOnDrop {
+    cancelled: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn new(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancelled.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -71,13 +101,17 @@ async fn build_azure(Json(request): Json<AzureBuildRequest>) -> Result<Response,
         .acquire_owned()
         .await
         .map_err(|_| internal_error("Azure build service is shutting down".to_owned()))?;
-    let bytes = tokio::task::spawn_blocking(move || {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let mut cancel_on_drop = CancelOnDrop::new(cancelled.clone());
+    let task = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        build_bundle(&request)
-    })
-    .await
-    .map_err(|error| internal_error(format!("Azure build task failed: {error}")))?
-    .map_err(|error| internal_error(format!("{error:#}")))?;
+        build_bundle(&request, cancelled)
+    });
+    let task_result = task.await;
+    cancel_on_drop.disarm();
+    let bytes = task_result
+        .map_err(|error| internal_error(format!("Azure build task failed: {error}")))?
+        .map_err(|error| internal_error(format!("{error:#}")))?;
     let mut response = Body::from(bytes).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -103,8 +137,8 @@ fn validate_request(request: &AzureBuildRequest) -> Result<()> {
     {
         bail!("top must be a simple SystemVerilog identifier");
     }
-    if !request.azure_path.starts_with("az://") || request.azure_path.contains(['\0', '\n', '\r']) {
-        bail!("azurePath must be an az:// directory");
+    if !azure_path_has_safe_components(&request.azure_path) {
+        bail!("azurePath must be an unambiguous az:// directory without traversal components");
     }
     let allowed =
         std::env::var("NETTLE_AZURE_ROOTS").context("NETTLE_AZURE_ROOTS is not configured")?;
@@ -120,74 +154,176 @@ fn validate_request(request: &AzureBuildRequest) -> Result<()> {
 }
 
 fn azure_path_is_allowed(path: &str, root: &str) -> bool {
-    path == root.trim_end_matches('/')
+    if !azure_path_has_safe_components(path) || !azure_path_has_safe_components(root) {
+        return false;
+    }
+    path.trim_end_matches('/') == root.trim_end_matches('/')
         || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
 }
 
-fn build_bundle(request: &AzureBuildRequest) -> Result<Vec<u8>> {
+fn azure_path_has_safe_components(path: &str) -> bool {
+    let Some(remainder) = path.strip_prefix("az://") else {
+        return false;
+    };
+    if remainder.is_empty()
+        || path.contains(['\0', '\n', '\r', '\\', '?', '#', '%'])
+        || remainder.starts_with('/')
+    {
+        return false;
+    }
+    let mut components = remainder.split('/').peekable();
+    let mut component_count = 0_usize;
+    while let Some(component) = components.next() {
+        if component.is_empty() {
+            return components.peek().is_none() && component_count >= 2;
+        }
+        if matches!(component, "." | "..") {
+            return false;
+        }
+        component_count += 1;
+    }
+    component_count >= 2
+}
+
+fn build_bundle(request: &AzureBuildRequest, cancelled: Arc<AtomicBool>) -> Result<Vec<u8>> {
     let workspace = tempfile::Builder::new()
         .prefix("nettle-azure-")
         .tempdir()
         .context("creating Azure build workspace")?;
     let source_root = workspace.path().join("source");
     fs::create_dir(&source_root).context("creating source directory")?;
-    copy_azure_directory(&request.azure_path, &source_root)?;
+    copy_azure_directory(&request.azure_path, &source_root, &cancelled)?;
     ensure_tree_within_limits(
         &source_root,
         MAX_AZURE_DOWNLOAD_BYTES,
         MAX_AZURE_DOWNLOAD_FILES,
+        &cancelled,
     )?;
 
     let filelist = resolve_filelist(&source_root, &request.filelist)?;
     let output = workspace.path().join("design.nettle");
-    build_untrusted_project(&BuildOptions {
-        filelist,
-        project_root: Some(source_root),
-        top: Some(request.top.clone()),
-        elaboration: ElaborationOverrides::default(),
-        slang_bin: std::env::var_os("NETTLE_SLANG_BIN").map(PathBuf::from),
-        yosys_bin: std::env::var_os("NETTLE_YOSYS_BIN").map(PathBuf::from),
-        compiler_timeout: Some(compiler_timeout()),
-        debug_artifacts: false,
-    })?
-    .write(&output)
-    .with_context(|| format!("writing bundle {}", output.display()))?;
+    let project = build_cancelable_untrusted_project(
+        &BuildOptions {
+            filelist,
+            project_root: Some(source_root),
+            top: Some(request.top.clone()),
+            elaboration: ElaborationOverrides::default(),
+            slang_bin: std::env::var_os("NETTLE_SLANG_BIN").map(PathBuf::from),
+            yosys_bin: std::env::var_os("NETTLE_YOSYS_BIN").map(PathBuf::from),
+            compiler_timeout: Some(compiler_timeout()),
+            debug_artifacts: false,
+        },
+        cancelled.clone(),
+    )?;
+    require_active_build(&cancelled)?;
+    project
+        .write(&output)
+        .with_context(|| format!("writing bundle {}", output.display()))?;
+    require_active_build(&cancelled)?;
     fs::read(&output).with_context(|| format!("reading bundle {}", output.display()))
 }
 
-fn copy_azure_directory(remote: &str, destination: &Path) -> Result<()> {
+fn copy_azure_directory(remote: &str, destination: &Path, cancelled: &AtomicBool) -> Result<()> {
     let mut command = Command::new("bbb");
     command
         .arg("cptree")
         .arg("--quiet")
         .arg(remote)
         .arg(destination)
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    run_with_timeout(command, download_timeout()).context("downloading Azure directory")
+    run_with_timeout(command, download_timeout(), cancelled).context("downloading Azure directory")
 }
 
-fn run_with_timeout(mut command: Command, timeout: Duration) -> Result<()> {
+fn run_with_timeout(mut command: Command, timeout: Duration, cancelled: &AtomicBool) -> Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        bail!("Azure build cancelled because the client disconnected");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        command.process_group(0);
+    }
     let mut child = command.spawn().context("starting bbb")?;
+    let stderr = child.stderr.take().expect("stderr was configured as piped");
+    let stderr_reader = thread::spawn(move || read_bounded_copy_error(stderr));
     let start = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().context("waiting for bbb")? {
-            let output = child.wait_with_output().context("reading copy output")?;
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                terminate_process_group(&mut child);
+                let _ = child.wait();
+                let _ = stderr_reader.join();
+                return Err(error).context("waiting for bbb");
+            }
+        };
+        if let Some(status) = status {
+            if !status.success() {
+                terminate_process_group(&mut child);
+            }
+            let stderr = stderr_reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("bbb stderr reader panicked"))?
+                .context("reading bbb stderr")?;
             if status.success() {
                 return Ok(());
             }
-            bail!(
-                "bbb exited with {status}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
+            bail!("bbb exited with {status}: {}", stderr.trim());
         }
         if start.elapsed() >= timeout {
-            let _ = child.kill();
+            terminate_process_group(&mut child);
             let _ = child.wait();
+            let _ = stderr_reader.join();
             bail!("Azure copy timed out after {} seconds", timeout.as_secs());
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            terminate_process_group(&mut child);
+            let _ = child.wait();
+            let _ = stderr_reader.join();
+            bail!("Azure build cancelled because the client disconnected");
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn read_bounded_copy_error(mut reader: impl Read) -> io::Result<String> {
+    let mut retained = Vec::with_capacity(MAX_AZURE_COPY_ERROR_BYTES);
+    let mut omitted = 0_usize;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = MAX_AZURE_COPY_ERROR_BYTES.saturating_sub(retained.len());
+        let keep = remaining.min(count);
+        retained.extend_from_slice(&buffer[..keep]);
+        omitted = omitted.saturating_add(count - keep);
+    }
+    let mut output = String::from_utf8_lossy(&retained).into_owned();
+    if omitted > 0 {
+        output.push_str(&format!("\n... <{omitted} bytes omitted from bbb stderr>"));
+    }
+    Ok(output)
+}
+
+#[cfg(unix)]
+fn terminate_process_group(child: &mut std::process::Child) {
+    if let Ok(process_group) = i32::try_from(child.id()) {
+        // SAFETY: the child was placed in a process group whose id is its pid;
+        // a negative pid targets that group, and SIGKILL needs no shared data.
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 fn download_timeout() -> Duration {
@@ -228,15 +364,22 @@ fn resolve_filelist(root: &Path, value: &str) -> Result<PathBuf> {
     Ok(filelist)
 }
 
-fn ensure_tree_within_limits(root: &Path, maximum_bytes: u64, maximum_files: usize) -> Result<()> {
+fn ensure_tree_within_limits(
+    root: &Path,
+    maximum_bytes: u64,
+    maximum_files: usize,
+    cancelled: &AtomicBool,
+) -> Result<()> {
     let mut pending = vec![root.to_path_buf()];
     let mut total_bytes = 0_u64;
     let mut total_files = 0_usize;
 
     while let Some(directory) = pending.pop() {
+        require_active_build(cancelled)?;
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("reading downloaded directory {}", directory.display()))?
         {
+            require_active_build(cancelled)?;
             let entry = entry?;
             let path = entry.path();
             let file_type = entry
@@ -276,6 +419,13 @@ fn ensure_tree_within_limits(root: &Path, maximum_bytes: u64, maximum_files: usi
     Ok(())
 }
 
+fn require_active_build(cancelled: &AtomicBool) -> Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        bail!("Azure build cancelled because the client disconnected");
+    }
+    Ok(())
+}
+
 fn bad_request(error: anyhow::Error) -> ApiError {
     ApiError {
         status: StatusCode::BAD_REQUEST,
@@ -304,6 +454,22 @@ mod tests {
             "az://account/container/project-other/",
             "az://account/container/project/"
         ));
+        assert!(!azure_path_is_allowed(
+            "az://account/container/project/../private/",
+            "az://account/container/project/"
+        ));
+        assert!(!azure_path_is_allowed(
+            "az://account/container/project/%2e%2e/private/",
+            "az://account/container/project/"
+        ));
+        assert!(!azure_path_is_allowed(
+            "az://account//container/project/",
+            "az://account/container/project/"
+        ));
+        assert!(azure_path_has_safe_components(
+            "az://account/container/project/"
+        ));
+        assert!(!azure_path_has_safe_components("az://account/"));
     }
 
     #[test]
@@ -334,8 +500,46 @@ mod tests {
         fs::create_dir(root.path().join("nested")).unwrap();
         fs::write(root.path().join("nested/second.sv"), "56").unwrap();
 
-        assert!(ensure_tree_within_limits(root.path(), 6, 2).is_ok());
-        assert!(ensure_tree_within_limits(root.path(), 5, 2).is_err());
-        assert!(ensure_tree_within_limits(root.path(), 6, 1).is_err());
+        let cancelled = AtomicBool::new(false);
+        assert!(ensure_tree_within_limits(root.path(), 6, 2, &cancelled).is_ok());
+        assert!(ensure_tree_within_limits(root.path(), 5, 2, &cancelled).is_err());
+        assert!(ensure_tree_within_limits(root.path(), 6, 1, &cancelled).is_err());
+    }
+
+    #[test]
+    fn dropping_an_armed_request_cancels_its_build() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        {
+            let _guard = CancelOnDrop::new(cancelled.clone());
+        }
+        assert!(cancelled.load(Ordering::Relaxed));
+
+        let completed = Arc::new(AtomicBool::new(false));
+        {
+            let mut guard = CancelOnDrop::new(completed.clone());
+            guard.disarm();
+        }
+        assert!(!completed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cancelled_download_does_not_start_a_process() {
+        let cancelled = AtomicBool::new(true);
+        let error = run_with_timeout(
+            Command::new("this-command-must-not-run"),
+            Duration::from_secs(1),
+            &cancelled,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("client disconnected"));
+    }
+
+    #[test]
+    fn bounds_azure_copy_error_output() {
+        let input = vec![b'x'; MAX_AZURE_COPY_ERROR_BYTES + 17];
+        let output = read_bounded_copy_error(std::io::Cursor::new(input)).unwrap();
+        assert!(output.starts_with(&"x".repeat(128)));
+        assert!(output.contains("<17 bytes omitted from bbb stderr>"));
+        assert!(output.len() < MAX_AZURE_COPY_ERROR_BYTES + 128);
     }
 }

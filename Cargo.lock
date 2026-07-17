@@ -636,6 +636,7 @@ dependencies = [
  "axum",
  "clap",
  "hex",
+ "libc",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
