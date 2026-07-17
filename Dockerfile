@@ -90,6 +90,10 @@ COPY scripts/generate-resource-limits.mjs scripts/generate-resource-limits.mjs
 COPY web web
 RUN NETTLE_ENABLE_AZURE_BUNDLES="$NETTLE_ENABLE_AZURE_BUNDLES" npm run build
 
+# Supply the combined image's Python runtime from a separately pinned image
+# instead of resolving Python packages from a mutable Debian apt repository.
+FROM python:3.11.13-slim-bookworm@sha256:cec9aa7aa96eea4fa036e9b82be1e6b325f2e3707f462d885868df51ec0a4b47 AS python-runtime
+
 # Publishable build-only runtime: CLI plus HDL compilers, without web assets.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
 RUN apt-get update \
@@ -110,25 +114,29 @@ ENTRYPOINT ["nettle"]
 
 # The interactive image combines the compiler toolchain with the static viewer
 # so `nettle render` can build and serve a bundle in one container.
-FROM builder AS nettle
-USER root
+FROM python-runtime AS nettle
+COPY --from=builder /usr/local/bin/nettle /usr/local/bin/nettle
+COPY --from=builder /opt/slang /opt/slang
+COPY --from=builder /opt/oss-cad-suite /opt/oss-cad-suite
+COPY --from=builder /opt/nettle/third-party-licenses /opt/nettle/third-party-licenses
 COPY requirements/boostedblob.txt /opt/nettle/boostedblob-requirements.txt
-RUN apt-get update \
-  && apt-get install --yes --no-install-recommends curl python3 python3-venv \
-  && rm -rf /var/lib/apt/lists/* \
+RUN mkdir --parents /home/nettle \
   && python3 -m venv /opt/boostedblob \
   && /opt/boostedblob/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: \
     -r /opt/nettle/boostedblob-requirements.txt \
-  && /opt/boostedblob/bin/bbb --version
+  && /opt/boostedblob/bin/bbb --version \
+  && chmod 0555 /usr/local/bin/nettle /opt/slang/slang \
+  && chown --recursive 10001:10001 /home/nettle
 COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \
   NETTLE_BIND_ADDRESS=0.0.0.0 \
   NETTLE_PORT=8080 \
+  HOME=/home/nettle \
   PATH=/opt/boostedblob/bin:/opt/oss-cad-suite/bin:/opt/slang:/usr/local/bin:/usr/bin:/bin
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null || exit 1
-USER nettle
+  CMD python3 -c 'from urllib.request import urlopen; urlopen("http://127.0.0.1:8080/healthz").read()' || exit 1
+USER 10001:10001
 CMD ["view"]
 
 # The deployable viewer contains no HDL compiler or project source. It remains

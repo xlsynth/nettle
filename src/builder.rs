@@ -76,6 +76,18 @@ impl BuiltProject {
 
 /// Compiles a filelist and collects everything needed for a portable bundle.
 pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
+    build_project_with_source_include_confinement(options, false)
+}
+
+/// Compiles an untrusted hosted filelist after confining source-level includes.
+pub(crate) fn build_untrusted_project(options: &BuildOptions) -> Result<BuiltProject> {
+    build_project_with_source_include_confinement(options, true)
+}
+
+fn build_project_with_source_include_confinement(
+    options: &BuildOptions,
+    strict_source_include_confinement: bool,
+) -> Result<BuiltProject> {
     options
         .elaboration
         .validate()
@@ -95,7 +107,9 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
     let project = normalize_filelist_within(&filelist, options.top.as_deref(), &root)
         .context("normalizing filelist")?;
     require_compiler_inputs_within(&root, &project)?;
-    require_source_includes_within(&root, &project)?;
+    if strict_source_include_confinement {
+        require_source_includes_within(&root, &project)?;
+    }
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
         .top
@@ -648,6 +662,37 @@ mod tests {
         assert_eq!(index.build.unwrap().tools.len(), 2);
         let sources = reader.source_index().unwrap();
         assert_eq!(sources.files[0].path, "top.sv");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_hosted_builds_apply_strict_source_include_confinement() {
+        let (directory, slang, yosys, filelist) = crate::compiler::tests::fake_compilers(false);
+        fs::write(
+            directory.path().join("top.sv"),
+            "`include `HEADER\nmodule top; endmodule\n",
+        )
+        .unwrap();
+        let options = BuildOptions {
+            filelist,
+            project_root: Some(directory.path().to_owned()),
+            top: Some("top".to_owned()),
+            elaboration: ElaborationOverrides::default(),
+            slang_bin: Some(slang),
+            yosys_bin: Some(yosys),
+            compiler_timeout: None,
+            debug_artifacts: false,
+        };
+
+        build_project(&options).unwrap();
+        let error = match build_untrusted_project(&options) {
+            Ok(_) => panic!("hosted builds must reject macro-expanded includes"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("literal double-quoted paths"),
+            "{error:#}"
+        );
     }
 
     #[test]

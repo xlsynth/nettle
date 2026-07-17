@@ -17,7 +17,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
 
-use crate::{BuildOptions, ElaborationOverrides, build_project};
+use crate::{BuildOptions, ElaborationOverrides, builder::build_untrusted_project};
 
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 600;
 const DEFAULT_COMPILER_TIMEOUT_SECONDS: u64 = 600;
@@ -140,7 +140,7 @@ fn build_bundle(request: &AzureBuildRequest) -> Result<Vec<u8>> {
 
     let filelist = resolve_filelist(&source_root, &request.filelist)?;
     let output = workspace.path().join("design.nettle");
-    build_project(&BuildOptions {
+    build_untrusted_project(&BuildOptions {
         filelist,
         project_root: Some(source_root),
         top: Some(request.top.clone()),
