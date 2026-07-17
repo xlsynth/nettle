@@ -361,6 +361,7 @@ jobs:
     name: Build Nettle demo Pages artifact
     needs:
       - publish-context
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       pages: write
@@ -427,6 +428,7 @@ jobs:
     name: Deploy Nettle demo GitHub Pages
     needs:
       - pages-build
+    if: github.ref == 'refs/heads/main'
     permissions:
       pages: write
       id-token: write
