@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use crate::bundle::{
     BuildMetadata, BundleContents, BundleSource, DebugArtifact, ToolMetadata, write_bundle,
@@ -17,7 +18,8 @@ use crate::ir::{
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::compiler::{
-    CompilerOptions, DefineOverride, ElaborationOverrides, ParameterOverride, compile_filelist,
+    CompilerOptions, DefineOverride, ElaborationOverrides, ParameterOverride,
+    compile_filelist_with_timeout,
 };
 use crate::resource_limits::native::builder::SOURCE_BYTES as MAX_SOURCE_BYTES;
 
@@ -36,6 +38,8 @@ pub struct BuildOptions {
     pub slang_bin: Option<PathBuf>,
     /// Optional Yosys executable override.
     pub yosys_bin: Option<PathBuf>,
+    /// Optional deadline for each compiler process.
+    pub compiler_timeout: Option<Duration>,
     /// Whether to retain raw compiler outputs and transcripts in the bundle.
     pub debug_artifacts: bool,
 }
@@ -90,6 +94,7 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
 
     let project =
         normalize_filelist(&filelist, options.top.as_deref()).context("normalizing filelist")?;
+    require_compiler_inputs_within(&root, &project)?;
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
         .top
@@ -98,13 +103,16 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
         .ok_or_else(|| anyhow!("pass --top <module> or add --top to the root filelist"))?;
     let effective = effective_elaboration(&project, &options.elaboration);
 
-    let artifacts = compile_filelist(&CompilerOptions {
-        filelist: filelist.clone(),
-        top: top.to_owned(),
-        elaboration: options.elaboration.clone(),
-        slang_bin: options.slang_bin.clone(),
-        yosys_bin: options.yosys_bin.clone(),
-    })?;
+    let artifacts = compile_filelist_with_timeout(
+        &CompilerOptions {
+            filelist: filelist.clone(),
+            top: top.to_owned(),
+            elaboration: options.elaboration.clone(),
+            slang_bin: options.slang_bin.clone(),
+            yosys_bin: options.yosys_bin.clone(),
+        },
+        options.compiler_timeout,
+    )?;
     let mut snapshot =
         import_yosys_json(&artifacts.yosys_json, Some(top)).context("importing Yosys JSON")?;
     merge_slang_instance_parameters(&mut snapshot, &artifacts.slang_ast_json)
@@ -191,6 +199,29 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
         build,
         debug_artifacts,
     })
+}
+
+fn require_compiler_inputs_within(root: &Path, project: &NormalizedProject) -> Result<()> {
+    for argument in &project.arguments {
+        if !matches!(
+            argument.kind,
+            NormalizedArgumentKind::Source
+                | NormalizedArgumentKind::IncludeDirectory
+                | NormalizedArgumentKind::LibraryDirectory
+                | NormalizedArgumentKind::LibraryFile
+                | NormalizedArgumentKind::NestedFilelist
+        ) {
+            continue;
+        }
+        let path = fs::canonicalize(&argument.value).with_context(|| {
+            format!(
+                "locating {:?} declared at {}:{}:{}",
+                argument.value, argument.origin.file, argument.origin.line, argument.origin.column
+            )
+        })?;
+        require_within(root, &path, "filelist input")?;
+    }
+    Ok(())
 }
 
 fn reject_ineffective_define_overrides(
@@ -457,6 +488,7 @@ mod tests {
             elaboration: ElaborationOverrides::default(),
             slang_bin: Some(slang),
             yosys_bin: Some(yosys),
+            compiler_timeout: None,
             debug_artifacts: false,
         })
         .unwrap();
@@ -536,5 +568,20 @@ mod tests {
         assert_eq!(graph.nodes[0].origins[0].file, canonical.path);
         assert_eq!(graph.nodes[0].origins.len(), 1);
         assert_eq!(graph.files, Some(vec![canonical]));
+    }
+
+    #[test]
+    fn compiler_inputs_cannot_escape_the_project_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(root.join("top.sv"), "module top; endmodule\n").unwrap();
+        fs::write(root.join("project.f"), "+incdir+../outside\ntop.sv\n").unwrap();
+
+        let project = normalize_filelist(root.join("project.f"), Some("top")).unwrap();
+        let error = require_compiler_inputs_within(&root, &project).unwrap_err();
+        assert!(error.to_string().contains("outside project root"));
     }
 }

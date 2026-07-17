@@ -394,6 +394,7 @@ configure the hosted path:
 - `NETTLE_ENABLE_AZURE_BUNDLES`: set to `true` to expose the controls and API.
 - `NETTLE_AZURE_ROOTS`: comma-separated allowed Azure path prefixes.
 - `NETTLE_AZURE_TIMEOUT_SECONDS`: download timeout, defaulting to 600 seconds.
+- `NETTLE_AZURE_COMPILER_TIMEOUT_SECONDS`: deadline for each compiler process, defaulting to 600 seconds.
 - `NETTLE_SLANG_BIN` and `NETTLE_YOSYS_BIN`: optional explicit compiler paths.
 
 At most two Azure builds run concurrently; additional requests wait for an

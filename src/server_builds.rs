@@ -20,6 +20,7 @@ use tokio::sync::Semaphore;
 use crate::{BuildOptions, ElaborationOverrides, build_project};
 
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 600;
+const DEFAULT_COMPILER_TIMEOUT_SECONDS: u64 = 600;
 const MAX_CONCURRENT_AZURE_BUILDS: usize = 2;
 const MAX_AZURE_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_AZURE_DOWNLOAD_FILES: usize = 10_000;
@@ -146,6 +147,7 @@ fn build_bundle(request: &AzureBuildRequest) -> Result<Vec<u8>> {
         elaboration: ElaborationOverrides::default(),
         slang_bin: std::env::var_os("NETTLE_SLANG_BIN").map(PathBuf::from),
         yosys_bin: std::env::var_os("NETTLE_YOSYS_BIN").map(PathBuf::from),
+        compiler_timeout: Some(compiler_timeout()),
         debug_artifacts: false,
     })?
     .write(&output)
@@ -194,6 +196,15 @@ fn download_timeout() -> Duration {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(DEFAULT_DOWNLOAD_TIMEOUT_SECONDS),
+    )
+}
+
+fn compiler_timeout() -> Duration {
+    Duration::from_secs(
+        std::env::var("NETTLE_AZURE_COMPILER_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(DEFAULT_COMPILER_TIMEOUT_SECONDS),
     )
 }
 

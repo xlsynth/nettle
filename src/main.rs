@@ -178,6 +178,7 @@ impl BuildArgs {
             yosys_bin: self
                 .yosys_bin
                 .or_else(|| config.yosys_bin.map(&config_path)),
+            compiler_timeout: None,
             debug_artifacts: self.debug_artifacts || config.debug_artifacts,
         };
         options

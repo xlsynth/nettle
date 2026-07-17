@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::ir::{Diagnostic, DiagnosticSeverity, SourceOrigin, normalize_filelist};
 use crate::resource_limits::native::compiler::{
@@ -247,6 +247,14 @@ struct SlangOutput {
 /// Probes the external compilers, then runs them concurrently from the same
 /// root `-F` filelist and with the same elaboration settings.
 pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> {
+    compile_filelist_with_timeout(options, None)
+}
+
+/// Compiles a filelist, terminating each compiler process after an optional deadline.
+pub fn compile_filelist_with_timeout(
+    options: &CompilerOptions,
+    compiler_timeout: Option<Duration>,
+) -> Result<CompilerArtifacts> {
     let filelist = fs::canonicalize(&options.filelist)
         .with_context(|| format!("locating root filelist {}", options.filelist.display()))?;
     // Parse before discovering or launching either compiler. The normalizer
@@ -265,8 +273,8 @@ pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> 
     })?;
 
     let (slang_report, yosys_report) = std::thread::scope(|scope| {
-        let slang_probe = scope.spawn(|| probe_slang(&slang, project_root));
-        let yosys_probe = scope.spawn(|| probe_yosys(&yosys, project_root));
+        let slang_probe = scope.spawn(|| probe_slang(&slang, project_root, compiler_timeout));
+        let yosys_probe = scope.spawn(|| probe_yosys(&yosys, project_root, compiler_timeout));
         (
             join_worker("Slang capability probe", slang_probe),
             join_worker("Yosys capability probe", yosys_probe),
@@ -301,6 +309,7 @@ pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> 
                 &options.top,
                 &diagnostics_path,
                 &ast_path,
+                compiler_timeout,
             )
         });
         let yosys_worker = scope.spawn(|| {
@@ -309,6 +318,7 @@ pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> 
                 &compiler_filelist.yosys_cwd,
                 &yosys_script_path,
                 &yosys_json_path,
+                compiler_timeout,
             )
         });
         (
@@ -405,14 +415,21 @@ fn executable_names(requested: &Path) -> Vec<OsString> {
     }
 }
 
-fn probe_slang(program: &Path, cwd: &Path) -> Result<ToolReport> {
+fn probe_slang(program: &Path, cwd: &Path, timeout: Option<Duration>) -> Result<ToolReport> {
     let version = run_checked(
         program,
         [OsStr::new("--version")],
         cwd,
         "Slang version probe",
+        timeout,
     )?;
-    let help = run_checked(program, [OsStr::new("--help")], cwd, "Slang help probe")?;
+    let help = run_checked(
+        program,
+        [OsStr::new("--help")],
+        cwd,
+        "Slang help probe",
+        timeout,
+    )?;
     let capabilities = combined_output(&help);
     for required in ["-F", "--top", "--diag-json", "--ast-json", "-D", "-U", "-G"] {
         if !capabilities.contains(required) {
@@ -429,8 +446,14 @@ fn probe_slang(program: &Path, cwd: &Path) -> Result<ToolReport> {
     })
 }
 
-fn probe_yosys(program: &Path, cwd: &Path) -> Result<ToolReport> {
-    let version = run_checked(program, [OsStr::new("-V")], cwd, "Yosys version probe")?;
+fn probe_yosys(program: &Path, cwd: &Path, timeout: Option<Duration>) -> Result<ToolReport> {
+    let version = run_checked(
+        program,
+        [OsStr::new("-V")],
+        cwd,
+        "Yosys version probe",
+        timeout,
+    )?;
     let plugin_args = [
         OsStr::new("-Q"),
         OsStr::new("-m"),
@@ -443,6 +466,7 @@ fn probe_yosys(program: &Path, cwd: &Path) -> Result<ToolReport> {
         plugin_args,
         cwd,
         "yosys-slang plugin capability probe",
+        timeout,
     )
     .with_context(|| {
         format!(
@@ -480,6 +504,7 @@ fn run_slang(
     top: &str,
     diagnostics_path: &Path,
     ast_path: &Path,
+    timeout: Option<Duration>,
 ) -> Result<SlangOutput> {
     let args = vec![
         OsString::from("-F"),
@@ -499,6 +524,7 @@ fn run_slang(
         args.iter().map(OsString::as_os_str),
         cwd,
         "standalone Slang full elaboration",
+        timeout,
     )
     .with_context(|| {
         "Slang rejected the project; inspect the captured diagnostics above, or rerun the displayed command directly"
@@ -524,6 +550,7 @@ fn run_yosys(
     cwd: &Path,
     script_path: &Path,
     output_path: &Path,
+    timeout: Option<Duration>,
 ) -> Result<ProcessCapture> {
     let args = [
         OsStr::new("-Q"),
@@ -532,7 +559,7 @@ fn run_yosys(
         OsStr::new("-s"),
         script_path.as_os_str(),
     ];
-    let capture = run_checked(program, args, cwd, "Yosys + yosys-slang lowering")
+    let capture = run_checked(program, args, cwd, "Yosys + yosys-slang lowering", timeout)
         .with_context(|| {
             "Yosys failed to lower the project; verify that the selected Yosys and slang plugin versions are compatible"
         })?;
@@ -550,31 +577,61 @@ fn run_checked<'a>(
     args: impl IntoIterator<Item = &'a OsStr>,
     cwd: &Path,
     purpose: &str,
+    timeout: Option<Duration>,
 ) -> Result<ProcessCapture> {
     let args: Vec<OsString> = args.into_iter().map(OsStr::to_owned).collect();
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(&args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "could not start {purpose}: {}",
-                format_command(program, &args)
-            )
-        })?;
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        command.process_group(0);
+    }
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "could not start {purpose}: {}",
+            format_command(program, &args)
+        )
+    })?;
     let stdout = child.stdout.take().expect("stdout was configured as piped");
     let stderr = child.stderr.take().expect("stderr was configured as piped");
     let stdout_reader = thread::spawn(move || read_bounded_output(stdout));
     let stderr_reader = thread::spawn(move || read_bounded_output(stderr));
-    let status = child.wait().with_context(|| {
-        format!(
-            "could not wait for {purpose}: {}",
-            format_command(program, &args)
-        )
-    })?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().with_context(|| {
+            format!(
+                "could not wait for {purpose}: {}",
+                format_command(program, &args)
+            )
+        })? {
+            break status;
+        }
+        if timeout.is_some_and(|deadline| started.elapsed() >= deadline) {
+            terminate_process_group(&mut child);
+            let _ = child.wait();
+            let stdout = stdout_reader
+                .join()
+                .map_err(|_| anyhow!("stdout reader panicked while running {purpose}"))??;
+            let stderr = stderr_reader
+                .join()
+                .map_err(|_| anyhow!("stderr reader panicked while running {purpose}"))??;
+            bail!(
+                "{purpose} timed out after {} seconds\ncommand: {}\nstdout:\n{}\nstderr:\n{}",
+                timeout.expect("timeout was checked").as_secs(),
+                format_command(program, &args),
+                truncate_output(&stdout),
+                truncate_output(&stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
     let stdout = stdout_reader
         .join()
         .map_err(|_| anyhow!("stdout reader panicked while running {purpose}"))??;
@@ -596,6 +653,20 @@ fn run_checked<'a>(
         );
     }
     Ok(capture)
+}
+
+#[cfg(unix)]
+fn terminate_process_group(child: &mut std::process::Child) {
+    let _ = Command::new("/bin/kill")
+        .arg("-KILL")
+        .arg(format!("-{}", child.id()))
+        .status();
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 fn read_bounded_output(mut reader: impl Read) -> io::Result<String> {
@@ -1026,6 +1097,24 @@ pub(crate) mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::write(path, contents).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_timeout_terminates_the_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("slow-compiler");
+        write_executable(&program, "#!/bin/sh\nsleep 30 &\nwait\n");
+
+        let error = run_checked(
+            &program,
+            std::iter::empty::<&OsStr>(),
+            directory.path(),
+            "test compiler",
+            Some(Duration::from_millis(50)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out after 0 seconds"));
     }
 
     #[cfg(unix)]
