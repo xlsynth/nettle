@@ -356,3 +356,85 @@ jobs:
             --tag "${IMAGE}:latest" \
             --tag "${IMAGE}:${IMAGE_TAG}" \
             "${sources[@]}"
+
+  pages-build:
+    name: Build Nettle demo Pages artifact
+    needs:
+      - publish-context
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked web dependencies
+        run: npm ci
+
+      - name: Build static viewer
+        env:
+          NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
+        run: npm run build
+
+      - name: Download tested Nettle builder image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nettle-builder-amd64-image
+          path: /tmp/nettle-builder-image
+
+      - name: Build and validate public integration demos
+        run: |
+          set -euo pipefail
+          docker load --input /tmp/nettle-builder-image/nettle-builder-amd64.tar
+          image="nettle-nettle-builder:${{ github.sha }}"
+          mkdir -p web/dist/demos
+          build_bundle() {
+            output="$1"
+            filelist="$2"
+            project_root="$3"
+            top="$4"
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -v "$PWD:/work" -w /work "$image" build \
+              --filelist "$filelist" --project-root "$project_root" --top "$top" \
+              --output "$output"
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -v "$PWD:/work" -w /work "$image" validate "$output"
+          }
+          build_bundle web/dist/demos/smoke.nettle integration_tests/smoke/project.f integration_tests/smoke top
+          build_bundle web/dist/demos/schematic-reference.nettle integration_tests/schematic-diff/reference/project.f integration_tests/schematic-diff/reference top
+          build_bundle web/dist/demos/schematic-candidate.nettle integration_tests/schematic-diff/candidate/project.f integration_tests/schematic-diff/candidate top
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        with:
+          path: web/dist
+
+  pages-deploy:
+    name: Deploy Nettle demo GitHub Pages
+    needs:
+      - pages-build
+    permissions:
+      pages: write
+      id-token: write
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
