@@ -10,6 +10,7 @@ mod yosys;
 pub use filelist::{
     Define, FileListError, InputPath, NormalizedArgument, NormalizedArgumentKind,
     NormalizedProject, ParameterAssignment, TokenOrigin, Undefine, normalize_filelist,
+    normalize_filelist_within_root,
 };
 pub use model::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, GraphEdge, GraphGroup, GraphModule, GraphNode,

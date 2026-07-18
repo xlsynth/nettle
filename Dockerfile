@@ -123,13 +123,17 @@ USER nettle
 WORKDIR /work
 ENTRYPOINT ["nettle"]
 
-# The interactive image combines the compiler toolchain with the static viewer
-# so `nettle render` can build and serve a bundle in one container.
+# The interactive image combines the compiler toolchain with the web
+# application. It can run the persistent hosted service in one container or
+# use `nettle render` for a one-off local build.
 FROM builder AS nettle
 USER root
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends curl \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data /scratch \
+  && chown nettle:nettle /data /scratch \
+  && chmod 0700 /data /scratch
 COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \
   NETTLE_BIND_ADDRESS=0.0.0.0 \

@@ -53,6 +53,12 @@ repos:
         entry: npx --no-install prettier --check --plugin=prettier-plugin-sh --parser=dockerfile
         language: system
         files: (^|/)Dockerfile[^/]*$
+      - id: hosted-deployment
+        name: validate hosted deployment invariants
+        entry: npm run check:deployment
+        language: system
+        pass_filenames: false
+        files: ^(deploy/kubernetes\.yaml|scripts/check-hosted-deployment\.mjs)$
       - id: web-test
         name: web unit tests
         entry: npm --workspace web run test

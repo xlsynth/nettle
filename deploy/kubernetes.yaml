@@ -1,0 +1,142 @@
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nettle-sessions
+  labels:
+    app.kubernetes.io/name: nettle
+spec:
+  accessModes:
+    - ReadWriteOncePod
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nettle
+  labels:
+    app.kubernetes.io/name: nettle
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nettle
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nettle
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nettle
+          # Replace this placeholder with the digest of the image built from
+          # this checkout. Do not deploy a mutable tag.
+          image: ghcr.io/xlsynth/nettle@sha256:REPLACE_WITH_PUBLISHED_DIGEST
+          imagePullPolicy: IfNotPresent
+          args:
+            - host
+            - --bind-address=0.0.0.0
+            - --port=8080
+            - --web-root=/opt/nettle/web
+            - --storage-root=/data
+            - --scratch-root=/scratch
+            - --max-queued-builds=32
+            - --build-timeout=600s
+            - --evict-after=30d
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 512Mi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+              ephemeral-storage: 5Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            failureThreshold: 3
+            periodSeconds: 5
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 1
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: sessions
+              mountPath: /data
+            - name: scratch
+              mountPath: /scratch
+      volumes:
+        - name: sessions
+          persistentVolumeClaim:
+            claimName: nettle-sessions
+        - name: scratch
+          emptyDir:
+            sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nettle
+  labels:
+    app.kubernetes.io/name: nettle
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nettle
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nettle-deny-egress
+  labels:
+    app.kubernetes.io/name: nettle
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nettle
+  policyTypes:
+    - Egress
+  egress: []

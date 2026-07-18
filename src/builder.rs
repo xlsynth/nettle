@@ -12,7 +12,7 @@ use crate::bundle::{
 use crate::ir::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, NormalizedArgumentKind, NormalizedProject,
     ParsedSlangAst, SourceElaborationRange, SourceFileRef, extract_slang_elaboration_ranges,
-    import_yosys_json, normalize_filelist, stable_id,
+    import_yosys_json, normalize_filelist, normalize_filelist_within_root, stable_id,
 };
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -88,8 +88,12 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
     }
     require_within(&root, &filelist, "root filelist")?;
 
-    let project =
-        normalize_filelist(&filelist, options.top.as_deref()).context("normalizing filelist")?;
+    let project = if options.project_root.is_some() {
+        normalize_filelist_within_root(&filelist, options.top.as_deref(), &root)
+    } else {
+        normalize_filelist(&filelist, options.top.as_deref())
+    }
+    .context("normalizing filelist")?;
     reject_ineffective_define_overrides(&project, &options.elaboration)?;
     let top = options
         .top
@@ -500,6 +504,30 @@ mod tests {
     use crate::ir::{GraphModule, GraphNode, GraphSlice, NodeKind, SourceOrigin};
 
     use super::*;
+
+    #[test]
+    fn explicit_project_root_rejects_nested_filelists_before_opening_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let project_root = directory.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+        let filelist = project_root.join("project.f");
+        fs::write(&filelist, "--top top\n-F ../outside.f\n").unwrap();
+        fs::write(directory.path().join("outside.f"), "\"unterminated secret").unwrap();
+        let error = build_project(&BuildOptions {
+            filelist,
+            project_root: Some(project_root),
+            top: None,
+            elaboration: ElaborationOverrides::default(),
+            slang_bin: None,
+            yosys_bin: None,
+            debug_artifacts: false,
+        })
+        .err()
+        .expect("outside nested filelist should be rejected");
+        let message = format!("{error:#}");
+        assert!(message.contains("outside project root"), "{message}");
+        assert!(!message.contains("unterminated"), "{message}");
+    }
 
     #[cfg(unix)]
     #[test]

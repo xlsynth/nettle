@@ -11,12 +11,12 @@ connectivity, navigate or selectively flatten hierarchy, cross-probe source and
 schematic objects, and share a reviewable snapshot without sharing a compiler
 environment.
 
-Nettle deliberately separates compilation from viewing. The native CLI runs
-standalone Slang and Yosys with yosys-slang to normalize a design into a
-versioned ZIP + Protobuf bundle. The React viewer validates and renders that
-bundle entirely in browser memory. It does not upload the design, call a
-project API, or need HDL compiler binaries, making Nettle useful for local
-investigation, design review, and static-site deployment.
+Nettle deliberately separates its portable bundle from viewing. The native CLI
+runs standalone Slang and Yosys with yosys-slang to normalize a design into a
+versioned ZIP + Protobuf bundle. Opening a local bundle still validates and
+renders it entirely in browser memory without uploading it. An optional
+private-cloud service adds explicit bundle sharing and queued server-side
+compilation without changing that local workflow.
 
 ## Try the public demo
 
@@ -113,7 +113,7 @@ you need.
 
 | Image            | Use when                                                    | Omits                                                                         |
 | ---------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `nettle`         | Building and viewing in one local container                 | Nothing needed for the interactive workflow; linux/amd64 only                 |
+| `nettle`         | Building, viewing, or running the hosted service            | Nothing needed for the interactive workflow; linux/amd64 only                 |
 | `nettle-builder` | Producing `.nettle` bundles without hosting a viewer        | Static viewer assets and server dependencies; linux/amd64 only                |
 | `nettle-viewer`  | Hosting or deploying the static viewer for existing bundles | Slang, Yosys, HDL toolchain, and project sources; linux/amd64 and linux/arm64 |
 
@@ -271,6 +271,54 @@ cargo run --locked -- render \
   --port 8090
 ```
 
+### Run the hosted web and compiler service
+
+`nettle host` serves three explicitly separate workflows from one process:
+
+1. open a local `.nettle` entirely inside the browser without uploading it;
+2. upload and persist a prebuilt `.nettle`, then view or download it through a
+   shareable capability URL; or
+3. upload a source archive, wait in the FIFO build queue, and persist, view, or
+   download the resulting `.nettle`.
+
+The hosted service runs Slang and Yosys as child processes in the same
+container. It does not launch nested containers or create Kubernetes workloads.
+The v1 deployment is exactly one Pod and one container.
+
+For local evaluation, give the combined image a persistent session volume and
+a bounded scratch filesystem:
+
+```sh
+docker run --rm --platform linux/amd64 \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -p 127.0.0.1:8080:8080 \
+  -v nettle-sessions:/data \
+  --tmpfs /scratch:rw,nosuid,nodev,noexec,size=4g \
+  ghcr.io/xlsynth/nettle@sha256:REPLACE_WITH_PUBLISHED_DIGEST host \
+  --storage-root=/data \
+  --scratch-root=/scratch \
+  --max-queued-builds=32 \
+  --build-timeout=600s \
+  --evict-after=30d
+```
+
+Loopback HTTP is suitable only for local evaluation. A shared deployment must
+terminate HTTPS and restrict reachability to its intended private-cloud user
+group. Nettle does not authenticate individual users; group authentication at
+the ingress is optional and site-dependent.
+Capability URLs are bearer secrets: anyone who can reach the service and has a
+session URL can view and download its bundle. The UI repeats this fact and the
+configured retention period before either upload.
+
+The checked-in [`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) is the
+recommended private-cloud starting point. It runs a single non-root replica
+with `Recreate`, a PVC backed by the site's encrypted StorageClass, bounded
+ephemeral scratch, a read-only root filesystem, dropped capabilities, no
+service-account token, and no outbound network. It intentionally leaves
+cluster-specific TLS, network access, optional group authentication, hostname,
+StorageClass, and image digest configuration to the admin. See
+[`deploy/README.md`](deploy/README.md) for setup and operational details.
+
 ### Compare two elaborated designs
 
 Build the reference and candidate as independent snapshots, then open schematic
@@ -402,7 +450,9 @@ See [Specialized images](#specialized-images) for when to use the stripped-down
 
 In a shared deployment, place the static site behind the normal authentication
 and HTTPS boundary. Design bytes selected with the file picker remain in each
-user's browser.
+user's browser. Use the combined image and
+[`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) only when upload,
+persistence, or server-side compilation is wanted.
 
 ### Validation
 
@@ -415,6 +465,7 @@ cargo clippy --all-targets --all-features --locked
 npm run lint
 npm test
 npm run build
+npm run check:deployment
 npm run test:e2e
 scripts/check-toolchain.sh
 npm run test:designs
@@ -434,6 +485,8 @@ suite in the known-good container environment.
   configuration schema and command-line merge behavior.
 - [`RESOURCE_LIMITS_FILE_FORMAT.md`](RESOURCE_LIMITS_FILE_FORMAT.md) documents
   the build-time resource-limit policy shared by the native and browser code.
+- [`deploy/README.md`](deploy/README.md) documents the single-Pod hosted-service
+  deployment and its private-cloud responsibilities.
 
 ## License
 

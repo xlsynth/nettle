@@ -160,6 +160,14 @@ pub enum FileListError {
         /// Underlying filesystem error.
         source: std::io::Error,
     },
+    /// A root or nested filelist resolves outside a caller-provided boundary.
+    #[error("filelist {path} is outside project root {root}")]
+    OutsideRoot {
+        /// Filelist path that escaped the boundary.
+        path: PathBuf,
+        /// Canonical project-root boundary.
+        root: PathBuf,
+    },
     /// Nested filelists contain a recursion cycle.
     #[error("nested filelist cycle: {path}")]
     Cycle {
@@ -231,7 +239,29 @@ pub fn normalize_filelist(
     filelist: impl AsRef<Path>,
     cli_top: Option<&str>,
 ) -> Result<NormalizedProject, FileListError> {
-    let initial = absolute_lexical(filelist.as_ref(), &current_dir());
+    normalize_filelist_impl(filelist.as_ref(), cli_top, None)
+}
+
+/// Expands a filelist while rejecting every root or nested filelist outside `project_root`.
+///
+/// The boundary is checked before any filelist is opened. This is intended for
+/// untrusted projects whose command files must not read files from the host.
+pub fn normalize_filelist_within_root(
+    filelist: impl AsRef<Path>,
+    cli_top: Option<&str>,
+    project_root: impl AsRef<Path>,
+) -> Result<NormalizedProject, FileListError> {
+    let root = absolute_lexical(project_root.as_ref(), &current_dir());
+    let root = fs::canonicalize(&root).unwrap_or(root);
+    normalize_filelist_impl(filelist.as_ref(), cli_top, Some(root))
+}
+
+fn normalize_filelist_impl(
+    filelist: &Path,
+    cli_top: Option<&str>,
+    containment_root: Option<PathBuf>,
+) -> Result<NormalizedProject, FileListError> {
+    let initial = absolute_lexical(filelist, &current_dir());
     let root = fs::canonicalize(&initial).unwrap_or(initial);
     // The compiler adapter runs both Slang processes from the root filelist's
     // directory. Slang's `-f` form resolves paths inside the nested command
@@ -247,6 +277,7 @@ pub fn normalize_filelist(
         bytes_read: 0,
         tokens_parsed: 0,
         compiler_cwd,
+        containment_root,
         project: NormalizedProject {
             root_filelist: path_string(&root),
             sources: vec![],
@@ -288,12 +319,21 @@ struct Parser {
     bytes_read: usize,
     tokens_parsed: usize,
     compiler_cwd: PathBuf,
+    containment_root: Option<PathBuf>,
     project: NormalizedProject,
 }
 
 impl Parser {
     fn parse_file(&mut self, file: &Path, relative_base: &Path) -> Result<(), FileListError> {
         let file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+        if let Some(root) = &self.containment_root
+            && !file.starts_with(root)
+        {
+            return Err(FileListError::OutsideRoot {
+                path: file,
+                root: root.clone(),
+            });
+        }
         if self.active.len() >= MAX_FILELIST_DEPTH {
             return Err(FileListError::DepthLimit {
                 path: file,

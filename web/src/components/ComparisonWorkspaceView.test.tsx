@@ -65,6 +65,34 @@ const bundle = (snapshotId: string, name: string): ComparisonBundleInput => {
 };
 
 describe("comparison workspace module pairing", () => {
+  it("keeps hosted-reference visibility and local-candidate privacy explicit", () => {
+    render(
+      <ComparisonWorkspaceView
+        reference={bundle("reference", "top")}
+        candidate={bundle("candidate", "top")}
+        initialPolicy="conservative"
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+        hostedReference={{
+          token: "a".repeat(64),
+          status: {
+            state: "ready",
+            admittedAtMs: 1,
+            completedAtMs: 2,
+            serverTimeMs: 3,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Reference is from a shareable session")).toBeTruthy();
+    expect(screen.getByText(/Candidate stays in this browser and is not uploaded/)).toBeTruthy();
+    expect(screen.getByText(/creates no new shareable URL/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Download reference" })).toBeTruthy();
+  });
+
   it("compares compatibility metadata canonically instead of warning on ordering", () => {
     const reference = bundle("reference", "top");
     const candidate = bundle("candidate", "top");

@@ -5,6 +5,7 @@
 
 pub mod build_info;
 pub mod bundle;
+pub mod host;
 pub mod ir;
 
 mod builder;

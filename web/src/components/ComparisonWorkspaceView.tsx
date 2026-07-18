@@ -81,6 +81,7 @@ import type {
 import type { DiffSourceSide, DiffSourceVersion } from "./DiffSourcePane";
 import { FileTree, type FileTreeDiffStatus } from "./FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./HeaderDialogs";
+import { HostedComparisonBanner, type HostedViewerSession } from "./HostedSessions";
 import { Inspector } from "./Inspector";
 import { type DescendantChangeStatus, InstanceHierarchy } from "./InstanceHierarchy";
 
@@ -112,6 +113,8 @@ export interface ComparisonWorkspaceViewProps {
   setStatusDetail: (detail: string) => void;
   onOpenBundle: () => void;
   onCompareBundles: () => void;
+  hostedReference?: HostedViewerSession;
+  hostedCandidate?: HostedViewerSession;
   onPolicyChange?: (policy: MatchingPolicy) => void;
 }
 
@@ -792,7 +795,17 @@ export function ComparisonWorkspaceView({
         onSearch={() => undefined}
         onHelp={() => undefined}
       />
-      <main className="bundle-welcome module-pair-gate">
+      {props.hostedReference || props.hostedCandidate ? (
+        <HostedComparisonBanner
+          reference={props.hostedReference}
+          candidate={props.hostedCandidate}
+        />
+      ) : null}
+      <main
+        className={`bundle-welcome module-pair-gate${
+          props.hostedReference || props.hostedCandidate ? " hosted-session" : ""
+        }`}
+      >
         <section className="bundle-welcome-card" aria-labelledby={titleId}>
           <h1 id={titleId}>Choose modules to compare</h1>
           <p>
@@ -866,6 +879,8 @@ function ConfirmedComparisonWorkspaceView({
   setStatusDetail,
   onOpenBundle,
   onCompareBundles,
+  hostedReference,
+  hostedCandidate,
   onPolicyChange,
 }: ComparisonWorkspaceViewProps) {
   const hasBundledSources = reference.inventory.length > 0 || candidate.inventory.length > 0;
@@ -2405,6 +2420,9 @@ function ConfirmedComparisonWorkspaceView({
         onSearch={() => setUtilityDialog("search")}
         onHelp={() => setUtilityDialog("help")}
       />
+      {hostedReference || hostedCandidate ? (
+        <HostedComparisonBanner reference={hostedReference} candidate={hostedCandidate} />
+      ) : null}
       <ProjectSearchDialog
         open={utilityDialog === "search"}
         files={files}
@@ -2415,7 +2433,9 @@ function ConfirmedComparisonWorkspaceView({
       />
       <HelpDialog open={utilityDialog === "help"} onClose={() => setUtilityDialog(undefined)} />
       <main
-        className={`workspace${inspectorOpen ? " inspector-visible" : ""}`}
+        className={`workspace${inspectorOpen ? " inspector-visible" : ""}${
+          hostedReference || hostedCandidate ? " hosted-session" : ""
+        }`}
         style={
           sourcePaneWidth === undefined
             ? undefined

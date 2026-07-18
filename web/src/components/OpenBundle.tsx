@@ -6,7 +6,9 @@ import {
   FileArchive,
   FolderOpen,
   GitCompareArrows,
+  Hammer,
   ShieldCheck,
+  UploadCloud,
   X,
 } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useEffect, useId, useRef, useState } from "react";
@@ -84,27 +86,107 @@ interface BundleWelcomeProps extends BundlePickerProps {
   onCompare?: () => void;
   demos?: readonly Demo[];
   onOpenDemo?: (demo: Demo) => void;
+  onUploadBundle?: () => void;
+  onUploadSources?: () => void;
 }
 
 export function BundleWelcome({
   onCompare,
   demos,
   onOpenDemo,
-  ...pickerProps
+  onUploadBundle,
+  onUploadSources,
+  loading,
+  error,
+  onSelect,
 }: BundleWelcomeProps) {
   const demoTitleId = useId();
+  const { input, selectInput, drop } = useBundlePicker(onSelect);
+  const [dragging, setDragging] = useState(false);
   return (
     <main className="bundle-welcome">
       <div className="bundle-welcome-card">
         <span className="bundle-welcome-icon">
           <FolderOpen size={24} strokeWidth={1.5} />
         </span>
-        <h1>Open an elaborated design</h1>
+        <h1>Open or share an elaborated design</h1>
         <p>
-          Nettle reads the bundle directly in this browser. Sources and schematic metadata are never
-          uploaded.
+          Choose where your design is processed and stored. Nettle will not upload anything until
+          you explicitly confirm a hosted action.
         </p>
-        <BundleDropTarget {...pickerProps} />
+        <div className="bundle-workflows">
+          <button
+            className={`bundle-workflow local${dragging ? " dragging" : ""}`}
+            type="button"
+            disabled={loading}
+            onClick={() => input.current?.click()}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(event) => {
+              setDragging(false);
+              drop(event);
+            }}
+          >
+            <FolderOpen size={24} strokeWidth={1.5} />
+            <span>
+              <strong>Open locally — no upload</strong>
+              <small>
+                This file stays in your browser. No shareable URL is created, and closing or
+                reloading discards the session.
+              </small>
+            </span>
+          </button>
+          <input
+            ref={input}
+            className="visually-hidden"
+            type="file"
+            accept=".nettle,application/zip"
+            aria-label="Open a .nettle bundle locally"
+            disabled={loading}
+            tabIndex={-1}
+            onChange={selectInput}
+          />
+          <button
+            className="bundle-workflow hosted"
+            type="button"
+            disabled={loading}
+            onClick={onUploadBundle}
+          >
+            <UploadCloud size={24} strokeWidth={1.5} />
+            <span>
+              <strong>Upload bundle and create shareable session</strong>
+              <small>
+                Store a prebuilt .nettle on this server. Anyone with the resulting URL can view and
+                download it.
+              </small>
+            </span>
+          </button>
+          <button
+            className="bundle-workflow hosted"
+            type="button"
+            disabled={loading}
+            onClick={onUploadSources}
+          >
+            <Hammer size={24} strokeWidth={1.5} />
+            <span>
+              <strong>Upload sources, build, and create shareable session</strong>
+              <small>
+                Upload an archive for Slang and Yosys to compile. The generated bundle persists on
+                this server.
+              </small>
+            </span>
+          </button>
+        </div>
+        {error ? (
+          <div className="bundle-open-error" role="alert">
+            <AlertCircle size={15} />
+            <span>{error}</span>
+          </div>
+        ) : null}
         {demos && onOpenDemo ? (
           <section className="demo-examples" aria-labelledby={demoTitleId}>
             <h2 id={demoTitleId}>Try an example</h2>
@@ -114,7 +196,7 @@ export function BundleWelcome({
                   key={demo.id}
                   className="demo-example"
                   type="button"
-                  disabled={pickerProps.loading}
+                  disabled={loading}
                   onClick={() => onOpenDemo(demo)}
                 >
                   <strong>{demo.title}</strong>
@@ -131,7 +213,7 @@ export function BundleWelcome({
         ) : null}
         <div className="bundle-privacy-note">
           <ShieldCheck size={15} />
-          <span>Validated and rendered in memory on this device</span>
+          <span>Local bundles are validated and rendered in memory on this device</span>
         </div>
         <code>nettle build --filelist design.f --top top --output design.nettle</code>
       </div>
@@ -180,6 +262,13 @@ export function OpenBundleDialog({
           </button>
         </header>
         <div className="open-bundle-body">
+          <div className="local-open-disclosure">
+            <ShieldCheck size={16} />
+            <span>
+              This file stays in your browser and is not uploaded. No shareable URL is created;
+              reloading or closing this page discards the session.
+            </span>
+          </div>
           <BundleDropTarget loading={loading} error={error} onSelect={onSelect} />
         </div>
       </section>
@@ -252,6 +341,7 @@ export interface CompareBundlesDialogProps {
   initialReference?: File;
   initialCandidate?: File;
   initialMatching?: MatchingPolicy;
+  hostedFiles?: readonly File[];
   onCompare: (reference: File, candidate: File, matching: MatchingPolicy) => void;
   onClose: () => void;
 }
@@ -263,6 +353,7 @@ export function CompareBundlesDialog({
   initialReference,
   initialCandidate,
   initialMatching = "conservative",
+  hostedFiles,
   onCompare,
   onClose,
 }: CompareBundlesDialogProps) {
@@ -355,6 +446,14 @@ export function CompareBundlesDialog({
   }, [initialCandidate, initialMatching, initialReference, open]);
 
   if (!open) return null;
+  const referenceHosted = reference !== undefined && hostedFiles?.includes(reference);
+  const candidateHosted = candidate !== undefined && hostedFiles?.includes(candidate);
+  const privacyText =
+    referenceHosted && candidateHosted
+      ? "Both bundles already have shareable URLs. Comparison runs in this browser and creates no new URL."
+      : referenceHosted || candidateHosted
+        ? `${referenceHosted ? "Reference" : "Candidate"} already has a shareable URL. Any local bundle stays in this browser; comparison creates no new URL.`
+        : "Bundles stay in this browser.";
   return (
     <div className="dialog-backdrop">
       <section
@@ -435,7 +534,7 @@ export function CompareBundlesDialog({
           ) : null}
         </div>
         <footer className="compare-bundles-actions">
-          <span>Bundles stay in this browser.</span>
+          <span>{privacyText}</span>
           <button type="button" onClick={onClose} disabled={loading}>
             Cancel
           </button>

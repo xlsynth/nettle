@@ -15,7 +15,7 @@ interface AppHeaderProps {
   onHelp: () => void;
 }
 
-export type DataMode = "empty" | "loading" | "bundle" | "comparison";
+export type DataMode = "empty" | "loading" | "bundle" | "hosted" | "comparison";
 
 export function AppHeader({
   projectName,
@@ -81,7 +81,10 @@ export function AppHeader({
         <CircleHelp size={18} strokeWidth={1.6} />
       </button>
       <div className={`viewer-status ${dataMode}`} title={statusDetail}>
-        {dataMode === "bundle" ? <span className="mode-badge local">LOCAL</span> : null}
+        {dataMode === "bundle" ? (
+          <span className="mode-badge local">LOCAL · NOT UPLOADED</span>
+        ) : null}
+        {dataMode === "hosted" ? <span className="mode-badge hosted">SHAREABLE</span> : null}
         {comparison ? (
           <>
             <span className="mode-badge diff">DIFF</span>

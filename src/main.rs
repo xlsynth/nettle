@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use nettle::bundle::BundleReader;
+use nettle::host::{HostOptions, serve_host};
 use nettle::{
     BuildOptions, DefineOverride, ElaborationOverrides, MatchingPolicy, ParameterOverride,
     StartupBundle, StartupWorkspace, build_project, parse_define_override,
@@ -44,6 +46,8 @@ enum Command {
     View(ViewArgs),
     /// Compare reference and candidate bundles in the browser viewer.
     Compare(CompareArgs),
+    /// Run the hosted viewer, durable session store, and source build queue.
+    Host(HostArgs),
 }
 
 #[derive(Debug, Args)]
@@ -257,6 +261,96 @@ struct ViewerServerArgs {
     port: u16,
 }
 
+#[derive(Debug, Args)]
+struct HostArgs {
+    /// Production Vite build containing index.html and assets.
+    #[arg(long, env = "NETTLE_WEB_ROOT", default_value = "web/dist")]
+    web_root: PathBuf,
+
+    /// Address exposed through the deployment's HTTPS ingress.
+    #[arg(
+        long,
+        env = "NETTLE_BIND_ADDRESS",
+        default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST)
+    )]
+    bind_address: IpAddr,
+
+    /// Browser-facing HTTP port behind the deployment's HTTPS ingress.
+    #[arg(long, env = "NETTLE_PORT", default_value_t = 8787)]
+    port: u16,
+
+    /// Persistent root for sessions and the durable FIFO queue.
+    #[arg(long, env = "NETTLE_STORAGE_ROOT", default_value = "nettle-data")]
+    storage_root: PathBuf,
+
+    /// Ephemeral root for archive extraction and compiler output.
+    #[arg(long, env = "NETTLE_SCRATCH_ROOT", default_value = "nettle-scratch")]
+    scratch_root: PathBuf,
+
+    /// Maximum number of source builds waiting in the FIFO queue.
+    #[arg(long, env = "NETTLE_MAX_QUEUED_BUILDS", default_value_t = 32)]
+    max_queued_builds: usize,
+
+    /// Deadline for one source build, such as 600s or 10m.
+    #[arg(
+        long,
+        env = "NETTLE_BUILD_TIMEOUT",
+        default_value = "600s",
+        value_parser = parse_duration
+    )]
+    build_timeout: Duration,
+
+    /// Optional terminal-session retention, such as 30d. Omit to retain forever.
+    #[arg(long, env = "NETTLE_EVICT_AFTER", value_parser = parse_duration)]
+    evict_after: Option<Duration>,
+
+    /// Maximum compressed bytes accepted in one upload.
+    #[arg(
+        long,
+        env = "NETTLE_MAX_UPLOAD_BYTES",
+        default_value_t = 512 * 1024 * 1024_u64
+    )]
+    max_upload_bytes: u64,
+}
+
+impl From<HostArgs> for HostOptions {
+    fn from(args: HostArgs) -> Self {
+        Self {
+            web_root: args.web_root,
+            bind_address: args.bind_address,
+            port: args.port,
+            storage_root: args.storage_root,
+            scratch_root: args.scratch_root,
+            max_queued_builds: args.max_queued_builds,
+            build_timeout: args.build_timeout,
+            evict_after: args.evict_after,
+            max_upload_bytes: args.max_upload_bytes,
+        }
+    }
+}
+
+fn parse_duration(value: &str) -> std::result::Result<Duration, String> {
+    let (digits, multiplier) = match value.as_bytes().last().copied() {
+        Some(b's') => (&value[..value.len() - 1], 1_u64),
+        Some(b'm') => (&value[..value.len() - 1], 60_u64),
+        Some(b'h') => (&value[..value.len() - 1], 60 * 60_u64),
+        Some(b'd') => (&value[..value.len() - 1], 24 * 60 * 60_u64),
+        _ => {
+            return Err("duration must end in s, m, h, or d".to_owned());
+        }
+    };
+    let amount: u64 = digits
+        .parse()
+        .map_err(|_| "duration must start with a non-negative integer".to_owned())?;
+    let seconds = amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| "duration is too large".to_owned())?;
+    if seconds == 0 {
+        return Err("duration must be greater than zero".to_owned());
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
 fn build_bundle(args: BuildArgs) -> Result<PathBuf> {
     let invocation = args.resolve()?;
     let project = build_project(&invocation.options)?;
@@ -359,6 +453,9 @@ async fn main() -> Result<()> {
             let startup_workspace =
                 validated_startup_comparison(&args.reference, &args.candidate, args.matching)?;
             serve_viewer(args.server, startup_workspace).await?;
+        }
+        Command::Host(args) => {
+            serve_host(args.into()).await?;
         }
     }
     Ok(())
@@ -610,6 +707,45 @@ debug_artifacts: true
             panic!("expected compare command");
         };
         assert_eq!(args.matching, MatchingPolicy::Aggressive);
+    }
+
+    #[test]
+    fn parses_host_storage_queue_and_duration_settings() {
+        let cli = Cli::try_parse_from([
+            "nettle",
+            "host",
+            "--storage-root",
+            "/data",
+            "--scratch-root",
+            "/scratch",
+            "--max-queued-builds",
+            "12",
+            "--build-timeout",
+            "10m",
+            "--evict-after",
+            "30d",
+        ])
+        .unwrap();
+        let Command::Host(args) = cli.command else {
+            panic!("expected host command");
+        };
+        assert_eq!(args.storage_root, PathBuf::from("/data"));
+        assert_eq!(args.scratch_root, PathBuf::from("/scratch"));
+        assert_eq!(args.max_queued_builds, 12);
+        assert_eq!(args.build_timeout, Duration::from_secs(600));
+        assert_eq!(
+            args.evict_after,
+            Some(Duration::from_secs(30 * 24 * 60 * 60))
+        );
+    }
+
+    #[test]
+    fn host_rejects_ambiguous_or_zero_durations() {
+        for duration in ["600", "0s", "1w"] {
+            let error =
+                Cli::try_parse_from(["nettle", "host", "--build-timeout", duration]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ValueValidation);
+        }
     }
 
     #[test]

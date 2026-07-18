@@ -6,6 +6,7 @@
     "web"
   ],
   "scripts": {
+    "check:deployment": "node scripts/check-hosted-deployment.mjs",
     "generate:limits": "node scripts/generate-resource-limits.mjs",
     "check:limits": "node scripts/generate-resource-limits.mjs --check",
     "dev": "npm --workspace web run dev",

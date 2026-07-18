@@ -2,7 +2,7 @@
 
 # Nettle Architecture
 
-Status: current bundle-first implementation, reviewed 2026-06-22
+Status: current bundle-first implementation, reviewed 2026-07-17
 
 ## System shape
 
@@ -14,10 +14,14 @@ flowchart LR
     S --> I["Normalized Nettle IR"]
     Y --> I
     I --> N["Deterministic .nettle bundle"]
-    N --> P["Browser file picker / drop"]
-    N --> H["Optional view / compare startup routes"]
+    N --> P["Browser-local file picker / drop"]
+    A["Uploaded source archive"] --> Q["Hosted FIFO build queue"]
+    Q --> B
+    N --> H["Hosted persistent session"]
+    N --> L["Optional view / compare startup routes"]
     P --> V["In-memory browser provider"]
     H --> V
+    L --> V
     V --> U["Single-design source + schematic UI"]
     V --> C["Two-provider comparison layer"]
     C --> D["Source diff + matched union graph"]
@@ -25,25 +29,28 @@ flowchart LR
 ```
 
 The versioned `.nettle` format separates compilation from viewing. In the
-default hosted viewer, selected bundles move from the browser's file API into
-browser memory and nowhere else. For local use, `nettle view BUNDLE` serves one
-explicit bundle from a fixed `no-store` route. `nettle compare REFERENCE
-CANDIDATE` serves a non-cacheable descriptor and two fixed non-cacheable bundle
-routes after validating both inputs. `nettle render` builds, validates, and
-serves a durable bundle. Before binding, each startup mode copies its selected
-archive into private, anonymous delete-on-close storage and validates that
-exact copy. Route handlers stream only the snapshot, so replacing or rewriting
-the caller-owned path cannot change a running workspace. Anonymous snapshots
-have no pathname to orphan and are reclaimed by the operating system after
-abrupt termination. None of these commands exposes the HDL project or adds a
-compilation or upload API.
+browser-local workflow, selected bundles move from the browser's file API into
+browser memory and nowhere else. The optional `nettle host` service adds
+explicit upload, persistence, sharing, and queued source compilation without
+changing the bundle or browser-provider contracts.
+
+For local use, `nettle view BUNDLE` serves one explicit bundle from a fixed
+`no-store` route. `nettle compare REFERENCE CANDIDATE` serves a non-cacheable
+descriptor and two fixed non-cacheable bundle routes after validating both
+inputs. `nettle render` builds, validates, and serves a durable bundle. Before
+binding, each startup mode copies its selected archive into private, anonymous
+delete-on-close storage and validates that exact copy. Route handlers stream
+only the snapshot, so replacing or rewriting the caller-owned path cannot
+change a running workspace. Anonymous snapshots have no pathname to orphan and
+are reclaimed by the operating system after abrupt termination. These local
+commands do not expose the HDL project or add an upload API.
 
 ## Repository ownership
 
 - `src`: the single native `nettle` crate and CLI. Its `builder` and `compiler`
   modules own filelist normalization, compiler discovery and execution,
   compiler-output merge, referenced-source collection, and optional static
-  viewer hosting.
+  viewer or persistent hosted-service operation.
 - `src/bundle`: canonical Protobuf messages, normalized IR conversion,
   deterministic ZIP writer, reader, validation, hashes, and security limits.
 - `src/ir`: compiler-neutral graph, stable semantic IDs, Yosys import, Slang
@@ -272,6 +279,160 @@ sides of a startup comparison, are downloadable by every client that can reach
 the local host, so keep those modes on loopback unless another access-control
 layer protects them.
 
+## Hosted service
+
+`nettle host` packages the static application, upload API, durable FIFO queue,
+session store, and one compiler worker into one long-lived process. The
+recommended deployment is one fixed Pod containing one non-root container:
+
+```mermaid
+flowchart LR
+    C["Browser in the trusted user group"] --> E["Private-cloud HTTPS edge"]
+    E --> H["nettle host"]
+    H --> P["Persistent sessions + queue"]
+    H --> T["Bounded ephemeral scratch"]
+    H --> S["Slang child"]
+    H --> Y["Yosys child"]
+```
+
+Nettle does not create Pods, containers, or other workloads. It needs no
+container-runtime socket, Kubernetes API permission, cloud credential, or
+outbound network access. A single-replica `Recreate` deployment prevents two
+queue managers from concurrently using the same filesystem store.
+
+### Deployment and threat model
+
+Version 1 is intended for a private cluster used by one group of equally
+trusted people. Private-cluster reachability is the user-group boundary.
+Nettle does not identify users, keep accounts, or require per-user
+authentication. The HTTPS edge may authenticate membership in the group, but
+that is a site policy rather than a Nettle protocol requirement. Every client
+that can reach the service may upload a bundle, submit a build, and consume
+shared queue and storage capacity.
+
+The people in that reachable group are trusted not to attack each other or
+deliberately damage shared sessions. Their uploaded bytes are not trusted:
+archives, filelists, RTL, `.nettle` bundles, compiler diagnostics, and generated
+bundles may be malformed or adversarial. This distinction protects the service
+from accidental bad inputs and common parser, path, and resource-exhaustion
+attacks without claiming hostile-user tenancy isolation.
+
+The assets are temporarily retained source archives; persistent bundles, which
+may embed referenced source and debug artifacts; capability tokens; queue
+metadata; and service/storage availability. The relevant boundaries are:
+
+- the browser-to-ingress connection, which must be HTTPS;
+- the private-cluster network boundary, which limits who can reach the
+  unauthenticated service;
+- the untrusted-upload boundary at the HTTP, archive, bundle, and filelist
+  parsers; and
+- the child-process boundary around Slang and Yosys.
+
+`/scratch` and `/data` have different lifetimes, but they are not security
+boundaries from the compiler. The web server and compiler children share one
+container and user, so a compromised compiler can read or modify the mounted
+session volume and can impair the web server. That is an explicit simplicity
+tradeoff for this mutually trusted private-cloud deployment.
+
+The landing page keeps three operations distinct:
+
+1. open a local `.nettle` through the existing in-memory provider, making no
+   upload request;
+2. explicitly upload and persist a validated `.nettle`; or
+3. explicitly upload a source archive, admit it to the durable queue, compile
+   it, validate the result, and persist the resulting `.nettle`.
+
+Hosted sessions are addressed by high-entropy capability URLs. A ready session
+can be viewed through the normal provider and downloaded as a `.nettle` file.
+Anyone able to reach the service and possessing the URL has the same access.
+The token is the only per-session authorization; it is a bearer secret, not a
+user identity. Nettle provides no session enumeration, revocation, or
+identity-based access control in version 1.
+The UI discloses that sharing and the configured retention policy before an
+upload and again on the session page.
+
+Reference/candidate comparison remains a browser operation. Two local bundles
+can be compared without any session API call, and a bundle already fetched
+from a hosted session can be used as one side. Nettle does not add a
+server-side comparison job, comparison artifact, or comparison-specific
+persistence.
+
+Queue metadata and temporary source archives live on the persistent volume so
+an admitted job survives process or Pod restart. Exactly one source build runs
+at a time. An interrupted active build returns to its original FIFO position
+once and is marked failed after another interruption. Source archives are
+deleted at terminal success or failure; successful sessions retain only the
+validated bundle and minimal metadata.
+
+Each build uses a private directory on a bounded scratch volume, an allowlisted
+environment, bounded diagnostics, a process group, and a deadline. Archive and
+filelist paths must remain within the extracted request root. Scratch is
+removed after every attempt, and a completed bundle is validated before an
+atomic session-store commit.
+
+### Enforced controls
+
+The hosted process enforces upload-size, archive-entry, expansion,
+compression-ratio, path-depth, bundle, queue, output, and build-time limits. It
+rejects archive traversal, links and special files, duplicate paths,
+unsupported source extensions, out-of-root filelist arguments, and malformed
+ZIP/TAR metadata before invoking a compiler. Uploads and metadata use
+same-filesystem staging, file synchronization, and atomic rename. Capability
+tokens contain 256 random bits; invalid, expired, and unknown tokens have the
+same response. Source archives are removed after terminal success or failure,
+and retention applies only to terminal sessions.
+
+Compiler children receive an allowlisted environment, request-private `HOME`
+and `TMPDIR`, bounded output capture, one process group, and a hard deadline.
+The process group is terminated on timeout or server shutdown. The application
+sets private/no-store and browser hardening headers and does not load
+third-party analytics.
+
+### Admin deployment requirements
+
+The checked-in [`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) expresses the
+single-Pod shape, read-only root filesystem, dropped capabilities, seccomp,
+resource limits, dedicated PVC, bounded scratch, and outbound-network denial.
+The admin must additionally:
+
+- expose only the ClusterIP Service through a managed HTTPS ingress or gateway
+  and redirect plaintext HTTP;
+- restrict cluster ingress so other workloads cannot bypass that edge;
+- decide whether the edge authenticates membership in the trusted group;
+- provide an encrypted `ReadWriteOncePod` volume and appropriate backup policy;
+- ensure the CNI enforces the deny-egress policy and provide no cloud
+  credentials or service-account token;
+- choose CPU, memory, scratch, PVC, queue, deadline, and retention limits for
+  the installation;
+- configure ingress request-body and upload/read timeouts consistently with
+  `--max-upload-bytes`; and
+- suppress or redact `/s/<token>` and `/api/v1/sessions/<token>/...` in ingress,
+  proxy, and observability logs.
+
+The Service's HTTP port is an internal hop after TLS termination; it must not be
+published directly. Capability URLs must not be placed in tickets, chat rooms,
+or logs with a broader audience than the trusted group.
+
+### Accepted residual risks and non-goals
+
+- A compiler exploit can access persisted sessions or exhaust the shared
+  container resource limit. An OOM can restart the whole Pod; the durable queue
+  retries an interrupted build once.
+- There is no hostile-user isolation, per-user quota, attribution, session
+  revocation, priority, cancellation, horizontal scaling, or high-availability
+  queue manager.
+- Retention deletion is not secure erasure and does not remove copies from
+  storage snapshots or admin-managed backups. Successful bundles continue to
+  contain referenced source text after the raw upload is removed.
+- Network privacy, TLS keys, storage encryption, cluster-admin access, and
+  backup access are outside the application boundary.
+
+These tradeoffs are acceptable only while all reachable users are equally
+trusted. A public or mutually untrusted deployment needs additional
+identity-based authorization, quotas and abuse controls, capability revocation,
+and a stronger compiler/storage isolation boundary; the version 1 manifest
+does not claim to provide those properties.
+
 ## Security invariants
 
 - Bundle readers never generically extract ZIP entries.
@@ -281,14 +442,16 @@ layer protects them.
   bounded and cross-checked.
 - Sources are displayed as text in read-only Monaco models; they are not
   executed or injected as HTML.
-- The browser does not persist bundles in cookies, IndexedDB, or local storage,
-  and the viewer has no upload/persistence API. For `view`, `render`, and
-  `compare`, the native host makes one anonymous delete-on-close archive
-  snapshot per startup side and validates it. Each copy is capped by
-  `bundle.archive.totalBytes`; comparison can therefore consume up to twice
-  that temporary-storage ceiling. The snapshots have no filesystem pathname
-  to orphan, and the operating system reclaims them when their final handles
-  close, including after abrupt process termination.
+- The browser-local workflow does not persist bundles in cookies, IndexedDB,
+  or local storage, make a create-session request, or transmit bundle bytes.
+  The landing page may read non-secret hosted policy from `/api/v1/config`;
+  hosted persistence starts only after an explicit, disclosed user action.
+- For `view`, `render`, and `compare`, the native host makes one anonymous
+  delete-on-close archive snapshot per startup side and validates it. Each copy
+  is capped by `bundle.archive.totalBytes`; comparison can therefore consume up
+  to twice that temporary-storage ceiling. The snapshots have no filesystem
+  pathname to orphan, and the operating system reclaims them when their final
+  handles close, including after abrupt process termination.
 - Replacing a bundle is atomic from the user's perspective: a failed candidate
   does not discard the active provider.
 
