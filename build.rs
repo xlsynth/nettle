@@ -165,6 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn emit_build_info() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=NETTLE_BUILD_DATE_UTC");
     println!("cargo:rerun-if-env-changed=NETTLE_BUILD_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=NETTLE_BUILD_STATE");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     if let Ok(output) = Command::new("git")
         .args(["rev-parse", "--git-path", "HEAD"])
@@ -215,10 +216,69 @@ fn emit_build_info() -> Result<(), Box<dyn std::error::Error>> {
             format!("build Git SHA is not a full hexadecimal object ID: {git_sha:?}").into(),
         );
     }
+    let build_state = match std::env::var("NETTLE_BUILD_STATE") {
+        Ok(value) => match value.as_str() {
+            "clean" | "dev" | "dirty" => value,
+            _ => {
+                return Err(format!(
+                    "NETTLE_BUILD_STATE must be clean, dev, or dirty; got {value:?}"
+                )
+                .into());
+            }
+        },
+        Err(_) => detect_build_state()?,
+    };
+    let build_suffix = match build_state.as_str() {
+        "dirty" => " (dirty)",
+        "dev" => " (dev branch)",
+        "clean" => "",
+        _ => unreachable!("build state was validated above"),
+    };
 
     println!("cargo:rustc-env=NETTLE_BUILD_DATE_UTC={build_date}");
     println!("cargo:rustc-env=NETTLE_BUILD_GIT_SHA={git_sha}");
+    println!("cargo:rustc-env=NETTLE_BUILD_SUFFIX={build_suffix}");
     Ok(())
+}
+
+fn detect_build_state() -> Result<String, Box<dyn std::error::Error>> {
+    let status = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .map_err(|error| format!("running git status: {error}"))?;
+    if !status.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        )
+        .into());
+    }
+    if !status.stdout.is_empty() {
+        return Ok("dirty".to_owned());
+    }
+
+    let containing_refs = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--contains",
+            "HEAD",
+            "--format=%(refname)",
+            "refs/heads/main",
+            "refs/remotes",
+        ])
+        .output()
+        .map_err(|error| format!("finding main refs containing HEAD: {error}"))?;
+    if !containing_refs.status.success() {
+        return Err(format!(
+            "finding main refs containing HEAD failed: {}",
+            String::from_utf8_lossy(&containing_refs.stderr).trim()
+        )
+        .into());
+    }
+    let is_on_main = String::from_utf8(containing_refs.stdout)?
+        .lines()
+        .any(|reference| reference == "refs/heads/main" || reference.ends_with("/main"));
+    Ok(if is_on_main { "clean" } else { "dev" }.to_owned())
 }
 
 fn format_unix_timestamp(seconds: u64) -> Result<String, Box<dyn std::error::Error>> {

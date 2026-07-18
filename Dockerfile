@@ -4,6 +4,7 @@
 
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
+ARG NETTLE_BUILD_STATE
 
 # Nettle publishes three images from this Dockerfile: the compiler-equipped
 # linux/amd64 builder, the linux/amd64 and linux/arm64 static viewer, and their
@@ -71,8 +72,11 @@ RUN set -eu; \
 FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS rust-builder
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
+ARG NETTLE_BUILD_STATE
 WORKDIR /src
-RUN test -n "$NETTLE_BUILD_DATE_UTC" && test -n "$NETTLE_BUILD_GIT_SHA"
+RUN test -n "$NETTLE_BUILD_DATE_UTC" \
+  && test -n "$NETTLE_BUILD_GIT_SHA" \
+  && test -n "$NETTLE_BUILD_STATE"
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY build.rs ./
 COPY resource-limits.yaml ./
@@ -87,8 +91,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM node:24-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203 AS web-builder
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
+ARG NETTLE_BUILD_STATE
 WORKDIR /src
-RUN test -n "$NETTLE_BUILD_DATE_UTC" && test -n "$NETTLE_BUILD_GIT_SHA"
+RUN test -n "$NETTLE_BUILD_DATE_UTC" \
+  && test -n "$NETTLE_BUILD_GIT_SHA" \
+  && test -n "$NETTLE_BUILD_STATE"
 COPY package.json package-lock.json ./
 COPY web/package.json web/package.json
 RUN --mount=type=cache,target=/root/.npm \

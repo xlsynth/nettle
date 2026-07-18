@@ -2,3 +2,4 @@
 
 export const BUILD_DATE_UTC = import.meta.env.NETTLE_BUILD_DATE_UTC ?? "development";
 export const BUILD_GIT_SHA = import.meta.env.NETTLE_BUILD_GIT_SHA ?? "development";
+export const BUILD_SUFFIX = import.meta.env.NETTLE_BUILD_SUFFIX ?? " (dev branch)";

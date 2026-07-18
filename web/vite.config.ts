@@ -23,6 +23,37 @@ const buildDateUtc = () => {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 };
 
+const buildSuffix = () => {
+  const configured = process.env.NETTLE_BUILD_STATE;
+  if (configured !== undefined) {
+    if (configured === "dirty") return " (dirty)";
+    if (configured === "dev") return " (dev branch)";
+    if (configured === "clean") return "";
+    throw new Error(`NETTLE_BUILD_STATE must be clean, dev, or dirty; got ${configured}`);
+  }
+  const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+    encoding: "utf8",
+  });
+  if (dirty) return " (dirty)";
+  const containingRefs = execFileSync(
+    "git",
+    [
+      "for-each-ref",
+      "--contains",
+      "HEAD",
+      "--format=%(refname)",
+      "refs/heads/main",
+      "refs/remotes",
+    ],
+    { encoding: "utf8" },
+  );
+  return containingRefs
+    .split("\n")
+    .some((reference) => reference === "refs/heads/main" || reference.endsWith("/main"))
+    ? ""
+    : " (dev branch)";
+};
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "NETTLE_PUBLIC_");
   return {
@@ -30,6 +61,7 @@ export default defineConfig(({ mode }) => {
     define: {
       "import.meta.env.NETTLE_BUILD_DATE_UTC": JSON.stringify(buildDateUtc()),
       "import.meta.env.NETTLE_BUILD_GIT_SHA": JSON.stringify(gitSha()),
+      "import.meta.env.NETTLE_BUILD_SUFFIX": JSON.stringify(buildSuffix()),
       "import.meta.env.NETTLE_PUBLIC_DEMOS": JSON.stringify(env.NETTLE_PUBLIC_DEMOS === "true"),
     },
     plugins: [react()],

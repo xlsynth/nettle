@@ -5,7 +5,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { OpenRequestOwner } from "./App";
-import { BUILD_DATE_UTC, BUILD_GIT_SHA } from "./build-info";
+import { BUILD_DATE_UTC, BUILD_GIT_SHA, BUILD_SUFFIX } from "./build-info";
 
 const harness = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
@@ -116,7 +116,7 @@ describe("App comparison installation", () => {
     render(<App />);
 
     expect(screen.getByText(/Build date \(UTC\)/).textContent).toContain(BUILD_DATE_UTC);
-    expect(screen.getByText(/Git SHA/).textContent).toContain(BUILD_GIT_SHA);
+    expect(screen.getByText(/Git SHA/).textContent).toContain(`${BUILD_GIT_SHA}${BUILD_SUFFIX}`);
   });
 
   it("aborts eager validation when a rapid bundle replacement supersedes it", () => {

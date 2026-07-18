@@ -435,6 +435,11 @@ mod tests {
         let output = error.to_string();
         assert!(output.contains(nettle::build_info::DATE_UTC));
         assert!(output.contains(nettle::build_info::GIT_SHA));
+        assert!(output.contains(&format!(
+            "{}{}",
+            nettle::build_info::GIT_SHA,
+            nettle::build_info::SUFFIX
+        )));
         assert!(output.contains("build date (UTC):"));
         assert!(output.contains("git SHA:"));
     }
