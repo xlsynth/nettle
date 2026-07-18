@@ -3,6 +3,7 @@
 //! Builds Nettle bundles and serves the static browser viewer.
 #![deny(missing_docs)]
 
+pub mod build_info;
 pub mod bundle;
 pub mod ir;
 

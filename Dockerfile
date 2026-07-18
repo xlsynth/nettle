@@ -2,6 +2,9 @@
 # check=error=true
 # SPDX-License-Identifier: Apache-2.0
 
+ARG NETTLE_BUILD_DATE_UTC
+ARG NETTLE_BUILD_GIT_SHA
+
 # Nettle publishes three images from this Dockerfile: the compiler-equipped
 # linux/amd64 builder, the linux/amd64 and linux/arm64 static viewer, and their
 # combined linux/amd64 interactive runtime.
@@ -66,7 +69,10 @@ RUN set -eu; \
 
 # Compile the native CLI once for the builder, viewer, and combined targets.
 FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS rust-builder
+ARG NETTLE_BUILD_DATE_UTC
+ARG NETTLE_BUILD_GIT_SHA
 WORKDIR /src
+RUN test -n "$NETTLE_BUILD_DATE_UTC" && test -n "$NETTLE_BUILD_GIT_SHA"
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY build.rs ./
 COPY resource-limits.yaml ./
@@ -79,7 +85,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Compile the static browser viewer once for the viewer and combined targets.
 FROM node:24-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203 AS web-builder
+ARG NETTLE_BUILD_DATE_UTC
+ARG NETTLE_BUILD_GIT_SHA
 WORKDIR /src
+RUN test -n "$NETTLE_BUILD_DATE_UTC" && test -n "$NETTLE_BUILD_GIT_SHA"
 COPY package.json package-lock.json ./
 COPY web/package.json web/package.json
 RUN --mount=type=cache,target=/root/.npm \

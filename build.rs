@@ -6,6 +6,8 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -142,6 +144,8 @@ struct BrowserDisplayLimits {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    emit_build_info()?;
+
     let schema = "proto/nettle.proto";
     println!("cargo:rerun-if-changed={schema}");
     let mut config = prost_build::Config::new();
@@ -156,6 +160,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = PathBuf::from(std::env::var("OUT_DIR")?).join("resource_limits.rs");
     fs::write(output, generated)?;
     Ok(())
+}
+
+fn emit_build_info() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=NETTLE_BUILD_DATE_UTC");
+    println!("cargo:rerun-if-env-changed=NETTLE_BUILD_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    if let Ok(output) = Command::new("git")
+        .args(["rev-parse", "--git-path", "HEAD"])
+        .output()
+        && output.status.success()
+    {
+        println!(
+            "cargo:rerun-if-changed={}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+
+    let build_date = match std::env::var("NETTLE_BUILD_DATE_UTC") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            let seconds = match std::env::var("SOURCE_DATE_EPOCH") {
+                Ok(value) => value
+                    .parse::<u64>()
+                    .map_err(|error| format!("invalid SOURCE_DATE_EPOCH {value:?}: {error}"))?,
+                Err(_) => SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            };
+            format_unix_timestamp(seconds)?
+        }
+    };
+    let git_sha = match std::env::var("NETTLE_BUILD_GIT_SHA") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            let output = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .map_err(|error| format!("running git rev-parse HEAD: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git rev-parse HEAD failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+                .into());
+            }
+            String::from_utf8(output.stdout)?.trim().to_owned()
+        }
+    };
+    if !matches!(git_sha.len(), 40 | 64)
+        || !git_sha
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(
+            format!("build Git SHA is not a full hexadecimal object ID: {git_sha:?}").into(),
+        );
+    }
+
+    println!("cargo:rustc-env=NETTLE_BUILD_DATE_UTC={build_date}");
+    println!("cargo:rustc-env=NETTLE_BUILD_GIT_SHA={git_sha}");
+    Ok(())
+}
+
+fn format_unix_timestamp(seconds: u64) -> Result<String, Box<dyn std::error::Error>> {
+    let days = i64::try_from(seconds / 86_400)?;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = civil_date_from_unix_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+    ))
+}
+
+fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (year, month, day)
 }
 
 fn validate_limits(limits: &ResourceLimits) -> Result<(), Box<dyn std::error::Error>> {

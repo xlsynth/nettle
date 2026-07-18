@@ -3,5 +3,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly NETTLE_BUILD_DATE_UTC?: string;
+  readonly NETTLE_BUILD_GIT_SHA?: string;
   readonly NETTLE_PUBLIC_DEMOS?: boolean;
 }

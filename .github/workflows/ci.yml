@@ -96,6 +96,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Record software build date
+        id: build-info
+        run: echo "date_utc=$(date --utc +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
@@ -108,6 +112,9 @@ jobs:
           # linux/amd64 only, so this target cannot yet run on linux/arm64.
           target: integration-tests
           platforms: linux/amd64
+          build-args: |
+            NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
+            NETTLE_BUILD_GIT_SHA=${{ github.sha }}
           push: false
           cache-from: type=gha,scope=nettle-integration-tests
           cache-to: type=gha,mode=max,scope=nettle-integration-tests
@@ -154,6 +161,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Record software build date
+        id: build-info
+        run: echo "date_utc=$(date --utc +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
@@ -165,6 +176,9 @@ jobs:
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platform }}
           load: true
+          build-args: |
+            NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
+            NETTLE_BUILD_GIT_SHA=${{ github.sha }}
           # Publish only the tested image manifests. BuildKit provenance
           # attestations appear as unknown/unknown entries in GHCR's platform
           # view and are not part of the runnable multi-platform image.
@@ -386,8 +400,14 @@ jobs:
       - name: Install locked web dependencies
         run: npm ci
 
+      - name: Record software build date
+        id: build-info
+        run: echo "date_utc=$(date --utc +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build static viewer
         env:
+          NETTLE_BUILD_DATE_UTC: ${{ steps.build-info.outputs.date_utc }}
+          NETTLE_BUILD_GIT_SHA: ${{ github.sha }}
           NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
           NETTLE_PUBLIC_DEMOS: "true"
         run: npm run build
