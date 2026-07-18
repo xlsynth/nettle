@@ -47,6 +47,15 @@ const repeatedEmptyMessages = (field: number, count: number) => {
   return bytes;
 };
 
+const repeatedMessages = (field: number, payload: Uint8Array, count: number) => {
+  const encoded = message(field, payload);
+  const bytes = new Uint8Array(encoded.length * count);
+  for (let index = 0; index < count; index += 1) {
+    bytes.set(encoded, index * encoded.length);
+  }
+  return bytes;
+};
+
 const graphSlice = (): ApiGraphSlice => ({
   snapshotId: "snapshot",
   module: { id: "module", name: "top", instancePath: "top", definitionName: "top" },
@@ -134,6 +143,65 @@ describe("incremental SourceIndex resource limits", () => {
 
   it("preserves ordinary source records", () => {
     expect(decodeSourceIndex(repeatedEmptyMessages(1, 2))).toHaveLength(2);
+  });
+
+  it("decodes source elaboration ranges", () => {
+    const range = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(2),
+      ...varint((2 << 3) | 0),
+      ...varint(3),
+      ...varint((3 << 3) | 0),
+      ...varint(7),
+      ...varint((4 << 3) | 0),
+      ...varint(9),
+      ...varint((5 << 3) | 0),
+      ...varint(1),
+    ]);
+    const source = message(6, range);
+
+    expect(decodeSourceIndex(message(1, source))[0].elaborationRanges).toEqual([
+      {
+        startLine: 2,
+        startColumn: 3,
+        endLine: 7,
+        endColumn: 9,
+        active: true,
+      },
+    ]);
+  });
+
+  it("rejects source elaboration ranges while decoding beyond the shared origin limit", () => {
+    const range = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(1),
+      ...varint((2 << 3) | 0),
+      ...varint(1),
+      ...varint((3 << 3) | 0),
+      ...varint(1),
+      ...varint((4 << 3) | 0),
+      ...varint(2),
+    ]);
+    const source = repeatedMessages(6, range, SOURCE_INDEX_DECODE_LIMITS.elaborationRanges + 1);
+    expect(() => decodeSourceIndex(message(1, source))).toThrow(
+      "Source elaboration range count exceeds the supported limit",
+    );
+  });
+
+  it("rejects malformed source elaboration ranges", () => {
+    const range = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(3),
+      ...varint((2 << 3) | 0),
+      ...varint(4),
+      ...varint((3 << 3) | 0),
+      ...varint(2),
+      ...varint((4 << 3) | 0),
+      ...varint(5),
+    ]);
+    expect(() => decodeSourceIndex(message(1, message(6, range)))).toThrow(
+      "Source elaboration range is invalid",
+    );
   });
 
   it("rejects strings larger than the shared bundle limit", () => {

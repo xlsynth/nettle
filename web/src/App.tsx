@@ -42,12 +42,13 @@ import { TOP_MODULE_ID } from "./graph/constants";
 import type { LayoutProfile } from "./graph/layout-profile";
 import type { FlattenRenderMode } from "./graph/layout-types";
 import type { LabelSettings } from "./graph/SchematicCanvas";
-import type { GraphNode, GraphSlice, SourceFileRef } from "./model/graph";
+import type { GraphNode, GraphSlice, SourceElaborationRange, SourceFileRef } from "./model/graph";
 import { entityForSourceSelection } from "./source/cross-probe";
 
 interface SourceView {
   path: string;
   source: string;
+  elaborationRanges: SourceElaborationRange[];
   state: "ready" | "loading" | "error";
   message?: string;
 }
@@ -480,6 +481,7 @@ function WorkspaceView({
   const [sourceView, setSourceView] = useState<SourceView>(() => ({
     path: normalizePath(initial.source?.path ?? "Source unavailable"),
     source: initial.source?.content ?? "",
+    elaborationRanges: initial.source?.elaborationRanges ?? [],
     state: initial.source ? "ready" : "error",
     message: initial.sourceError ?? "This bundle has no source available for its initial module.",
   }));
@@ -645,6 +647,7 @@ function WorkspaceView({
       setSourceView({
         path: normalizePath(reference.path),
         source: "",
+        elaborationRanges: [],
         state: "loading",
       });
       try {
@@ -653,6 +656,7 @@ function WorkspaceView({
         const loaded: SourceView = {
           path: normalizePath(response.path),
           source: response.content,
+          elaborationRanges: response.elaborationRanges,
           state: "ready",
         };
         currentSourceFileId.current = response.fileId;
@@ -663,6 +667,7 @@ function WorkspaceView({
         setSourceView({
           path: normalizePath(reference.path),
           source: "",
+          elaborationRanges: [],
           state: "error",
           message: reason instanceof Error ? reason.message : String(reason),
         });
@@ -806,18 +811,24 @@ function WorkspaceView({
 
   const selectSourceRange = useCallback(
     (startLine: number, startColumn: number, endLine: number, endColumn: number) => {
-      const entityId = entityForSourceSelection(displaySlice, sourceView.path, sourceView.source, {
-        startLine,
-        startColumn,
-        endLine,
-        endColumn,
-      });
+      const entityId = entityForSourceSelection(
+        displaySlice,
+        sourceView.path,
+        sourceView.source,
+        {
+          startLine,
+          startColumn,
+          endLine,
+          endColumn,
+        },
+        sourceView.elaborationRanges,
+      );
       if (!entityId) return;
       const node = displaySlice.nodes.find((candidate) => candidate.id === entityId);
       if (node?.kind === "module") openInstance(entityId);
       else setSelectedId(entityId);
     },
-    [displaySlice, openInstance, sourceView.path, sourceView.source],
+    [displaySlice, openInstance, sourceView.elaborationRanges, sourceView.path, sourceView.source],
   );
 
   const toggleLabel = useCallback((key: keyof LabelSettings) => {
@@ -888,6 +899,7 @@ function WorkspaceView({
               source={sourceView.source}
               loading={sourceView.state === "loading"}
               error={sourceView.state === "error" ? sourceView.message : undefined}
+              elaborationRanges={sourceView.elaborationRanges}
               onShowHierarchy={() => setLeftPaneView("hierarchy")}
               origin={visibleOrigin}
               onSelectRange={selectSourceRange}

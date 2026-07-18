@@ -28,6 +28,22 @@ pub struct SourceOrigin {
     pub end_column: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+/// One source range whose generate construct was or was not elaborated.
+pub struct SourceElaborationRange {
+    /// One-based starting line.
+    pub start_line: u32,
+    /// One-based starting column.
+    pub start_column: u32,
+    /// One-based ending line.
+    pub end_line: u32,
+    /// One-based exclusive ending column.
+    pub end_column: u32,
+    /// Whether at least one elaborated hierarchy instance selected this range.
+    pub active: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Stable identity and display path of a source referenced by a module graph.

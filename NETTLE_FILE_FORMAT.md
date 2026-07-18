@@ -2,7 +2,7 @@
 
 # `.nettle` Bundle Format
 
-Status: normative for format 1.0
+Status: normative for format 1.1
 
 ## Purpose
 
@@ -26,7 +26,7 @@ must not extract entries to a filesystem. Entry names are UTF-8 relative paths
 using `/`; absolute paths, backslashes, empty components, `.` components, and
 `..` components are invalid.
 
-Format 1.0 has this layout:
+Format 1.1 has this layout:
 
 ```text
 manifest.json
@@ -37,6 +37,7 @@ sources/<lowercase-sha256>
 diagnostics.pb
 debug/yosys.json                 # optional
 debug/slang-ast.json             # optional
+debug/slang-cst.json             # optional
 debug/<tool>-stdout.txt          # optional
 debug/<tool>-stderr.txt          # optional
 ```
@@ -49,7 +50,7 @@ raw DEFLATE. Other compression methods are not part of format 1.
 
 The manifest is UTF-8 JSON with these required camel-case fields:
 
-- `formatVersion`: `{ "major": 1, "minor": 0 }`;
+- `formatVersion`: `{ "major": 1, "minor": 1 }`;
 - `producer`: builder name and version;
 - `snapshotId` and `top`: design identity;
 - `designIndex`, `sourceIndex`, and `diagnostics`: entry names;
@@ -77,7 +78,11 @@ is the canonical schema and uses package `nettle.bundle.v1`.
   otherwise multiply assigned signals can retain multiple ranges in lexical AST
   order.
 - `SourceIndex` maps logical source IDs and project-relative display paths to
-  content-addressed source entries. Identical contents are stored once.
+  content-addressed source entries. Identical contents are stored once. In
+  format 1.1, each source can also carry active and inactive elaboration ranges
+  for generate constructs. Viewers use active ranges to cross-probe construct
+  headers against elaborated graph origins and render inactive branches as
+  de-emphasized source.
 - `Diagnostics` contains normalized diagnostics and optional source origins.
 - JSON-valued parameters and attributes are canonical JSON text inside typed
   `JsonEntry` messages. This preserves the existing IR value domain without

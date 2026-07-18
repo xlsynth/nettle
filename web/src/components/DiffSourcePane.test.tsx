@@ -121,8 +121,20 @@ describe("DiffSourcePane bounded states", () => {
       <DiffSourcePane
         {...baseProps}
         status="modified"
-        reference={{ path: "rtl/top.sv", source: "old" }}
-        candidate={{ path: "rtl/top.sv", source: "new" }}
+        reference={{
+          path: "rtl/top.sv",
+          source: "old",
+          elaborationRanges: [
+            { startLine: 2, startColumn: 3, endLine: 4, endColumn: 5, active: false },
+          ],
+        }}
+        candidate={{
+          path: "rtl/top.sv",
+          source: "new",
+          elaborationRanges: [
+            { startLine: 6, startColumn: 7, endLine: 8, endColumn: 9, active: false },
+          ],
+        }}
         onSelectRange={onSelectRange}
       />,
     );
@@ -130,6 +142,38 @@ describe("DiffSourcePane bounded states", () => {
     expect(editorHarness.props?.keepCurrentOriginalModel).toBe(true);
     expect(editorHarness.props?.keepCurrentModifiedModel).toBe(true);
     act(() => editorHarness.props?.onMount?.(diffEditor, {}));
+    expect(referenceEditor.createDecorationsCollection).toHaveBeenCalledWith([
+      {
+        range: {
+          startLineNumber: 2,
+          startColumn: 3,
+          endLineNumber: 4,
+          endColumn: 5,
+        },
+        options: {
+          inlineClassName: "source-inactive-generate-inline",
+          hoverMessage: {
+            value: "Inactive generate branch for this bundle's elaboration.",
+          },
+        },
+      },
+    ]);
+    expect(candidateEditor.createDecorationsCollection).toHaveBeenCalledWith([
+      {
+        range: {
+          startLineNumber: 6,
+          startColumn: 7,
+          endLineNumber: 8,
+          endColumn: 9,
+        },
+        options: {
+          inlineClassName: "source-inactive-generate-inline",
+          hoverMessage: {
+            value: "Inactive generate branch for this bundle's elaboration.",
+          },
+        },
+      },
+    ]);
 
     const selection = {
       isEmpty: () => true,

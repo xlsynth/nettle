@@ -3,11 +3,17 @@
 //! Adds Slang parameters, types, and source provenance to Nettle IR.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
+use serde::Deserialize;
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 use thiserror::Error;
 
-use super::{DesignSnapshot, GraphSlice, NodeKind, SourceFileRef, SourceOrigin, stable_id};
+use super::{
+    DesignSnapshot, GraphSlice, NodeKind, SourceElaborationRange, SourceFileRef, SourceOrigin,
+    stable_id,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Counts metadata merged from one elaborated Slang AST.
@@ -27,8 +33,8 @@ pub struct SlangParameterMergeReport {
 #[derive(Debug, Error)]
 /// Failure encountered while reading Slang semantic metadata.
 pub enum SlangMetadataError {
-    /// Slang AST output is not valid JSON.
-    #[error("invalid Slang AST JSON: {0}")]
+    /// Slang AST or CST output is not valid JSON.
+    #[error("invalid Slang JSON metadata: {0}")]
     Json(#[from] serde_json::Error),
     /// The AST lacks an elaborated instance matching the selected top.
     #[error("Slang AST JSON does not contain an elaborated design instance")]
@@ -553,6 +559,463 @@ fn source_range_origin(object: &serde_json::Map<String, Value>) -> Option<Source
     })
 }
 
+#[derive(Debug)]
+enum OrderedJson {
+    Other,
+    String(String),
+    Array(Vec<OrderedJson>),
+    Object(Vec<(String, OrderedJson)>),
+}
+
+impl<'de> Deserialize<'de> for OrderedJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct OrderedJsonVisitor;
+
+        impl<'de> Visitor<'de> for OrderedJsonVisitor {
+            type Value = OrderedJson;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("any JSON value")
+            }
+
+            fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Other)
+            }
+
+            fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Other)
+            }
+
+            fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Other)
+            }
+
+            fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Other)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(OrderedJson::String(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(OrderedJson::String(value))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Other)
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson::Other)
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                OrderedJson::deserialize(deserializer)
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = vec![];
+                while let Some(value) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(OrderedJson::Array(values))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut entries = vec![];
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(OrderedJson::Object(entries))
+            }
+        }
+
+        deserializer.deserialize_any(OrderedJsonVisitor)
+    }
+}
+
+impl OrderedJson {
+    fn field(&self, name: &str) -> Option<&Self> {
+        let Self::Object(entries) = self else {
+            return None;
+        };
+        entries
+            .iter()
+            .find_map(|(key, value)| (key == name).then_some(value))
+    }
+
+    fn string(&self) -> Option<&str> {
+        let Self::String(value) = self else {
+            return None;
+        };
+        Some(value)
+    }
+
+    fn array(&self) -> Option<&[Self]> {
+        let Self::Array(values) = self else {
+            return None;
+        };
+        Some(values)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourcePosition {
+    line: u32,
+    column: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CstRange {
+    start: SourcePosition,
+    end: SourcePosition,
+}
+
+#[derive(Debug)]
+struct CstIfGenerate {
+    condition: CstRange,
+    then_branch: CstRange,
+    else_branch: Option<CstRange>,
+    construct: CstRange,
+}
+
+#[derive(Debug)]
+struct CstLoopGenerate {
+    initial: CstRange,
+    block: CstRange,
+    construct: CstRange,
+}
+
+#[derive(Default)]
+struct CstRenderer {
+    text: String,
+    position: SourcePosition,
+    if_generates: Vec<CstIfGenerate>,
+    loop_generates: Vec<CstLoopGenerate>,
+}
+
+impl Default for SourcePosition {
+    fn default() -> Self {
+        Self { line: 1, column: 1 }
+    }
+}
+
+impl CstRenderer {
+    fn append(&mut self, text: &str) {
+        self.text.push_str(text);
+        for character in text.chars() {
+            if character == '\n' {
+                self.position.line = self.position.line.saturating_add(1);
+                self.position.column = 1;
+            } else {
+                self.position.column = self.position.column.saturating_add(1);
+            }
+        }
+    }
+
+    fn render(&mut self, value: &OrderedJson) -> Option<CstRange> {
+        match value {
+            OrderedJson::Other | OrderedJson::String(_) => None,
+            OrderedJson::Array(values) => {
+                let mut range = None;
+                for value in values {
+                    merge_rendered_range(&mut range, self.render(value));
+                }
+                range
+            }
+            OrderedJson::Object(entries) => {
+                if let Some(text) = value.field("text").and_then(OrderedJson::string) {
+                    if let Some(trivia) = value.field("trivia").and_then(OrderedJson::string) {
+                        self.append(trivia);
+                    }
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let start = self.position;
+                    self.append(text);
+                    return Some(CstRange {
+                        start,
+                        end: self.position,
+                    });
+                }
+
+                let kind = value.field("kind").and_then(OrderedJson::string);
+                let mut range = None;
+                let mut condition = None;
+                let mut then_branch = None;
+                let mut else_branch = None;
+                let mut loop_initial = None;
+                let mut loop_block = None;
+                for (key, child) in entries {
+                    if key == "kind" {
+                        continue;
+                    }
+                    let child_range = self.render(child);
+                    match (kind, key.as_str()) {
+                        (Some("IfGenerate"), "condition") => condition = child_range,
+                        (Some("IfGenerate"), "block") => then_branch = child_range,
+                        (Some("IfGenerate"), "elseClause") => else_branch = child_range,
+                        (Some("LoopGenerate"), "initialExpr") => loop_initial = child_range,
+                        (Some("LoopGenerate"), "block") => loop_block = child_range,
+                        _ => {}
+                    }
+                    merge_rendered_range(&mut range, child_range);
+                }
+                if kind == Some("IfGenerate")
+                    && let (Some(condition), Some(then_branch), Some(construct)) =
+                        (condition, then_branch, range)
+                {
+                    self.if_generates.push(CstIfGenerate {
+                        condition,
+                        then_branch,
+                        else_branch,
+                        construct,
+                    });
+                }
+                if kind == Some("LoopGenerate")
+                    && let (Some(initial), Some(block), Some(construct)) =
+                        (loop_initial, loop_block, range)
+                {
+                    self.loop_generates.push(CstLoopGenerate {
+                        initial,
+                        block,
+                        construct,
+                    });
+                }
+                range
+            }
+        }
+    }
+}
+
+fn merge_rendered_range(target: &mut Option<CstRange>, source: Option<CstRange>) {
+    let Some(source) = source else {
+        return;
+    };
+    match target {
+        Some(target) => target.end = source.end,
+        None => *target = Some(source),
+    }
+}
+
+#[derive(Debug)]
+struct AstIfGenerate {
+    condition: SourceOrigin,
+    true_branch: bool,
+}
+
+#[derive(Debug)]
+struct AstLoopGenerate {
+    initial: SourceOrigin,
+    active: bool,
+}
+
+fn collect_ast_generate_activity<'a>(
+    value: &'a Value,
+    resolver: &AstAddressResolver<'a>,
+    if_generates: &mut Vec<AstIfGenerate>,
+    loop_generates: &mut Vec<AstLoopGenerate>,
+) -> Result<(), SlangMetadataError> {
+    match value {
+        Value::Object(object) => {
+            match object.get("kind").and_then(Value::as_str) {
+                Some("GenerateBlock") => {
+                    let true_branch = match object.get("branchKind").and_then(Value::as_str) {
+                        Some("IfTrue") => Some(true),
+                        Some("IfFalse") => Some(false),
+                        _ => None,
+                    };
+                    if let Some(true_branch) = true_branch
+                        && let Some(condition) = object
+                            .get("conditionExpression")
+                            .map(|condition| resolver.resolve(condition))
+                            .transpose()?
+                            .and_then(Value::as_object)
+                            .and_then(source_range_origin)
+                    {
+                        if_generates.push(AstIfGenerate {
+                            condition,
+                            true_branch,
+                        });
+                    }
+                }
+                Some("GenerateBlockArray") => {
+                    if let Some(initial) = object
+                        .get("initialExpression")
+                        .map(|initial| resolver.resolve(initial))
+                        .transpose()?
+                        .and_then(Value::as_object)
+                        .and_then(source_range_origin)
+                    {
+                        let mut active = false;
+                        if let Some(members) = object.get("members").and_then(Value::as_array) {
+                            for member in members {
+                                if resolver
+                                    .resolve(member)?
+                                    .get("kind")
+                                    .and_then(Value::as_str)
+                                    == Some("GenerateBlock")
+                                {
+                                    active = true;
+                                    break;
+                                }
+                            }
+                        }
+                        loop_generates.push(AstLoopGenerate { initial, active });
+                    }
+                }
+                _ => {}
+            }
+            for child in object.values() {
+                collect_ast_generate_activity(child, resolver, if_generates, loop_generates)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_ast_generate_activity(child, resolver, if_generates, loop_generates)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn insert_elaboration_range(
+    ranges: &mut BTreeMap<(u32, u32, u32, u32), bool>,
+    range: CstRange,
+    active: bool,
+) {
+    ranges
+        .entry((
+            range.start.line,
+            range.start.column,
+            range.end.line,
+            range.end.column,
+        ))
+        .and_modify(|existing| *existing |= active)
+        .or_insert(active);
+}
+
+/// Correlates Slang's elaborated AST with its lossless CST to identify active
+/// and inactive generate ranges in each bundled source.
+///
+/// Slang intentionally omits uninstantiated generate branches from the AST.
+/// The CST retains both branches and exact trivia, so Nettle reconstructs each
+/// parsed source and only records ranges when that reconstruction exactly
+/// matches a bundled source body. Ambiguous or unmatched compiler metadata is
+/// ignored instead of dimming source speculatively.
+pub fn extract_slang_elaboration_ranges<'a>(
+    ast_json: &str,
+    cst_json: &str,
+    sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<BTreeMap<String, Vec<SourceElaborationRange>>, SlangMetadataError> {
+    let ast: Value = serde_json::from_str(ast_json)?;
+    let cst: OrderedJson = serde_json::from_str(cst_json)?;
+    let sources: Vec<_> = sources.into_iter().collect();
+    let resolver = AstAddressResolver::new(&ast)?;
+    let mut ast_if_generates = vec![];
+    let mut ast_loop_generates = vec![];
+    collect_ast_generate_activity(
+        &ast,
+        &resolver,
+        &mut ast_if_generates,
+        &mut ast_loop_generates,
+    )?;
+    let mut output = BTreeMap::new();
+
+    let Some(syntax_trees) = cst.field("syntaxTrees").and_then(OrderedJson::array) else {
+        return Ok(output);
+    };
+    for syntax_tree in syntax_trees {
+        let Some(root) = syntax_tree.field("root") else {
+            continue;
+        };
+        let mut renderer = CstRenderer::default();
+        renderer.render(root);
+        for (path, _) in sources
+            .iter()
+            .copied()
+            .filter(|(_, contents)| *contents == renderer.text)
+        {
+            let mut ranges = BTreeMap::new();
+            for generated in &renderer.if_generates {
+                let mut true_branch = false;
+                let mut false_branch = false;
+                for active in ast_if_generates.iter().filter(|active| {
+                    paths_match(&active.condition.file, path)
+                        && active.condition.start_line == generated.condition.start.line
+                        && active.condition.start_column == generated.condition.start.column
+                }) {
+                    if active.true_branch {
+                        true_branch = true;
+                    } else {
+                        false_branch = true;
+                    }
+                }
+                if !true_branch && !false_branch {
+                    continue;
+                }
+                insert_elaboration_range(&mut ranges, generated.construct, true);
+                insert_elaboration_range(&mut ranges, generated.then_branch, true_branch);
+                if let Some(else_branch) = generated.else_branch {
+                    insert_elaboration_range(&mut ranges, else_branch, false_branch);
+                }
+            }
+            for generated in &renderer.loop_generates {
+                let mut matched = false;
+                let mut active = false;
+                for loop_generate in ast_loop_generates.iter().filter(|loop_generate| {
+                    paths_match(&loop_generate.initial.file, path)
+                        && loop_generate.initial.start_line == generated.initial.start.line
+                        && loop_generate.initial.start_column == generated.initial.start.column
+                }) {
+                    matched = true;
+                    active |= loop_generate.active;
+                }
+                if !matched {
+                    continue;
+                }
+                insert_elaboration_range(&mut ranges, generated.construct, true);
+                insert_elaboration_range(&mut ranges, generated.block, active);
+            }
+            output.insert(
+                path.to_owned(),
+                ranges
+                    .into_iter()
+                    .map(
+                        |((start_line, start_column, end_line, end_column), active)| {
+                            SourceElaborationRange {
+                                start_line,
+                                start_column,
+                                end_line,
+                                end_column,
+                                active,
+                            }
+                        },
+                    )
+                    .collect(),
+            );
+        }
+    }
+    Ok(output)
+}
+
 fn canonical_signal_type(raw: &str) -> String {
     let raw = raw.trim();
     if let Some((identity, source_type)) = raw.split_once(' ')
@@ -767,6 +1230,179 @@ fn paths_match(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GENERATE_SOURCE: &str = "module top;\n  for (genvar i=0;i<1;i++) begin : g\n    if (USE_XOR) begin : yes\n      wire y;\n    end else begin : no\n      wire z;\n    end\n  end\nendmodule\n";
+
+    const GENERATE_CST: &str = r#"{
+      "syntaxTrees": [{
+        "kind": "SyntaxTree",
+        "root": {
+          "kind": "CompilationUnit",
+          "module": {
+            "kind": "ModuleDeclaration",
+            "header": {"kind": "Token", "text": "module top;"},
+            "members": [{
+              "kind": "LoopGenerate",
+              "keyword": {"kind": "ForKeyword", "text": "for", "trivia": "\n  "},
+              "openAndGenvar": {"kind": "Token", "text": "(genvar i=" , "trivia": " "},
+              "initialExpr": {"kind": "IntegerLiteralExpression", "literal": {"kind": "IntegerLiteral", "text": "0"}},
+              "rest": {"kind": "Token", "text": ";i<1;i++)"},
+              "block": {
+                "kind": "GenerateBlock",
+                "begin": {"kind": "BeginKeyword", "text": "begin", "trivia": " "},
+                "name": {"kind": "Identifier", "text": "g", "trivia": " : "},
+                "members": [{
+                  "kind": "IfGenerate",
+                  "keyword": {"kind": "IfKeyword", "text": "if", "trivia": "\n    "},
+                  "openParen": {"kind": "OpenParenthesis", "text": "(", "trivia": " "},
+                  "condition": {"kind": "IdentifierName", "identifier": {"kind": "Identifier", "text": "USE_XOR"}},
+                  "closeParen": {"kind": "CloseParenthesis", "text": ")"},
+                  "block": {
+                    "kind": "GenerateBlock",
+                    "begin": {"kind": "BeginKeyword", "text": "begin", "trivia": " "},
+                    "name": {"kind": "Identifier", "text": "yes", "trivia": " : "},
+                    "member": {"kind": "Token", "text": "wire y;", "trivia": "\n      "},
+                    "end": {"kind": "EndKeyword", "text": "end", "trivia": "\n    "}
+                  },
+                  "elseClause": {
+                    "kind": "ElseClause",
+                    "elseKeyword": {"kind": "ElseKeyword", "text": "else", "trivia": " "},
+                    "clause": {
+                      "kind": "GenerateBlock",
+                      "begin": {"kind": "BeginKeyword", "text": "begin", "trivia": " "},
+                      "name": {"kind": "Identifier", "text": "no", "trivia": " : "},
+                      "member": {"kind": "Token", "text": "wire z;", "trivia": "\n      "},
+                      "end": {"kind": "EndKeyword", "text": "end", "trivia": "\n    "}
+                    }
+                  }
+                }],
+                "end": {"kind": "EndKeyword", "text": "end", "trivia": "\n  "}
+              }
+            }],
+            "endmodule": {"kind": "EndModuleKeyword", "text": "endmodule", "trivia": "\n"}
+          },
+          "endOfFile": {"kind": "EndOfFile", "text": "", "trivia": "\n"}
+        }
+      }]
+    }"#;
+
+    fn generate_ast(branches: &[&str], loop_active: bool) -> String {
+        let branches = branches
+            .iter()
+            .map(|branch| {
+                format!(
+                    r#"{{
+                      "kind": "GenerateBlock",
+                      "branchKind": "{branch}",
+                      "conditionExpression": {{
+                        "source_file_start": "rtl/top.sv",
+                        "source_line_start": 3,
+                        "source_column_start": 9
+                      }}
+                    }}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let branches = if branches.is_empty() {
+            String::new()
+        } else {
+            format!(", {branches}")
+        };
+        let loop_member = if loop_active {
+            r#", {"kind": "GenerateBlock"}"#
+        } else {
+            ""
+        };
+        format!(
+            r#"{{
+              "design": {{
+                "members": [{{
+                  "kind": "GenerateBlockArray",
+                  "initialExpression": {{
+                    "source_file_start": "rtl/top.sv",
+                    "source_line_start": 2,
+                    "source_column_start": 17
+                  }},
+                  "members": [{{"kind": "Genvar"}}{loop_member}]
+                }}{branches}]
+              }}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn correlates_active_and_inactive_generate_ranges_from_ast_and_cst() {
+        let ranges = extract_slang_elaboration_ranges(
+            &generate_ast(&["IfTrue"], true),
+            GENERATE_CST,
+            [("rtl/top.sv", GENERATE_SOURCE)],
+        )
+        .unwrap();
+        let ranges = &ranges["rtl/top.sv"];
+        let inactive: Vec<_> = ranges.iter().filter(|range| !range.active).collect();
+        assert_eq!(inactive.len(), 1);
+        assert_eq!(
+            (
+                inactive[0].start_line,
+                inactive[0].start_column,
+                inactive[0].end_line,
+                inactive[0].end_column,
+            ),
+            (5, 9, 7, 8)
+        );
+        assert!(
+            ranges.iter().any(|range| {
+                range.active
+                    && range.start_line == 2
+                    && range.start_column == 28
+                    && range.end_line == 8
+            }),
+            "{ranges:?}"
+        );
+    }
+
+    #[test]
+    fn keeps_generate_branches_active_when_different_instances_select_each_one() {
+        let ranges = extract_slang_elaboration_ranges(
+            &generate_ast(&["IfTrue", "IfFalse"], true),
+            GENERATE_CST,
+            [("rtl/top.sv", GENERATE_SOURCE)],
+        )
+        .unwrap();
+        assert!(
+            ranges["rtl/top.sv"].iter().all(|range| range.active),
+            "{ranges:?}"
+        );
+    }
+
+    #[test]
+    fn marks_a_zero_iteration_generate_loop_body_inactive() {
+        let ranges = extract_slang_elaboration_ranges(
+            &generate_ast(&[], false),
+            GENERATE_CST,
+            [("rtl/top.sv", GENERATE_SOURCE)],
+        )
+        .unwrap();
+        let inactive: Vec<_> = ranges["rtl/top.sv"]
+            .iter()
+            .filter(|range| !range.active)
+            .collect();
+        assert_eq!(inactive.len(), 1);
+        assert_eq!((inactive[0].start_line, inactive[0].start_column), (2, 28));
+        assert_eq!(inactive[0].end_line, 8);
+    }
+
+    #[test]
+    fn ignores_cst_trees_that_do_not_exactly_match_a_bundled_source() {
+        let ranges = extract_slang_elaboration_ranges(
+            &generate_ast(&["IfTrue"], true),
+            GENERATE_CST,
+            [("rtl/top.sv", "module different; endmodule\n")],
+        )
+        .unwrap();
+        assert!(ranges.is_empty());
+    }
 
     #[test]
     fn canonicalizes_slang_process_local_type_identity() {

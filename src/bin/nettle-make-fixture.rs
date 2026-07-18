@@ -392,28 +392,33 @@ fn write_comparison_fixture(output: &Path, candidate: bool) {
             id: "file-top".to_owned(),
             path: "rtl/top.sv".to_owned(),
             contents: source,
+            elaboration_ranges: vec![],
         },
         BundleSource {
             id: "file-common".to_owned(),
             path: "rtl/common.svh".to_owned(),
             contents: b"`define NETTLE_FIXTURE_COMMON 1\n".to_vec(),
+            elaboration_ranges: vec![],
         },
         BundleSource {
             id: "file-child".to_owned(),
             path: "rtl/child.sv".to_owned(),
             contents: b"module child #(parameter WIDTH = 1)(); endmodule\n".to_vec(),
+            elaboration_ranges: vec![],
         },
         BundleSource {
             id: "file-elaboration-only".to_owned(),
             path: "rtl/elaboration_only.sv".to_owned(),
             contents: b"// Graph width changes only because the bundle parameter changes.\n"
                 .to_vec(),
+            elaboration_ranges: vec![],
         },
         BundleSource {
             id: "file-ambiguous".to_owned(),
             path: "rtl/ambiguous.sv".to_owned(),
             contents: b"// Repeated generated operators intentionally have ambiguous identities.\n"
                 .to_vec(),
+            elaboration_ranges: vec![],
         },
         BundleSource {
             id: "file-source-only".to_owned(),
@@ -423,12 +428,14 @@ fn write_comparison_fixture(output: &Path, candidate: bool) {
             } else {
                 b"// Reference documentation text with no elaborated graph effect.\n".to_vec()
             },
+            elaboration_ranges: vec![],
         },
     ];
     sources.push(BundleSource {
         id: one_sided_file_id.to_owned(),
         path: one_sided_path.to_owned(),
         contents: format!("module {one_sided_definition}(); endmodule\n").into_bytes(),
+        elaboration_ranges: vec![],
     });
     let build = BuildMetadata {
         filelist: "fixture.f".to_owned(),
@@ -509,6 +516,7 @@ fn write_shift_register_fixture(output: &Path) {
         id: source_id,
         path: "rtl/top.sv".to_owned(),
         contents: source.to_vec(),
+        elaboration_ranges: vec![],
     }];
     let build = BuildMetadata {
         filelist: "fixture.f".to_owned(),
@@ -645,6 +653,7 @@ fn main() {
         id: "file-top".to_owned(),
         path: "rtl/top.sv".to_owned(),
         contents: b"module top(input logic [7:0] data_i, output logic [7:0] data_o);\n  child #(.WIDTH(8)) u_child(.data_i, .data_o);\nendmodule\n\nmodule child #(parameter WIDTH = 8)(input logic [WIDTH-1:0] data_i, output logic [WIDTH-1:0] data_o);\n  assign data_o = data_i;\nendmodule\n".to_vec(),
+        elaboration_ranges: vec![],
     }];
     let build = BuildMetadata {
         filelist: "fixture.f".to_owned(),

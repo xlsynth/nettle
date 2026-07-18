@@ -207,6 +207,8 @@ pub struct CompilerArtifacts {
     pub yosys_json: String,
     /// Elaborated Slang AST JSON with source information.
     pub slang_ast_json: String,
+    /// Lossless Slang CST JSON used to recover untaken generate branches.
+    pub slang_cst_json: String,
     /// Base used by yosys-slang when it relativized source attributes. This
     /// can name a private command-file directory after that directory has been
     /// removed, so callers normalize `..` lexically before canonicalizing.
@@ -242,6 +244,7 @@ struct SlangOutput {
     capture: ProcessCapture,
     diagnostics: Vec<Diagnostic>,
     ast_json: String,
+    cst_json: String,
 }
 
 /// Probes the external compilers, then runs them concurrently from the same
@@ -285,6 +288,7 @@ pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> 
     )?;
     let diagnostics_path = output_dir.path().join("slang-diagnostics.json");
     let ast_path = output_dir.path().join("slang-ast.json");
+    let cst_path = output_dir.path().join("slang-cst.json");
     let yosys_json_path = output_dir.path().join("netlist.json");
     let yosys_script_path = output_dir.path().join("compile.ys");
     write_private_file(
@@ -301,6 +305,7 @@ pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> 
                 &options.top,
                 &diagnostics_path,
                 &ast_path,
+                &cst_path,
             )
         });
         let yosys_worker = scope.spawn(|| {
@@ -336,6 +341,7 @@ pub fn compile_filelist(options: &CompilerOptions) -> Result<CompilerArtifacts> 
     Ok(CompilerArtifacts {
         yosys_json,
         slang_ast_json: slang_output.ast_json,
+        slang_cst_json: slang_output.cst_json,
         source_path_base: compiler_filelist.yosys_cwd,
         diagnostics: slang_output.diagnostics,
         tools: vec![slang_report, yosys_report],
@@ -414,7 +420,17 @@ fn probe_slang(program: &Path, cwd: &Path) -> Result<ToolReport> {
     )?;
     let help = run_checked(program, [OsStr::new("--help")], cwd, "Slang help probe")?;
     let capabilities = combined_output(&help);
-    for required in ["-F", "--top", "--diag-json", "--ast-json", "-D", "-U", "-G"] {
+    for required in [
+        "-F",
+        "--top",
+        "--diag-json",
+        "--ast-json",
+        "--cst-json",
+        "--cst-json-mode",
+        "-D",
+        "-U",
+        "-G",
+    ] {
         if !capabilities.contains(required) {
             bail!(
                 "standalone Slang at {} does not advertise required option {required}; install Slang v11+ or select a compatible binary with --slang-bin",
@@ -480,6 +496,7 @@ fn run_slang(
     top: &str,
     diagnostics_path: &Path,
     ast_path: &Path,
+    cst_path: &Path,
 ) -> Result<SlangOutput> {
     let args = vec![
         OsString::from("-F"),
@@ -492,6 +509,10 @@ fn run_slang(
         OsString::from("--ast-json"),
         ast_path.as_os_str().to_owned(),
         OsString::from("--ast-json-source-info"),
+        OsString::from("--cst-json"),
+        cst_path.as_os_str().to_owned(),
+        OsString::from("--cst-json-mode"),
+        OsString::from("simple-trivia"),
         OsString::from("--quiet"),
     ];
     let capture = run_checked(
@@ -510,12 +531,18 @@ fn run_slang(
     )?;
     let ast_json =
         read_text_file_with_limit(ast_path, MAX_COMPILER_MODEL_BYTES, "Slang elaborated AST")?;
+    let cst_json = read_text_file_with_limit(
+        cst_path,
+        MAX_COMPILER_MODEL_BYTES,
+        "Slang concrete syntax tree",
+    )?;
     let diagnostics = parse_slang_diagnostics(&diagnostics_json)
         .context("parsing standalone Slang JSON diagnostics")?;
     Ok(SlangOutput {
         capture,
         diagnostics,
         ast_json,
+        cst_json,
     })
 }
 
@@ -1050,7 +1077,7 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 if [ "$1" = "--help" ]; then
-  printf '%s\n' '-F --top --diag-json --ast-json -D -U -G'
+  printf '%s\n' '-F --top --diag-json --ast-json --cst-json --cst-json-mode -D -U -G'
   exit 0
 fi
 touch "@ROOT@/slang.started"
@@ -1066,16 +1093,19 @@ done
 @FAIL@
 diag=""
 ast=""
+cst=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --diag-json) diag="$2"; shift 2 ;;
     --ast-json) ast="$2"; shift 2 ;;
+    --cst-json) cst="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 dirname "$diag" > "@ROOT@/compiler-output-dir"
 printf '%s' '{"diagnostics":[{"severity":"warning","message":"fake warning","location":{"fileName":"rtl/top.sv","start":{"line":4,"column":2},"end":{"line":4,"column":7}}}]}' > "$diag"
 printf '%s' '{"design":{"members":[{"kind":"Instance","name":"top","body":{"name":"top","members":[{"kind":"Parameter","name":"WIDTH","value":"8","isLocal":false}]}}]}}' > "$ast"
+printf '%s' '{"syntaxTrees":[{"kind":"SyntaxTree","root":{"kind":"CompilationUnit","module":{"kind":"Token","text":"module top; endmodule"},"endOfFile":{"kind":"EndOfFile","text":"","trivia":"\n"}}}]}' > "$cst"
 echo slang-stdout-marker
 echo slang-stderr-marker >&2
 "#
@@ -1227,6 +1257,7 @@ echo yosys-stderr-marker >&2
         assert_eq!(artifacts.diagnostics.len(), 1);
         assert_eq!(artifacts.diagnostics[0].message, "fake warning");
         assert!(artifacts.slang_ast_json.contains("\"design\""));
+        assert!(artifacts.slang_cst_json.contains("\"syntaxTrees\""));
         let snapshot = import_yosys_json(&artifacts.yosys_json, Some("top")).unwrap();
         assert_eq!(snapshot.modules["top"].edges.len(), 2);
 
@@ -1242,6 +1273,8 @@ echo yosys-stderr-marker >&2
         let slang_log = fs::read_to_string(directory.path().join("slang.log")).unwrap();
         assert!(slang_log.contains("--diag-json"));
         assert!(slang_log.contains("--ast-json-source-info"));
+        assert!(slang_log.contains("--cst-json"));
+        assert!(slang_log.contains("--cst-json-mode simple-trivia"));
         assert!(!slang_log.contains("--ast-json-detailed-types"));
         let output_dir = fs::read_to_string(directory.path().join("compiler-output-dir"))
             .unwrap()

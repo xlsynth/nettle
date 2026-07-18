@@ -59,7 +59,7 @@ import type {
   GraphSlice,
   ProjectSnapshot,
 } from "../model/graph";
-import { entityForSourceSelection } from "../source/cross-probe";
+import { entityForSourceSelection, sourceSelectionIsInactive } from "../source/cross-probe";
 import { AppHeader } from "./AppHeader";
 import {
   lowSchematicOverlapWarning,
@@ -1279,6 +1279,7 @@ function ConfirmedComparisonWorkspaceView({
           path: normalizePath(response.path),
           source: response.content,
           modelId: `${side}:${response.fileId}:${response.version}`,
+          elaborationRanges: response.elaborationRanges,
         };
       } catch (reason) {
         if (controller.signal.aborted) throw reason;
@@ -2112,6 +2113,16 @@ function ConfirmedComparisonWorkspaceView({
     ) => {
       const version = sourcePair[side];
       if (!version.path || version.loading || version.error) return;
+      const selection = {
+        startLine,
+        startColumn,
+        endLine,
+        endColumn,
+      };
+      if (sourceSelectionIsInactive(selection, version.elaborationRanges ?? [])) {
+        setSourceHighlightedIds(new Set());
+        return;
+      }
       const changedIds = matchingPending
         ? []
         : changedComparisonEntitiesForSourceRange(
@@ -2131,12 +2142,13 @@ function ConfirmedComparisonWorkspaceView({
         setSelectedOriginal({ side, kind: firstKind, id: firstOriginal.id });
         return;
       }
-      const originalId = entityForSourceSelection(displayPair[side], version.path, version.source, {
-        startLine,
-        startColumn,
-        endLine,
-        endColumn,
-      });
+      const originalId = entityForSourceSelection(
+        displayPair[side],
+        version.path,
+        version.source,
+        selection,
+        version.elaborationRanges,
+      );
       if (!originalId) return;
       const entity = allEntities(comparison).find(
         (candidateEntity) => candidateEntity[side]?.id === originalId,

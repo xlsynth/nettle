@@ -38,6 +38,7 @@ const source = (fileId: string, content: string, path = "rtl/child.sv"): SourceR
   path,
   version: fileId,
   content,
+  elaborationRanges: [],
 });
 
 describe("SourceLineMappingResolver", () => {

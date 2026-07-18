@@ -434,6 +434,7 @@ export class LocalBundleProvider implements WorkspaceProvider {
       path: source.path,
       version: source.sha256,
       content,
+      elaborationRanges: structuredClone(source.elaborationRanges),
     };
   }
 

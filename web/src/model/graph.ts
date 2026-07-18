@@ -26,6 +26,14 @@ export interface SourceOrigin {
   quality?: "exact" | "inherited" | "macro" | "synthetic";
 }
 
+export interface SourceElaborationRange {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  active: boolean;
+}
+
 export interface GraphPort {
   id: string;
   name: string;

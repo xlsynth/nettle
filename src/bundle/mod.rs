@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ir::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, GraphEdge, GraphGroup, GraphModule, GraphNode,
-    GraphPort, GraphSlice, NodeKind, PortDirection, SourceFileRef, SourceOrigin,
+    GraphPort, GraphSlice, NodeKind, PortDirection, SourceElaborationRange, SourceFileRef,
+    SourceOrigin,
 };
 use crate::resource_limits::bundle::SOURCE_PATH_COMPONENTS as MAX_SOURCE_PATH_COMPONENTS;
 use crate::resource_limits::bundle::archive::{
@@ -43,7 +44,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 /// Bundle format major version understood by this implementation.
 pub const FORMAT_MAJOR: u32 = 1;
 /// Bundle format minor version written by this implementation.
-pub const FORMAT_MINOR: u32 = 0;
+pub const FORMAT_MINOR: u32 = 1;
 /// Canonical ZIP path of the JSON manifest.
 pub const MANIFEST_ENTRY: &str = "manifest.json";
 /// Canonical ZIP path of the Protobuf design index.
@@ -171,6 +172,8 @@ pub struct BundleSource {
     pub path: String,
     /// UTF-8 source bytes.
     pub contents: Vec<u8>,
+    /// Active and inactive generate ranges for this elaboration.
+    pub elaboration_ranges: Vec<SourceElaborationRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,6 +323,7 @@ pub fn write_bundle_to<W: Write + Seek>(
             entry,
             sha256: digest,
             size: source.contents.len() as u64,
+            elaboration_ranges: source.elaboration_ranges.iter().map(Into::into).collect(),
         });
     }
     source_files.sort_by(|left, right| left.path.cmp(&right.path).then(left.id.cmp(&right.id)));
@@ -705,6 +709,20 @@ fn validate_source_identities(sources: &[proto::SourceFile]) -> Result<()> {
                 source.path
             )));
         }
+        for range in &source.elaboration_ranges {
+            if range.start_line == 0
+                || range.start_column == 0
+                || range.end_line == 0
+                || range.end_column == 0
+                || range.end_line < range.start_line
+                || (range.end_line == range.start_line && range.end_column <= range.start_column)
+            {
+                return Err(BundleError::Invalid(format!(
+                    "source {:?} has an invalid elaboration range",
+                    source.path
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -1038,10 +1056,16 @@ fn preflight_build_metadata(bytes: &[u8], build_items: &mut u64) -> Result<()> {
     })
 }
 
-fn preflight_source_file(bytes: &[u8]) -> Result<()> {
+fn preflight_source_file(bytes: &[u8], elaboration_ranges: &mut u64) -> Result<()> {
     visit_proto_fields(bytes, |field, payload| {
         if matches!(field, 1..=4) {
             preflight_proto_string(payload, "source file string")?;
+        } else if field == 6 {
+            consume_budget(
+                elaboration_ranges,
+                MAX_ORIGINS,
+                "source elaboration range count",
+            )?;
         }
         Ok(())
     })
@@ -1151,10 +1175,11 @@ fn preflight_protobuf(entry: &str, bytes: &[u8]) -> Result<()> {
     }
     if entry == SOURCE_INDEX_ENTRY {
         let mut sources = 0;
+        let mut elaboration_ranges = 0;
         return visit_proto_fields(bytes, |field, payload| {
             if field == 1 {
                 consume_budget(&mut sources, MAX_SOURCES, "source count")?;
-                preflight_source_file(payload)?;
+                preflight_source_file(payload, &mut elaboration_ranges)?;
             }
             Ok(())
         });
@@ -1406,6 +1431,30 @@ impl From<proto::SourceOrigin> for SourceOrigin {
             start_column: value.start_column,
             end_line: value.end_line,
             end_column: value.end_column,
+        }
+    }
+}
+
+impl From<&SourceElaborationRange> for proto::SourceElaborationRange {
+    fn from(value: &SourceElaborationRange) -> Self {
+        Self {
+            start_line: value.start_line,
+            start_column: value.start_column,
+            end_line: value.end_line,
+            end_column: value.end_column,
+            active: value.active,
+        }
+    }
+}
+
+impl From<proto::SourceElaborationRange> for SourceElaborationRange {
+    fn from(value: proto::SourceElaborationRange) -> Self {
+        Self {
+            start_line: value.start_line,
+            start_column: value.start_column,
+            end_line: value.end_line,
+            end_column: value.end_column,
+            active: value.active,
         }
     }
 }
@@ -1740,6 +1789,13 @@ mod tests {
             id: "file-1".to_owned(),
             path: "rtl/top.sv".to_owned(),
             contents: b"module top; endmodule\n".to_vec(),
+            elaboration_ranges: vec![SourceElaborationRange {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 7,
+                active: true,
+            }],
         }];
         let build = BuildMetadata {
             filelist: "top.f".to_owned(),
@@ -1848,6 +1904,16 @@ mod tests {
             reader.source(&source_index.files[0].entry).unwrap(),
             b"module top; endmodule\n"
         );
+        assert_eq!(
+            source_index.files[0].elaboration_ranges,
+            vec![proto::SourceElaborationRange {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 7,
+                active: true,
+            }]
+        );
     }
 
     #[test]
@@ -1939,6 +2005,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_source_elaboration_range_count_before_protobuf_decode() {
+        let source = repeated_empty_messages(6, MAX_ORIGINS + 1);
+        let bytes = test_message(1, &source);
+        let error = preflight_protobuf(SOURCE_INDEX_ENTRY, &bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("source elaboration range count exceeds"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_oversized_strings_before_protobuf_decode() {
         let oversized = vec![0; MAX_STRING_BYTES + 1];
         let cases = [
@@ -2027,6 +2106,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_source_elaboration_ranges() {
+        let source = proto::SourceFile {
+            id: "file-1".to_owned(),
+            path: "rtl/top.sv".to_owned(),
+            elaboration_ranges: vec![proto::SourceElaborationRange {
+                start_line: 7,
+                start_column: 3,
+                end_line: 6,
+                end_column: 9,
+                active: false,
+            }],
+            ..proto::SourceFile::default()
+        };
+        let error = validate_source_identities(&[source])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid elaboration range"), "{error}");
+    }
+
+    #[test]
     fn rejects_module_slice_snapshot_mismatch() {
         let slice = fixture_snapshot().modules.remove("top").unwrap();
         let module = proto::ModuleSummary {
@@ -2077,6 +2176,7 @@ mod tests {
             id: "file-1".to_owned(),
             path: "rtl/top.sv".to_owned(),
             contents: b"module top; endmodule\n".to_vec(),
+            elaboration_ranges: vec![],
         }];
         let build = BuildMetadata::default();
         write_bundle(

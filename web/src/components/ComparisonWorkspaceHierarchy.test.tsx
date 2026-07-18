@@ -275,6 +275,7 @@ const sourceResponse = (snapshotId: string, fileId: string): SourceResponse => {
         ? "alpha\nleft\nright\nomega\n"
         : "alpha\ninserted\nleft\nright\nomega\n"
       : `${snapshotId}\n`,
+    elaborationRanges: [],
   };
 };
 
@@ -432,6 +433,7 @@ describe("comparison instance hierarchy", () => {
             path: "rtl/notes.sv",
             version: fileId,
             content: "// old documentation\n",
+            elaborationRanges: [],
           }
         : sourceResponse("reference", fileId),
     );
@@ -442,6 +444,7 @@ describe("comparison instance hierarchy", () => {
             path: "rtl/notes.sv",
             version: fileId,
             content: "// new documentation\n",
+            elaborationRanges: [],
           }
         : sourceResponse("candidate", fileId),
     );
@@ -743,6 +746,7 @@ describe("comparison instance hierarchy", () => {
             path: "rtl/new_child.sv",
             version: fileId,
             content: "module new_child(); endmodule\n",
+            elaborationRanges: [],
           }
         : sourceResponse("candidate", fileId),
     );
@@ -850,6 +854,7 @@ describe("comparison instance hierarchy", () => {
             path: "rtl/new_child.sv",
             version: fileId,
             content: "module new_child(); endmodule\n",
+            elaborationRanges: [],
           }
         : sourceResponse("candidate", fileId),
     );

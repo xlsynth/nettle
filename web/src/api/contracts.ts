@@ -10,6 +10,14 @@ export interface ApiSourceOrigin {
   endColumn?: number;
 }
 
+export interface ApiSourceElaborationRange {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  active: boolean;
+}
+
 export type ApiNodeKind =
   | "input"
   | "output"
@@ -187,6 +195,7 @@ export interface SourceResponse {
   path: string;
   version: string;
   content: string;
+  elaborationRanges: ApiSourceElaborationRange[];
 }
 
 /** Metadata available without loading a bundled source file's contents. */

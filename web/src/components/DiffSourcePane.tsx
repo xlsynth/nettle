@@ -8,7 +8,7 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?worker&url";
 import { useCallback, useEffect, useRef } from "react";
 import type { ClassifiedSourceDiffHunk, SourceDiffStatus } from "../comparison";
-import type { SourceOrigin } from "../model/graph";
+import type { SourceElaborationRange, SourceOrigin } from "../model/graph";
 import { diffStatusLabel } from "./comparison-types";
 import { sourceLanguageForPath } from "./source-language";
 
@@ -30,6 +30,7 @@ export interface DiffSourceVersion {
   loading?: boolean;
   error?: string;
   origin?: SourceOrigin;
+  elaborationRanges?: readonly SourceElaborationRange[];
 }
 
 export type DiffSourceSide = "reference" | "candidate";
@@ -160,6 +161,31 @@ const applySourceOnlyHunks = (
   return decorations.length ? instance.createDecorationsCollection(decorations) : null;
 };
 
+const applyElaborationRanges = (
+  instance: editor.IStandaloneCodeEditor,
+  collection: editor.IEditorDecorationsCollection | null,
+  ranges: readonly SourceElaborationRange[] | undefined,
+) => {
+  collection?.clear();
+  const decorations = (ranges ?? [])
+    .filter((range) => !range.active)
+    .map((range) => ({
+      range: {
+        startLineNumber: range.startLine,
+        startColumn: range.startColumn,
+        endLineNumber: range.endLine,
+        endColumn: range.endColumn,
+      },
+      options: {
+        inlineClassName: "source-inactive-generate-inline",
+        hoverMessage: {
+          value: "Inactive generate branch for this bundle's elaboration.",
+        },
+      },
+    }));
+  return decorations.length ? instance.createDecorationsCollection(decorations) : null;
+};
+
 export function DiffSourcePane({
   reference,
   candidate,
@@ -175,6 +201,8 @@ export function DiffSourcePane({
   const candidateDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
   const referenceSourceOnlyDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
   const candidateSourceOnlyDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
+  const referenceElaborationDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
+  const candidateElaborationDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
   const listeners = useRef<Array<{ dispose: () => void }>>([]);
   const modelsRef = useRef<{
     reference: editor.ITextModel | null;
@@ -227,7 +255,23 @@ export function DiffSourcePane({
       hunks,
       "candidate",
     );
-  }, [candidate.origin, hunks, reference.origin]);
+    referenceElaborationDecorations.current = applyElaborationRanges(
+      instance.getOriginalEditor(),
+      referenceElaborationDecorations.current,
+      reference.elaborationRanges,
+    );
+    candidateElaborationDecorations.current = applyElaborationRanges(
+      instance.getModifiedEditor(),
+      candidateElaborationDecorations.current,
+      candidate.elaborationRanges,
+    );
+  }, [
+    candidate.elaborationRanges,
+    candidate.origin,
+    hunks,
+    reference.elaborationRanges,
+    reference.origin,
+  ]);
 
   const releaseEditor = useCallback(() => {
     for (const listener of listeners.current) listener.dispose();
@@ -240,6 +284,10 @@ export function DiffSourcePane({
     referenceSourceOnlyDecorations.current = null;
     candidateSourceOnlyDecorations.current?.clear();
     candidateSourceOnlyDecorations.current = null;
+    referenceElaborationDecorations.current?.clear();
+    referenceElaborationDecorations.current = null;
+    candidateElaborationDecorations.current?.clear();
+    candidateElaborationDecorations.current = null;
 
     const instance = editorRef.current;
     const referenceModel = instance?.getOriginalEditor().getModel() ?? modelsRef.current.reference;

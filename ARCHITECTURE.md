@@ -133,6 +133,12 @@ small navigation metadata. Module graphs and source bodies are lazy. Separate
 byte-bounded LRU caches prevent navigation through a large hierarchy from
 retaining the entire expanded design.
 
+The builder correlates Slang's elaborated AST with its concrete syntax tree to
+record which generate branches and loop bodies contributed to the snapshot.
+Those source-index ranges let Monaco de-emphasize untaken branches and let
+generate headers fall back to the nearest elaborated graph origin inside the
+same active construct.
+
 The provider presents the same graph/source operations needed by the existing
 UI without using HTTP. Transparent-instance and equal-depth projections are
 composed from immutable module messages in the browser and remain subject to a

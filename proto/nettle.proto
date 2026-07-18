@@ -36,6 +36,20 @@ message SourceOrigin {
   optional uint32 end_column = 5;
 }
 
+// One generate construct range and whether elaboration selected it.
+message SourceElaborationRange {
+  // Inclusive starting line.
+  uint32 start_line = 1;
+  // Inclusive starting column.
+  uint32 start_column = 2;
+  // Inclusive ending line.
+  uint32 end_line = 3;
+  // Exclusive ending column.
+  uint32 end_column = 4;
+  // True when at least one elaborated hierarchy instance selected this range.
+  bool active = 5;
+}
+
 // Direction of a node port or design boundary.
 enum PortDirection {
   // Direction was unavailable or unrecognized.
@@ -272,6 +286,8 @@ message SourceFile {
   string sha256 = 4;
   // Exact source size in bytes.
   uint64 size = 5;
+  // Generate constructs and branches correlated with this elaboration.
+  repeated SourceElaborationRange elaboration_ranges = 6;
 }
 
 // Eager index of all referenced source payloads.

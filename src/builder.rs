@@ -11,8 +11,8 @@ use crate::bundle::{
 };
 use crate::ir::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, NormalizedArgumentKind, NormalizedProject,
-    SourceFileRef, import_yosys_json, merge_slang_instance_parameters, normalize_filelist,
-    stable_id,
+    SourceFileRef, extract_slang_elaboration_ranges, import_yosys_json,
+    merge_slang_instance_parameters, normalize_filelist, stable_id,
 };
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -125,12 +125,25 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
         .collect();
     diagnostics.extend(artifacts.diagnostics.clone());
 
-    let sources = collect_sources(
+    let mut sources = collect_sources(
         &root,
         &project,
         &mut snapshot,
         Some(&artifacts.source_path_base),
     )?;
+    let mut elaboration_ranges = extract_slang_elaboration_ranges(
+        &artifacts.slang_ast_json,
+        &artifacts.slang_cst_json,
+        sources.iter().filter_map(|source| {
+            std::str::from_utf8(&source.contents)
+                .ok()
+                .map(|contents| (source.path.as_str(), contents))
+        }),
+    )
+    .context("correlating Slang generate elaboration ranges")?;
+    for source in &mut sources {
+        source.elaboration_ranges = elaboration_ranges.remove(&source.path).unwrap_or_default();
+    }
     let tools = artifacts
         .tools
         .iter()
@@ -167,6 +180,10 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
             DebugArtifact {
                 name: "slang-ast.json".to_owned(),
                 contents: artifacts.slang_ast_json.into_bytes(),
+            },
+            DebugArtifact {
+                name: "slang-cst.json".to_owned(),
+                contents: artifacts.slang_cst_json.into_bytes(),
             },
         ];
         for transcript in artifacts.transcripts {
@@ -335,6 +352,7 @@ fn collect_sources(
             id: file_ref.id,
             path: relative,
             contents,
+            elaboration_ranges: vec![],
         });
     }
 
