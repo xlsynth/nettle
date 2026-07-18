@@ -124,13 +124,26 @@ describe("App comparison installation", () => {
     expect(second.signal.aborted).toBe(true);
   });
 
+  it("keeps the newer request alive when an older request finishes", () => {
+    const owner = new OpenRequestOwner();
+    const first = owner.begin();
+    const second = owner.begin();
+
+    owner.finish(first);
+    expect(second.signal.aborted).toBe(false);
+  });
+
   it("does not reinterpret a drop on comparison dialog chrome as a single-bundle open", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Compare two bundles" }));
 
     fireEvent.drop(screen.getByRole("dialog", { name: "Compare Nettle bundles" }), {
       dataTransfer: {
-        files: [new File(["bundle"], "accidental.nettle", { type: "application/zip" })],
+        files: [
+          new File(["bundle"], "accidental.nettle", {
+            type: "application/zip",
+          }),
+        ],
       },
     });
 
@@ -202,8 +215,14 @@ describe("App comparison installation", () => {
         get: (name) => (name.toLowerCase() === "content-type" ? "application/json" : null),
       },
       json: async () => ({
-        reference: { name: "host-reference.nettle", route: "/startup-reference.nettle" },
-        candidate: { name: "host-candidate.nettle", route: "/startup-candidate.nettle" },
+        reference: {
+          name: "host-reference.nettle",
+          route: "/startup-reference.nettle",
+        },
+        candidate: {
+          name: "host-candidate.nettle",
+          route: "/startup-candidate.nettle",
+        },
         matching: "aggressive",
       }),
     });

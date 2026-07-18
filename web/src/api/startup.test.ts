@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { decodeComparisonStartup } from "./startup";
+import { decodeComparisonStartup, staticAssetRoute } from "./startup";
 
 describe("comparison startup descriptor", () => {
+  it("keeps static assets under the configured deployment base path", () => {
+    expect(staticAssetRoute("/demos/smoke.nettle")).toBe("/demos/smoke.nettle");
+  });
+
   it("accepts a bounded same-origin route contract", () => {
     expect(
       decodeComparisonStartup({
