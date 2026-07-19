@@ -59,7 +59,11 @@ import type {
   GraphSlice,
   ProjectSnapshot,
 } from "../model/graph";
-import { entityForSourceSelection, sourceSelectionIsInactive } from "../source/cross-probe";
+import {
+  entityForSourceSelection,
+  type SourceSelectionRange,
+  sourceSelectionIsInactive,
+} from "../source/cross-probe";
 import { elaborationRangesForSource } from "../source/elaboration-ranges";
 import { AppHeader } from "./AppHeader";
 import {
@@ -2107,25 +2111,18 @@ function ConfirmedComparisonWorkspaceView({
   const selectSourceRange = useCallback(
     (
       side: DiffSourceSide,
-      startLine: number,
-      startColumn: number,
-      endLine: number,
-      endColumn: number,
+      clickedRange: SourceSelectionRange,
+      hunkRange?: SourceSelectionRange,
     ) => {
       const version = sourcePair[side];
       if (!version.path || version.loading || version.error) return;
-      const selection = {
-        startLine,
-        startColumn,
-        endLine,
-        endColumn,
-      };
+      const selection = hunkRange ?? clickedRange;
       const elaborationRanges = elaborationRangesForSource(
         displayPair[side],
         version.path,
         version.elaborationRanges,
       );
-      if (sourceSelectionIsInactive(selection, elaborationRanges)) {
+      if (sourceSelectionIsInactive(clickedRange, elaborationRanges)) {
         setSourceHighlightedIds(new Set());
         return;
       }
@@ -2135,8 +2132,8 @@ function ConfirmedComparisonWorkspaceView({
             comparison,
             side,
             version.path,
-            startLine,
-            endLine,
+            selection.startLine,
+            selection.endLine,
             sources.flatMap((source) => (source[side] ? [source[side].path] : [])),
           );
       setSourceHighlightedIds(new Set(changedIds));

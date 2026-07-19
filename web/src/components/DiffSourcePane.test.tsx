@@ -149,6 +149,15 @@ describe("DiffSourcePane bounded states", () => {
             },
           ],
         }}
+        hunks={[
+          {
+            referenceStartLine: 4,
+            referenceEndLine: 6,
+            candidateStartLine: 4,
+            candidateEndLine: 6,
+            sourceOnly: false,
+          },
+        ]}
         onSelectRange={onSelectRange}
       />,
     );
@@ -203,7 +212,25 @@ describe("DiffSourcePane bounded states", () => {
     });
     expect(onSelectRange).not.toHaveBeenCalled();
     act(() => referenceSelectionListener?.({ source: "mouse", selection }));
-    expect(onSelectRange).toHaveBeenCalledWith("reference", 2, 3, 2, 4);
+    expect(onSelectRange).toHaveBeenCalledWith(
+      "reference",
+      { startLine: 2, startColumn: 3, endLine: 2, endColumn: 4 },
+      undefined,
+    );
+
+    const hunkSelection = {
+      isEmpty: () => true,
+      startLineNumber: 5,
+      startColumn: 4,
+      endLineNumber: 5,
+      endColumn: 4,
+    };
+    act(() => referenceSelectionListener?.({ source: "mouse", selection: hunkSelection }));
+    expect(onSelectRange).toHaveBeenLastCalledWith(
+      "reference",
+      { startLine: 5, startColumn: 4, endLine: 5, endColumn: 5 },
+      { startLine: 4, startColumn: 1, endLine: 6, endColumn: 12 },
+    );
 
     referenceEditor.getModel.mockReturnValue(nextReferenceModel);
     act(() => referenceModelListener?.());

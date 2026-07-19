@@ -9,6 +9,7 @@ import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?worker&ur
 import { useCallback, useEffect, useRef } from "react";
 import type { ClassifiedSourceDiffHunk, SourceDiffStatus } from "../comparison";
 import type { SourceElaborationRange, SourceOrigin } from "../model/graph";
+import type { SourceSelectionRange } from "../source/cross-probe";
 import { diffStatusLabel } from "./comparison-types";
 import { sourceLanguageForPath } from "./source-language";
 
@@ -45,10 +46,8 @@ export interface DiffSourcePaneProps {
   onShowHierarchy: () => void;
   onSelectRange: (
     side: DiffSourceSide,
-    startLine: number,
-    startColumn: number,
-    endLine: number,
-    endColumn: number,
+    clickedRange: SourceSelectionRange,
+    hunkRange?: SourceSelectionRange,
   ) => void;
 }
 
@@ -346,24 +345,27 @@ export function DiffSourcePane({
               selection.startLineNumber <= end
             );
           });
-          const startLine =
-            (side === "reference" ? hunk?.referenceStartLine : hunk?.candidateStartLine) ??
-            selection.startLineNumber;
-          const endLine =
-            (side === "reference" ? hunk?.referenceEndLine : hunk?.candidateEndLine) ??
-            selection.endLineNumber;
-          const endColumn = hunk
-            ? (sideEditor.getModel()?.getLineMaxColumn(endLine) ?? selection.endColumn)
-            : selection.isEmpty()
-              ? selection.startColumn + 1
-              : selection.endColumn;
-          onSelectRangeRef.current(
-            side,
-            startLine,
-            hunk ? 1 : selection.startColumn,
-            endLine,
-            endColumn,
-          );
+          const clickedRange = {
+            startLine: selection.startLineNumber,
+            startColumn: selection.startColumn,
+            endLine: selection.endLineNumber,
+            endColumn: selection.isEmpty() ? selection.startColumn + 1 : selection.endColumn,
+          };
+          const hunkStartLine =
+            side === "reference" ? hunk?.referenceStartLine : hunk?.candidateStartLine;
+          const hunkEndLine =
+            side === "reference" ? hunk?.referenceEndLine : hunk?.candidateEndLine;
+          const hunkRange =
+            hunkStartLine === undefined || hunkEndLine === undefined
+              ? undefined
+              : {
+                  startLine: hunkStartLine,
+                  startColumn: 1,
+                  endLine: hunkEndLine,
+                  endColumn:
+                    sideEditor.getModel()?.getLineMaxColumn(hunkEndLine) ?? selection.endColumn,
+                };
+          onSelectRangeRef.current(side, clickedRange, hunkRange);
         }),
         sideEditor.onDidChangeModel(() => {
           const model = sideEditor.getModel();
