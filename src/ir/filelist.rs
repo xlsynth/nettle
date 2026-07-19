@@ -151,6 +151,13 @@ pub struct NormalizedProject {
 #[derive(Debug, Error)]
 /// Failure encountered while reading or tokenizing a nested filelist graph.
 pub enum FileListError {
+    /// A caller-requested interruption stopped filelist expansion.
+    #[error("filelist normalization interrupted: {source}")]
+    Interrupted {
+        #[source]
+        /// Reason supplied by the caller's interruption check.
+        source: std::io::Error,
+    },
     /// A filelist could not be read.
     #[error("cannot read filelist {path}: {source}")]
     Read {
@@ -239,7 +246,7 @@ pub fn normalize_filelist(
     filelist: impl AsRef<Path>,
     cli_top: Option<&str>,
 ) -> Result<NormalizedProject, FileListError> {
-    normalize_filelist_impl(filelist.as_ref(), cli_top, None)
+    normalize_filelist_impl(filelist.as_ref(), cli_top, None, &mut || Ok(()))
 }
 
 /// Expands a filelist while rejecting every root or nested filelist outside `project_root`.
@@ -251,16 +258,33 @@ pub fn normalize_filelist_within_root(
     cli_top: Option<&str>,
     project_root: impl AsRef<Path>,
 ) -> Result<NormalizedProject, FileListError> {
+    normalize_filelist_within_root_cancellable(filelist, cli_top, project_root, || Ok(()))
+}
+
+/// Expands a contained filelist while periodically checking for caller-requested interruption.
+pub(crate) fn normalize_filelist_within_root_cancellable(
+    filelist: impl AsRef<Path>,
+    cli_top: Option<&str>,
+    project_root: impl AsRef<Path>,
+    mut check_interrupted: impl FnMut() -> io::Result<()>,
+) -> Result<NormalizedProject, FileListError> {
     let root = absolute_lexical(project_root.as_ref(), &current_dir());
     let root = fs::canonicalize(&root).unwrap_or(root);
-    normalize_filelist_impl(filelist.as_ref(), cli_top, Some(root))
+    normalize_filelist_impl(
+        filelist.as_ref(),
+        cli_top,
+        Some(root),
+        &mut check_interrupted,
+    )
 }
 
 fn normalize_filelist_impl(
     filelist: &Path,
     cli_top: Option<&str>,
     containment_root: Option<PathBuf>,
+    check_interrupted: &mut dyn FnMut() -> io::Result<()>,
 ) -> Result<NormalizedProject, FileListError> {
+    check_filelist_interrupted(check_interrupted)?;
     let initial = absolute_lexical(filelist, &current_dir());
     let root = fs::canonicalize(&initial).unwrap_or(initial);
     // The compiler adapter runs both Slang processes from the root filelist's
@@ -278,6 +302,7 @@ fn normalize_filelist_impl(
         tokens_parsed: 0,
         compiler_cwd,
         containment_root,
+        check_interrupted,
         project: NormalizedProject {
             root_filelist: path_string(&root),
             sources: vec![],
@@ -298,6 +323,7 @@ fn normalize_filelist_impl(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     parser.parse_file(&root, &root_base)?;
+    parser.check_interrupted()?;
     if let Some(top) = cli_top {
         parser.project.arguments.push(NormalizedArgument {
             kind: NormalizedArgumentKind::Top,
@@ -313,18 +339,24 @@ fn normalize_filelist_impl(
     Ok(parser.project)
 }
 
-struct Parser {
+struct Parser<'a> {
     active: HashSet<PathBuf>,
     files_parsed: usize,
     bytes_read: usize,
     tokens_parsed: usize,
     compiler_cwd: PathBuf,
     containment_root: Option<PathBuf>,
+    check_interrupted: &'a mut dyn FnMut() -> io::Result<()>,
     project: NormalizedProject,
 }
 
-impl Parser {
+impl Parser<'_> {
+    fn check_interrupted(&mut self) -> Result<(), FileListError> {
+        check_filelist_interrupted(self.check_interrupted)
+    }
+
     fn parse_file(&mut self, file: &Path, relative_base: &Path) -> Result<(), FileListError> {
+        self.check_interrupted()?;
         let file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
         if let Some(root) = &self.containment_root
             && !file.starts_with(root)
@@ -355,23 +387,33 @@ impl Parser {
     }
 
     fn parse_file_inner(&mut self, file: &Path, relative_base: &Path) -> Result<(), FileListError> {
+        self.check_interrupted()?;
         let remaining = MAX_FILELIST_BYTES.saturating_sub(self.bytes_read);
         let input = fs::File::open(file).map_err(|source| FileListError::Read {
             path: file.to_path_buf(),
             source,
         })?;
+        let mut input = input.take(
+            u64::try_from(remaining)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        );
         let mut bytes = Vec::new();
-        input
-            .take(
-                u64::try_from(remaining)
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(1),
-            )
-            .read_to_end(&mut bytes)
-            .map_err(|source| FileListError::Read {
-                path: file.to_path_buf(),
-                source,
-            })?;
+        let mut chunk = vec![0_u8; 64 * 1024];
+        loop {
+            self.check_interrupted()?;
+            let count = input
+                .read(&mut chunk)
+                .map_err(|source| FileListError::Read {
+                    path: file.to_path_buf(),
+                    source,
+                })?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        self.check_interrupted()?;
         consume_budget(
             &mut self.bytes_read,
             bytes.len(),
@@ -382,7 +424,9 @@ impl Parser {
             path: file.to_path_buf(),
             source: io::Error::new(io::ErrorKind::InvalidData, source),
         })?;
-        let tokens = tokenize(&contents, file)?;
+        self.check_interrupted()?;
+        let tokens = tokenize(&contents, file, self.check_interrupted)?;
+        self.check_interrupted()?;
         consume_budget(
             &mut self.tokens_parsed,
             tokens.len(),
@@ -391,6 +435,7 @@ impl Parser {
         )?;
         let mut index = 0;
         while index < tokens.len() {
+            self.check_interrupted()?;
             let token = &tokens[index];
             let value = token.value.as_str();
 
@@ -753,7 +798,18 @@ fn attached_option<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
         .filter(|remainder| !remainder.is_empty())
 }
 
-fn tokenize(contents: &str, file: &Path) -> Result<Vec<Token>, FileListError> {
+fn check_filelist_interrupted(
+    check_interrupted: &mut dyn FnMut() -> io::Result<()>,
+) -> Result<(), FileListError> {
+    check_interrupted().map_err(|source| FileListError::Interrupted { source })
+}
+
+fn tokenize(
+    contents: &str,
+    file: &Path,
+    check_interrupted: &mut dyn FnMut() -> io::Result<()>,
+) -> Result<Vec<Token>, FileListError> {
+    check_filelist_interrupted(check_interrupted)?;
     let mut tokens = vec![];
     let mut current = String::new();
     let mut token_line = 1_u32;
@@ -781,6 +837,9 @@ fn tokenize(contents: &str, file: &Path) -> Result<Vec<Token>, FileListError> {
     };
 
     while index < chars.len() {
+        if index.is_multiple_of(4096) {
+            check_filelist_interrupted(check_interrupted)?;
+        }
         let ch = chars[index];
         let next = chars.get(index + 1).copied();
         if quote.is_none() && current.is_empty() && (ch == '#' || (ch == '/' && next == Some('/')))
@@ -788,6 +847,9 @@ fn tokenize(contents: &str, file: &Path) -> Result<Vec<Token>, FileListError> {
             while index < chars.len() && chars[index] != '\n' {
                 index += 1;
                 column += 1;
+                if index.is_multiple_of(4096) {
+                    check_filelist_interrupted(check_interrupted)?;
+                }
             }
             continue;
         }
@@ -851,6 +913,7 @@ fn tokenize(contents: &str, file: &Path) -> Result<Vec<Token>, FileListError> {
         index += 1;
         column += 1;
     }
+    check_filelist_interrupted(check_interrupted)?;
     if quote.is_some() {
         return Err(FileListError::UnterminatedQuote {
             file: path_string(file),
@@ -904,6 +967,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nettle-{name}-{nonce}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn tokenization_checks_for_interruption_inside_long_comments() {
+        let contents = format!("#{}\n", "x".repeat(8192));
+        let mut checks = 0_usize;
+        let error = tokenize(&contents, Path::new("project.f"), &mut || {
+            checks = checks.saturating_add(1);
+            if checks == 3 {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "test deadline expired",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            FileListError::Interrupted { ref source }
+                if source.kind() == io::ErrorKind::TimedOut
+        ));
+        assert_eq!(checks, 3);
     }
 
     #[test]

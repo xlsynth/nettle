@@ -30,7 +30,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use zip::ZipArchive;
 
 use crate::bundle::BundleReader;
-use crate::ir::{NormalizedArgumentKind, normalize_filelist_within_root};
+use crate::ir::{NormalizedArgumentKind, normalize_filelist_within_root_cancellable};
 use crate::resource_limits::bundle::archive::ENTRY_COUNT as MAX_BUNDLE_ENTRY_COUNT;
 
 const HOST_SCHEMA_VERSION: u32 = 1;
@@ -48,6 +48,8 @@ const ZIP_EOCD_SEARCH_BYTES: usize = ZIP_EOCD_BYTES + u16::MAX as usize;
 const ZIP64_LOCATOR_BYTES: u64 = 20;
 const ZIP64_EOCD_MIN_BYTES: usize = 56;
 const ENOSPC_METADATA_COMMIT_ATTEMPTS: usize = 3;
+const SCRATCH_CLEANUP_ATTEMPTS: usize = 3;
+const SCRATCH_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_RETAINED_ERROR_BYTES: usize = 32 * 1024;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -1587,7 +1589,9 @@ async fn process_queued_build_with_metadata_writer(
 
     let scratch_path = state.0.options.scratch_root.join(token);
     let build_result = run_source_build(state, &session_path, &scratch_path, &metadata).await;
-    let _ = fs::remove_dir_all(&scratch_path);
+    let cleanup_result =
+        remove_scratch_directory_with(&scratch_path, |path| fs::remove_dir_all(path)).await;
+    let build_result = combine_build_and_cleanup_results(build_result, cleanup_result);
 
     metadata.completed_at_ms = Some(now_ms());
     match build_result {
@@ -1602,6 +1606,49 @@ async fn process_queued_build_with_metadata_writer(
     }
     commit_terminal_metadata(state, &session_path, &metadata).await;
     Ok(())
+}
+
+async fn remove_scratch_directory_with(
+    scratch_path: &Path,
+    mut remove: impl FnMut(&Path) -> io::Result<()>,
+) -> Result<()> {
+    for attempt in 1..=SCRATCH_CLEANUP_ATTEMPTS {
+        match remove(scratch_path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if attempt == SCRATCH_CLEANUP_ATTEMPTS => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "removing build scratch directory {} after \
+                         {SCRATCH_CLEANUP_ATTEMPTS} attempts",
+                        scratch_path.display()
+                    )
+                });
+            }
+            Err(error) => {
+                eprintln!(
+                    "could not remove hosted build scratch directory \
+                     (attempt {attempt}/{SCRATCH_CLEANUP_ATTEMPTS}); retrying: {error}"
+                );
+                tokio::time::sleep(SCRATCH_CLEANUP_RETRY_DELAY).await;
+            }
+        }
+    }
+    unreachable!("scratch cleanup loop always returns")
+}
+
+fn combine_build_and_cleanup_results(
+    build_result: Result<()>,
+    cleanup_result: Result<()>,
+) -> Result<()> {
+    match (build_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(build_error), Ok(())) => Err(build_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(build_error), Err(cleanup_error)) => Err(anyhow!(
+            "{build_error:#}; additionally, scratch cleanup failed: {cleanup_error:#}"
+        )),
+    }
 }
 
 async fn fail_build_after_start_enospc(
@@ -2196,9 +2243,9 @@ fn extract_zip(
                 relative.display()
             );
         }
-        let file_type_mask = u32::from(libc::S_IFMT);
-        let regular_type = u32::from(libc::S_IFREG);
-        let directory_type = u32::from(libc::S_IFDIR);
+        let file_type_mask = mode_bits(libc::S_IFMT);
+        let regular_type = mode_bits(libc::S_IFREG);
+        let directory_type = mode_bits(libc::S_IFDIR);
         let mode_type = entry.unix_mode().map(|mode| mode & file_type_mask);
         let directory = entry.is_dir() || mode_type == Some(directory_type);
         if mode_type.is_some_and(|kind| kind != regular_type && kind != directory_type) {
@@ -2634,6 +2681,10 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf> {
     Ok(safe)
 }
 
+fn mode_bits<T: Into<u32>>(bits: T) -> u32 {
+    bits.into()
+}
+
 fn validate_source_filename(path: &Path) -> Result<()> {
     let extension = path
         .extension()
@@ -2665,8 +2716,13 @@ fn validate_project_paths_with_deadline(
     let canonical_filelist =
         fs::canonicalize(root_filelist).context("locating archive-root project.f")?;
     require_regular_within(&canonical_root, &canonical_filelist, "root filelist")?;
-    let project = normalize_filelist_within_root(&canonical_filelist, None, &canonical_root)
-        .context("normalizing uploaded project.f")?;
+    let project = normalize_filelist_within_root_cancellable(
+        &canonical_filelist,
+        None,
+        &canonical_root,
+        || deadline.map_or(Ok(()), |deadline| deadline.check_io("filelist validation")),
+    )
+    .context("normalizing uploaded project.f")?;
     if let Some(deadline) = deadline {
         deadline.check("filelist validation")?;
     }
@@ -2781,6 +2837,42 @@ mod tests {
             _scratch: scratch,
             state,
         }
+    }
+
+    #[tokio::test]
+    async fn scratch_cleanup_retries_transient_failures() {
+        let mut attempts = 0_usize;
+        remove_scratch_directory_with(Path::new("unused"), |_| {
+            attempts = attempts.saturating_add(1);
+            if attempts < SCRATCH_CLEANUP_ATTEMPTS {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(attempts, SCRATCH_CLEANUP_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn scratch_cleanup_surfaces_persistent_failures() {
+        let mut attempts = 0_usize;
+        let error = remove_scratch_directory_with(Path::new("unused"), |_| {
+            attempts = attempts.saturating_add(1);
+            Err(io::Error::from_raw_os_error(libc::EIO))
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(attempts, SCRATCH_CLEANUP_ATTEMPTS);
+        assert!(
+            error
+                .to_string()
+                .contains("removing build scratch directory"),
+            "{error:#}"
+        );
     }
 
     fn test_bundle(path: &Path) {
