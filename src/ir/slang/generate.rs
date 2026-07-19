@@ -932,11 +932,42 @@ fn insert_range(
         .or_insert(active);
 }
 
+fn activity_keys_correlate(
+    activity: &ModuleActivity,
+    source: &CstSource,
+    definition: &str,
+) -> bool {
+    let if_keys: BTreeSet<_> = source
+        .if_generates
+        .iter()
+        .filter(|generate| generate.module == definition)
+        .map(|generate| cst_key(&source.path, generate.condition))
+        .collect();
+    let loop_keys: BTreeSet<_> = source
+        .loop_generates
+        .iter()
+        .filter(|generate| generate.module == definition)
+        .map(|generate| cst_key(&source.path, generate.initial))
+        .collect();
+    let case_keys: BTreeSet<_> = source
+        .case_generates
+        .iter()
+        .filter(|generate| generate.module == definition)
+        .map(|generate| cst_key(&source.path, generate.condition))
+        .collect();
+
+    activity.ifs.keys().all(|key| if_keys.contains(key))
+        && activity.loops.keys().all(|key| loop_keys.contains(key))
+        && activity.cases.keys().all(|key| case_keys.contains(key))
+}
+
 /// Returns generate activity keyed by the Nettle module graph that owns it.
 ///
 /// Source text and AST paths must each resolve to exactly one bundled file.
 /// Ambiguous identical-content files or basename-only paths are skipped rather
-/// than assigning activity to the wrong source.
+/// than assigning activity to the wrong source. Every AST condition key must
+/// also correlate with the reconstructed CST before missing branches can be
+/// interpreted as inactive.
 pub fn extract_slang_elaboration_ranges<'a>(
     snapshot: &DesignSnapshot,
     ast: &ResolvedSlangAst<'_>,
@@ -992,6 +1023,9 @@ pub fn extract_slang_elaboration_ranges<'a>(
         let [source] = matching_sources.as_slice() else {
             continue;
         };
+        if !activity_keys_correlate(&activity, source, definition) {
+            continue;
+        }
         let mut ranges = BTreeMap::new();
         for generate in source
             .if_generates
@@ -1383,6 +1417,24 @@ mod tests {
         .unwrap()
     }
 
+    fn ast_with_one_condition_lines(
+        if_condition_line: u32,
+        case_condition_line: u32,
+    ) -> ParsedSlangAst {
+        let mut ast = ast();
+        *ast.root
+            .pointer_mut(
+                "/design/members/0/body/members/1/body/members/0/conditionExpression/source_line_start",
+            )
+            .unwrap() = Value::from(if_condition_line);
+        *ast.root
+            .pointer_mut(
+                "/design/members/0/body/members/1/body/members/1/conditionExpression/source_line_start",
+            )
+            .unwrap() = Value::from(case_condition_line);
+        ast
+    }
+
     fn ranges() -> BTreeMap<String, Vec<SourceElaborationRange>> {
         let snapshot = snapshot();
         let ast = ast();
@@ -1501,6 +1553,30 @@ mod tests {
             one.iter()
                 .any(|range| range.start_line == 9 && range.active)
         );
+    }
+
+    #[test]
+    fn unmatched_ast_if_condition_omits_module_activity() {
+        let snapshot = snapshot();
+        let ast = ast_with_one_condition_lines(3, 5);
+        let resolved = ast.resolve().unwrap();
+        let ranges =
+            extract_slang_elaboration_ranges(&snapshot, &resolved, CST, [("rtl/leaf.sv", SOURCE)])
+                .unwrap();
+
+        assert!(!ranges.contains_key("leaf$top.u_one"));
+    }
+
+    #[test]
+    fn unmatched_ast_case_condition_omits_module_activity() {
+        let snapshot = snapshot();
+        let ast = ast_with_one_condition_lines(2, 4);
+        let resolved = ast.resolve().unwrap();
+        let ranges =
+            extract_slang_elaboration_ranges(&snapshot, &resolved, CST, [("rtl/leaf.sv", SOURCE)])
+                .unwrap();
+
+        assert!(!ranges.contains_key("leaf$top.u_one"));
     }
 
     #[test]
