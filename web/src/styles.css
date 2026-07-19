@@ -3398,60 +3398,6 @@ button:focus-visible {
   stroke-width: 2.8;
 }
 
-.diff-node-badge,
-.diff-edge-badge {
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-weight: 750;
-  pointer-events: none;
-  user-select: none;
-}
-
-.diff-node-badge circle,
-.diff-edge-badge rect {
-  fill: #fff;
-  stroke-width: 1.2;
-  vector-effect: non-scaling-stroke;
-}
-
-.diff-node-badge text,
-.diff-edge-badge text {
-  font-size: 8px;
-  text-anchor: middle;
-  dominant-baseline: central;
-}
-
-.diff-node-badge.removed circle,
-.diff-edge-badge.removed rect {
-  stroke: var(--diff-red);
-}
-
-.diff-node-badge.removed text,
-.diff-edge-badge.removed text {
-  fill: var(--diff-red-dark);
-}
-
-.diff-node-badge.added circle,
-.diff-edge-badge.added rect {
-  stroke: var(--diff-green);
-}
-
-.diff-node-badge.added text,
-.diff-edge-badge.added text {
-  fill: var(--diff-green-dark);
-}
-
-.diff-node-badge.modified circle,
-.diff-edge-badge.modified rect {
-  fill: var(--diff-yellow-soft);
-  stroke: var(--diff-yellow);
-  stroke-dasharray: 5 2;
-}
-
-.diff-node-badge.modified text,
-.diff-edge-badge.modified text {
-  fill: var(--diff-yellow-dark);
-}
-
 .schematic-edge.diff-removed .edge-line {
   stroke: var(--diff-red);
   stroke-dasharray: 5 3;

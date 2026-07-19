@@ -874,7 +874,8 @@ describe("SchematicCanvas comparison presentation", () => {
     expect(addedConstant?.querySelector(".constant-value")?.textContent).toBe("1'b1");
     expect(modifiedConstant?.querySelector(".diff-modified-outline")).not.toBeNull();
     expect(modifiedConstant?.classList).toContain("diff-modified");
-    expect(added?.querySelector(".diff-node-badge")?.textContent).toBe("+≈");
+    expect(view.container.querySelector(".diff-node-badge")).toBeNull();
+    expect(view.container.querySelector(".diff-edge-badge")).toBeNull();
     expect(
       screen.getByRole("button", { name: /Schematic comparison view:/ }).textContent,
     ).toContain("Diff overlay");
