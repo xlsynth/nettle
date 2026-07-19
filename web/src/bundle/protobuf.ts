@@ -500,6 +500,11 @@ export const validateGraphReferences = (slice: ApiGraphSlice) => {
       throw new Error(`Graph origin references unlisted source path ${origin.file}`);
     }
   }
+  for (const range of slice.elaborationRanges ?? []) {
+    if (!range.file || !filePaths.has(range.file)) {
+      throw new Error(`Graph elaboration range references unlisted source path ${range.file}`);
+    }
+  }
 };
 
 export const decodeGraphSlice = (bytes: Uint8Array): ApiGraphSlice => {
@@ -511,6 +516,7 @@ export const decodeGraphSlice = (bytes: Uint8Array): ApiGraphSlice => {
   };
   const groups: ApiGraphGroup[] = [];
   const files: ApiSourceFileRef[] = [];
+  const elaborationRanges: ApiSourceElaborationRange[] = [];
   const budget: GraphDecodeBudget = {
     objects: 0,
     nodes: 0,
@@ -542,10 +548,19 @@ export const decodeGraphSlice = (bytes: Uint8Array): ApiGraphSlice => {
     } else if (field === 6) {
       consumeGraphBudget(budget, "files", GRAPH_DECODE_LIMITS.files, "Graph file count");
       files.push(reader.message(wire, decodeFileRef));
+    } else if (field === 7) {
+      consumeGraphBudget(
+        budget,
+        "origins",
+        GRAPH_DECODE_LIMITS.origins,
+        "Graph elaboration range count",
+      );
+      elaborationRanges.push(reader.message(wire, decodeSourceElaborationRange));
     } else reader.skip(wire);
   });
   if (groups.length) slice.groups = groups;
   if (files.length) slice.files = files;
+  if (elaborationRanges.length) slice.elaborationRanges = elaborationRanges;
   validateGraphReferences(slice);
   return slice;
 };
@@ -676,6 +691,7 @@ export const decodeDesignIndex = (bytes: Uint8Array): BundleDesignIndex => {
 
 const decodeSourceElaborationRange = (reader: ProtoReader): ApiSourceElaborationRange => {
   const range: ApiSourceElaborationRange = {
+    file: "",
     startLine: 0,
     startColumn: 0,
     endLine: 0,
@@ -688,6 +704,7 @@ const decodeSourceElaborationRange = (reader: ProtoReader): ApiSourceElaboration
     else if (field === 3) range.endLine = reader.uint32(wire);
     else if (field === 4) range.endColumn = reader.uint32(wire);
     else if (field === 5) range.active = reader.uint32(wire) !== 0;
+    else if (field === 6) range.file = reader.string(wire);
     else reader.skip(wire);
   });
   if (
@@ -730,6 +747,14 @@ const decodeSourceFile = (
       file.elaborationRanges.push(reader.message(wire, decodeSourceElaborationRange));
     } else reader.skip(wire);
   });
+  for (const range of file.elaborationRanges) {
+    if (range.file && range.file !== file.path) {
+      throw new Error(
+        `Legacy source elaboration range file ${range.file} does not match source ${file.path}`,
+      );
+    }
+    range.file = file.path;
+  }
   return file;
 };
 

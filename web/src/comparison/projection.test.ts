@@ -424,6 +424,63 @@ describe("comparison-aware hierarchy projection", () => {
     );
   });
 
+  it("preserves slice-scoped elaboration ranges on each comparison side", () => {
+    const referenceTop = topSlice({ prefix: "r" });
+    const candidateTop = topSlice({ prefix: "c" });
+    const referenceChild = childSlice("r");
+    const candidateChild = childSlice("c");
+    const inactive = {
+      file: "child.sv",
+      startLine: 2,
+      startColumn: 1,
+      endLine: 4,
+      endColumn: 2,
+      active: false,
+    };
+    referenceChild.elaborationRanges = [inactive];
+    candidateChild.elaborationRanges = [
+      { ...inactive, active: true },
+      { ...inactive, startLine: 5, endLine: 7 },
+    ];
+    const parent = compareGraphSlices(referenceTop, candidateTop);
+    const child = compareGraphSlices(referenceChild, candidateChild);
+    const instance = moduleEntity(parent);
+
+    const expanded = expandComparisonInstance(parent, instance, child);
+    expect(expanded.reference.elaborationRanges).toEqual([inactive]);
+    expect(expanded.candidate.elaborationRanges).toEqual([
+      { ...inactive, active: true },
+      { ...inactive, startLine: 5, endLine: 7 },
+    ]);
+    expect(expanded.union.elaborationRanges).toBeUndefined();
+  });
+
+  it("shares the caller's origin budget with side-specific elaboration ranges", () => {
+    const parent = compareGraphSlices(topSlice({ prefix: "r" }), topSlice({ prefix: "c" }));
+    const referenceChild = childSlice("r");
+    const candidateChild = childSlice("c");
+    candidateChild.nodes[1].origins = [{ file: "child.sv", startLine: 1, startColumn: 1 }];
+    candidateChild.elaborationRanges = [
+      {
+        file: "child.sv",
+        startLine: 2,
+        startColumn: 1,
+        endLine: 4,
+        endColumn: 2,
+        active: true,
+      },
+    ];
+    const child = compareGraphSlices(referenceChild, candidateChild);
+    const instance = moduleEntity(parent);
+
+    expect(() => expandComparisonInstance(parent, instance, child, { maximumOrigins: 1 })).toThrow(
+      "Comparison candidate projection would have 2 origins and elaboration ranges, exceeding budget 1",
+    );
+    expect(() =>
+      expandComparisonInstance(parent, instance, child, { maximumOrigins: 2 }),
+    ).not.toThrow();
+  });
+
   it("retains a heuristic instance match in the synthesized group count", () => {
     const parent = compareGraphSlices(topSlice({ prefix: "r" }), topSlice({ prefix: "c" }));
     const instance = moduleEntity(parent);

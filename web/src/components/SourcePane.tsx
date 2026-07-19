@@ -118,7 +118,7 @@ export function SourcePane({
           options: {
             inlineClassName: "source-inactive-generate-inline",
             hoverMessage: {
-              value: "Inactive generate branch for this bundle's elaboration.",
+              value: "Inactive generate branch for the visible schematic.",
             },
           },
         }));

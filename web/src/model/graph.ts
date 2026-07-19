@@ -27,6 +27,7 @@ export interface SourceOrigin {
 }
 
 export interface SourceElaborationRange {
+  file: string;
   startLine: number;
   startColumn: number;
   endLine: number;
@@ -106,6 +107,7 @@ export interface GraphSlice {
   edges: GraphEdge[];
   groups?: GraphGroup[];
   files?: SourceFileRef[];
+  elaborationRanges?: SourceElaborationRange[];
 }
 
 export interface FileTreeEntry {

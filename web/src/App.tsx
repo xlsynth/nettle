@@ -44,6 +44,7 @@ import type { FlattenRenderMode } from "./graph/layout-types";
 import type { LabelSettings } from "./graph/SchematicCanvas";
 import type { GraphNode, GraphSlice, SourceElaborationRange, SourceFileRef } from "./model/graph";
 import { entityForSourceSelection } from "./source/cross-probe";
+import { elaborationRangesForSource } from "./source/elaboration-ranges";
 
 interface SourceView {
   path: string;
@@ -537,6 +538,10 @@ function WorkspaceView({
     () => ((inlineHierarchy || flattenDepth > 0) && inlineSlice ? inlineSlice : slice),
     [flattenDepth, inlineHierarchy, inlineSlice, slice],
   );
+  const displayedElaborationRanges = useMemo(
+    () => elaborationRangesForSource(displaySlice, sourceView.path, sourceView.elaborationRanges),
+    [displaySlice, sourceView.elaborationRanges, sourceView.path],
+  );
 
   useEffect(() => {
     setInlineSlice(undefined);
@@ -821,14 +826,14 @@ function WorkspaceView({
           endLine,
           endColumn,
         },
-        sourceView.elaborationRanges,
+        displayedElaborationRanges,
       );
       if (!entityId) return;
       const node = displaySlice.nodes.find((candidate) => candidate.id === entityId);
       if (node?.kind === "module") openInstance(entityId);
       else setSelectedId(entityId);
     },
-    [displaySlice, openInstance, sourceView.elaborationRanges, sourceView.path, sourceView.source],
+    [displaySlice, displayedElaborationRanges, openInstance, sourceView.path, sourceView.source],
   );
 
   const toggleLabel = useCallback((key: keyof LabelSettings) => {
@@ -899,7 +904,7 @@ function WorkspaceView({
               source={sourceView.source}
               loading={sourceView.state === "loading"}
               error={sourceView.state === "error" ? sourceView.message : undefined}
-              elaborationRanges={sourceView.elaborationRanges}
+              elaborationRanges={displayedElaborationRanges}
               onShowHierarchy={() => setLeftPaneView("hierarchy")}
               origin={visibleOrigin}
               onSelectRange={selectSourceRange}

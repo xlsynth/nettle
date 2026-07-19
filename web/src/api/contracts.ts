@@ -11,6 +11,7 @@ export interface ApiSourceOrigin {
 }
 
 export interface ApiSourceElaborationRange {
+  file: string;
   startLine: number;
   startColumn: number;
   endLine: number;
@@ -94,6 +95,7 @@ export interface ApiGraphSlice {
   edges: ApiGraphEdge[];
   groups?: ApiGraphGroup[];
   files?: ApiSourceFileRef[];
+  elaborationRanges?: ApiSourceElaborationRange[];
 }
 
 export interface GraphSliceRequest {

@@ -46,8 +46,11 @@ message SourceElaborationRange {
   uint32 end_line = 3;
   // Exclusive ending column.
   uint32 end_column = 4;
-  // True when at least one elaborated hierarchy instance selected this range.
+  // True when the containing format 1.2 GraphSlice includes this range. In a
+  // legacy format 1.1 SourceFile, this has source-global hierarchy semantics.
   bool active = 5;
+  // Project-root-relative source path containing the range.
+  string file = 6;
 }
 
 // Direction of a node port or design boundary.
@@ -202,8 +205,10 @@ message GraphSlice {
   repeated GraphEdge edges = 4;
   // Transparent-instance boundaries retained by a projection.
   repeated GraphGroup groups = 5;
-  // Source files referenced by nodes and edges.
+  // Source files referenced by graph provenance and elaboration ranges.
   repeated SourceFileRef files = 6;
+  // Generate activity scoped to this elaborated module graph.
+  repeated SourceElaborationRange elaboration_ranges = 7;
 }
 
 // Lightweight index record for one independently stored module graph.
@@ -286,7 +291,8 @@ message SourceFile {
   string sha256 = 4;
   // Exact source size in bytes.
   uint64 size = 5;
-  // Generate constructs and branches correlated with this elaboration.
+  // Legacy format 1.1 source-global generate activity. Format 1.2 writers leave
+  // this empty and store activity on each GraphSlice instead.
   repeated SourceElaborationRange elaboration_ranges = 6;
 }
 

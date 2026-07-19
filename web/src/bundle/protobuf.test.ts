@@ -37,6 +37,11 @@ const message = (field: number, payload: Uint8Array) => {
   return bytes;
 };
 
+const textEncoder = new TextEncoder();
+
+const concatenate = (...values: Uint8Array[]) =>
+  Uint8Array.from(values.flatMap((value) => [...value]));
+
 const repeatedEmptyMessages = (field: number, count: number) => {
   const tag = (field << 3) | 2;
   const bytes = new Uint8Array(count * 2);
@@ -88,6 +93,73 @@ describe("incremental GraphSlice resource limits", () => {
     expect(() => decodeGraphSlice(message(5, group))).toThrow(
       "Graph group child node ID count exceeds the supported limit",
     );
+  });
+
+  it("decodes file-scoped elaboration ranges", () => {
+    const file = concatenate(
+      message(1, textEncoder.encode("file-top")),
+      message(2, textEncoder.encode("rtl/top.sv")),
+    );
+    const range = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(2),
+      ...varint((2 << 3) | 0),
+      ...varint(3),
+      ...varint((3 << 3) | 0),
+      ...varint(7),
+      ...varint((4 << 3) | 0),
+      ...varint(9),
+      ...varint((5 << 3) | 0),
+      ...varint(1),
+      ...message(6, textEncoder.encode("rtl/top.sv")),
+    ]);
+
+    expect(
+      decodeGraphSlice(concatenate(message(6, file), message(7, range))).elaborationRanges,
+    ).toEqual([
+      {
+        file: "rtl/top.sv",
+        startLine: 2,
+        startColumn: 3,
+        endLine: 7,
+        endColumn: 9,
+        active: true,
+      },
+    ]);
+  });
+
+  it("rejects unscoped graph elaboration ranges", () => {
+    const range = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(1),
+      ...varint((2 << 3) | 0),
+      ...varint(1),
+      ...varint((3 << 3) | 0),
+      ...varint(1),
+      ...varint((4 << 3) | 0),
+      ...varint(2),
+    ]);
+    expect(() => decodeGraphSlice(message(7, range))).toThrow(
+      "Graph elaboration range references unlisted source path",
+    );
+  });
+
+  it("shares the graph origin limit with elaboration ranges", () => {
+    const range = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(1),
+      ...varint((2 << 3) | 0),
+      ...varint(1),
+      ...varint((3 << 3) | 0),
+      ...varint(1),
+      ...varint((4 << 3) | 0),
+      ...varint(2),
+      ...message(6, textEncoder.encode("rtl/top.sv")),
+    ]);
+    const nodeAtOriginLimit = repeatedEmptyMessages(8, GRAPH_DECODE_LIMITS.origins);
+    expect(() => {
+      decodeGraphSlice(concatenate(message(3, nodeAtOriginLimit), message(7, range)));
+    }).toThrow("Graph elaboration range count exceeds the supported limit");
   });
 });
 
@@ -158,10 +230,11 @@ describe("incremental SourceIndex resource limits", () => {
       ...varint((5 << 3) | 0),
       ...varint(1),
     ]);
-    const source = message(6, range);
+    const source = concatenate(message(2, textEncoder.encode("rtl/top.sv")), message(6, range));
 
     expect(decodeSourceIndex(message(1, source))[0].elaborationRanges).toEqual([
       {
+        file: "rtl/top.sv",
         startLine: 2,
         startColumn: 3,
         endLine: 7,
@@ -169,6 +242,25 @@ describe("incremental SourceIndex resource limits", () => {
         active: true,
       },
     ]);
+  });
+
+  it("rejects a legacy source elaboration range that claims another source path", () => {
+    const coordinates = Uint8Array.from([
+      ...varint((1 << 3) | 0),
+      ...varint(2),
+      ...varint((2 << 3) | 0),
+      ...varint(3),
+      ...varint((3 << 3) | 0),
+      ...varint(7),
+      ...varint((4 << 3) | 0),
+      ...varint(9),
+    ]);
+    const range = concatenate(coordinates, message(6, textEncoder.encode("rtl/other.sv")));
+    const source = concatenate(message(2, textEncoder.encode("rtl/top.sv")), message(6, range));
+
+    expect(() => decodeSourceIndex(message(1, source))).toThrow(
+      "Legacy source elaboration range file rtl/other.sv does not match source rtl/top.sv",
+    );
   });
 
   it("rejects source elaboration ranges while decoding beyond the shared origin limit", () => {

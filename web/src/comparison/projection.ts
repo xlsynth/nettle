@@ -8,6 +8,7 @@ import type {
   GraphSlice,
   SourceFileRef,
 } from "../model/graph";
+import { mergeElaborationRanges } from "../source/elaboration-ranges";
 import {
   countHeuristicMatches,
   MAX_COMPARISON_OBJECTS,
@@ -61,6 +62,9 @@ const originCount = (slice: GraphSlice) =>
   slice.nodes.reduce((count, node) => count + (node.origins?.length ?? 0), 0) +
   slice.edges.reduce((count, edge) => count + (edge.origins?.length ?? 0), 0) +
   (slice.groups ?? []).reduce((count, group) => count + (group.origins?.length ?? 0), 0);
+
+const sourceMetadataCount = (slice: GraphSlice) =>
+  originCount(slice) + (slice.elaborationRanges?.length ?? 0);
 
 const mergeFiles = (
   parent: readonly SourceFileRef[] | undefined,
@@ -194,6 +198,7 @@ const expandSideSlice = (
   parent: GraphSlice,
   instance: GraphNode,
   child: GraphSlice,
+  maximumOrigins: number,
 ): ExpandedSide => {
   const parentInstance = parent.nodes.find((node) => node.id === instance.id);
   if (!parentInstance) {
@@ -246,6 +251,11 @@ const expandSideSlice = (
       edges: [...edges, ...scoped.edges],
       groups,
       files: mergeFiles(parent.files, child.files),
+      elaborationRanges: mergeElaborationRanges(
+        parent.elaborationRanges,
+        child.elaborationRanges,
+        maximumOrigins,
+      ),
     },
   };
 };
@@ -681,12 +691,16 @@ export const expandComparisonInstance = (
   }
   if (!instance.reference) assertEmptyMissingSide("reference", child.reference);
   if (!instance.candidate) assertEmptyMissingSide("candidate", child.candidate);
+  const maximumOrigins = Math.min(
+    options.maximumOrigins ?? MAX_COMPARISON_ORIGINS,
+    MAX_COMPARISON_ORIGINS,
+  );
 
   const referenceExpanded = instance.reference
-    ? expandSideSlice(parent.reference, instance.reference, child.reference)
+    ? expandSideSlice(parent.reference, instance.reference, child.reference, maximumOrigins)
     : { slice: parent.reference, scoped: scopeSliceContents(child.reference, "missing-reference") };
   const candidateExpanded = instance.candidate
-    ? expandSideSlice(parent.candidate, instance.candidate, child.candidate)
+    ? expandSideSlice(parent.candidate, instance.candidate, child.candidate, maximumOrigins)
     : { slice: parent.candidate, scoped: scopeSliceContents(child.candidate, "missing-candidate") };
   const scopedUnion = scopeSliceContents(child.union, instance.id);
   const scopedComparison = scopeComparisonContents(
@@ -799,10 +813,6 @@ export const expandComparisonInstance = (
     MAX_COMPARISON_OBJECTS,
   );
   const maximumPorts = Math.min(options.maximumPorts ?? MAX_COMPARISON_PORTS, MAX_COMPARISON_PORTS);
-  const maximumOrigins = Math.min(
-    options.maximumOrigins ?? MAX_COMPARISON_ORIGINS,
-    MAX_COMPARISON_ORIGINS,
-  );
   const projectedObjectCount = objectCount(result.union);
   if (projectedObjectCount > maximumObjects) {
     throw new Error(
@@ -820,6 +830,17 @@ export const expandComparisonInstance = (
     throw new Error(
       `Comparison projection would have ${projectedOriginCount} origins, exceeding budget ${maximumOrigins}`,
     );
+  }
+  for (const [side, slice] of [
+    ["reference", result.reference],
+    ["candidate", result.candidate],
+  ] as const) {
+    const metadataCount = sourceMetadataCount(slice);
+    if (metadataCount > maximumOrigins) {
+      throw new Error(
+        `Comparison ${side} projection would have ${metadataCount} origins and elaboration ranges, exceeding budget ${maximumOrigins}`,
+      );
+    }
   }
   validateSlice(result.reference, "Projected reference graph");
   validateSlice(result.candidate, "Projected candidate graph");

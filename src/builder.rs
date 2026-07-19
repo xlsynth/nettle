@@ -11,8 +11,8 @@ use crate::bundle::{
 };
 use crate::ir::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, NormalizedArgumentKind, NormalizedProject,
-    SourceFileRef, extract_slang_elaboration_ranges, import_yosys_json,
-    merge_slang_instance_parameters, normalize_filelist, stable_id,
+    ParsedSlangAst, SourceElaborationRange, SourceFileRef, extract_slang_elaboration_ranges,
+    import_yosys_json, normalize_filelist, stable_id,
 };
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -107,7 +107,13 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
     })?;
     let mut snapshot =
         import_yosys_json(&artifacts.yosys_json, Some(top)).context("importing Yosys JSON")?;
-    merge_slang_instance_parameters(&mut snapshot, &artifacts.slang_ast_json)
+    let slang_ast =
+        ParsedSlangAst::parse(&artifacts.slang_ast_json).context("parsing Slang metadata")?;
+    let slang = slang_ast
+        .resolve()
+        .context("indexing Slang metadata node addresses")?;
+    slang
+        .merge_instance_parameters(&mut snapshot)
         .context("merging Slang parameters and source provenance")?;
     rekey_snapshot(&mut snapshot, top, &effective)?;
 
@@ -125,14 +131,15 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
         .collect();
     diagnostics.extend(artifacts.diagnostics.clone());
 
-    let mut sources = collect_sources(
+    let sources = collect_sources(
         &root,
         &project,
         &mut snapshot,
         Some(&artifacts.source_path_base),
     )?;
-    let mut elaboration_ranges = extract_slang_elaboration_ranges(
-        &artifacts.slang_ast_json,
+    let elaboration_ranges = extract_slang_elaboration_ranges(
+        &snapshot,
+        &slang,
         &artifacts.slang_cst_json,
         sources.iter().filter_map(|source| {
             std::str::from_utf8(&source.contents)
@@ -141,9 +148,7 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
         }),
     )
     .context("correlating Slang generate elaboration ranges")?;
-    for source in &mut sources {
-        source.elaboration_ranges = elaboration_ranges.remove(&source.path).unwrap_or_default();
-    }
+    attach_elaboration_ranges(&mut snapshot, elaboration_ranges, &sources);
     let tools = artifacts
         .tools
         .iter()
@@ -208,6 +213,39 @@ pub fn build_project(options: &BuildOptions) -> Result<BuiltProject> {
         build,
         debug_artifacts,
     })
+}
+
+fn attach_elaboration_ranges(
+    snapshot: &mut DesignSnapshot,
+    elaboration_ranges: BTreeMap<String, Vec<SourceElaborationRange>>,
+    sources: &[BundleSource],
+) {
+    let source_refs: BTreeMap<_, _> = sources
+        .iter()
+        .map(|source| {
+            (
+                source.path.as_str(),
+                SourceFileRef {
+                    id: source.id.clone(),
+                    path: source.path.clone(),
+                },
+            )
+        })
+        .collect();
+    for (module, ranges) in elaboration_ranges {
+        let Some(slice) = snapshot.modules.get_mut(&module) else {
+            continue;
+        };
+        let files = slice.files.get_or_insert_with(Vec::new);
+        for range in &ranges {
+            if let Some(source) = source_refs.get(range.file.as_str()) {
+                files.push(source.clone());
+            }
+        }
+        files.sort_by(|left, right| left.id.cmp(&right.id).then(left.path.cmp(&right.path)));
+        files.dedup_by(|left, right| left.id == right.id && left.path == right.path);
+        slice.elaboration_ranges = ranges;
+    }
 }
 
 fn reject_ineffective_define_overrides(
@@ -352,7 +390,6 @@ fn collect_sources(
             id: file_ref.id,
             path: relative,
             contents,
-            elaboration_ranges: vec![],
         });
     }
 
@@ -547,6 +584,7 @@ mod tests {
                 id: "uncorrelated".to_owned(),
                 path: "../example-rtl/rtl/top.sv".to_owned(),
             }]),
+            elaboration_ranges: vec![],
         };
 
         correlate_graph_sources(&mut graph, &spellings);
@@ -554,5 +592,59 @@ mod tests {
         assert_eq!(graph.nodes[0].origins[0].file, canonical.path);
         assert_eq!(graph.nodes[0].origins.len(), 1);
         assert_eq!(graph.files, Some(vec![canonical]));
+    }
+
+    #[test]
+    fn elaboration_ranges_add_a_source_reference_without_synthesized_origins() {
+        let graph = GraphSlice {
+            snapshot_id: "snapshot".to_owned(),
+            module: GraphModule {
+                id: "module".to_owned(),
+                name: "top".to_owned(),
+                instance_path: "top".to_owned(),
+                definition_name: "top".to_owned(),
+                parameters: BTreeMap::new(),
+                attributes: BTreeMap::new(),
+            },
+            nodes: vec![],
+            edges: vec![],
+            groups: vec![],
+            files: None,
+            elaboration_ranges: vec![],
+        };
+        let mut snapshot = DesignSnapshot {
+            snapshot_id: "snapshot".to_owned(),
+            top: "top".to_owned(),
+            tops: vec!["top".to_owned()],
+            modules: BTreeMap::from([("top".to_owned(), graph)]),
+        };
+        let sources = vec![BundleSource {
+            id: "file-inactive".to_owned(),
+            path: "rtl/inactive.sv".to_owned(),
+            contents: b"module inactive; endmodule\n".to_vec(),
+        }];
+        attach_elaboration_ranges(
+            &mut snapshot,
+            BTreeMap::from([(
+                "top".to_owned(),
+                vec![SourceElaborationRange {
+                    file: "rtl/inactive.sv".to_owned(),
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 7,
+                    active: false,
+                }],
+            )]),
+            &sources,
+        );
+
+        assert_eq!(
+            snapshot.modules["top"].files,
+            Some(vec![SourceFileRef {
+                id: "file-inactive".to_owned(),
+                path: "rtl/inactive.sv".to_owned(),
+            }])
+        );
     }
 }

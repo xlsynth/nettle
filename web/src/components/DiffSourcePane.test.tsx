@@ -125,14 +125,28 @@ describe("DiffSourcePane bounded states", () => {
           path: "rtl/top.sv",
           source: "old",
           elaborationRanges: [
-            { startLine: 2, startColumn: 3, endLine: 4, endColumn: 5, active: false },
+            {
+              file: "rtl/top.sv",
+              startLine: 2,
+              startColumn: 3,
+              endLine: 4,
+              endColumn: 5,
+              active: false,
+            },
           ],
         }}
         candidate={{
           path: "rtl/top.sv",
           source: "new",
           elaborationRanges: [
-            { startLine: 6, startColumn: 7, endLine: 8, endColumn: 9, active: false },
+            {
+              file: "rtl/top.sv",
+              startLine: 6,
+              startColumn: 7,
+              endLine: 8,
+              endColumn: 9,
+              active: false,
+            },
           ],
         }}
         onSelectRange={onSelectRange}
@@ -153,7 +167,7 @@ describe("DiffSourcePane bounded states", () => {
         options: {
           inlineClassName: "source-inactive-generate-inline",
           hoverMessage: {
-            value: "Inactive generate branch for this bundle's elaboration.",
+            value: "Inactive generate branch for the visible schematic.",
           },
         },
       },
@@ -169,7 +183,7 @@ describe("DiffSourcePane bounded states", () => {
         options: {
           inlineClassName: "source-inactive-generate-inline",
           hoverMessage: {
-            value: "Inactive generate branch for this bundle's elaboration.",
+            value: "Inactive generate branch for the visible schematic.",
           },
         },
       },

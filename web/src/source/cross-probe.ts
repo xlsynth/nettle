@@ -89,16 +89,16 @@ const groupEntity = (group: GraphGroup): SourceEntity => ({
   origins: group.origins,
 });
 
-const overlapsColumns = (origin: SourceOrigin, selection: SourceSelectionRange) => {
+const overlapsSourceRange = (origin: SourceOrigin, selection: SourceSelectionRange) => {
   const originEndLine = origin.endLine ?? origin.startLine;
   const originEndColumn = origin.endColumn ?? origin.startColumn + 1;
-  const selectionStartsAfterOrigin =
-    selection.startLine > originEndLine ||
-    (selection.startLine === originEndLine && selection.startColumn > originEndColumn);
-  const selectionEndsBeforeOrigin =
-    selection.endLine < origin.startLine ||
-    (selection.endLine === origin.startLine && selection.endColumn < origin.startColumn);
-  return !selectionStartsAfterOrigin && !selectionEndsBeforeOrigin;
+  const originStartsBeforeSelectionEnds =
+    origin.startLine < selection.endLine ||
+    (origin.startLine === selection.endLine && origin.startColumn < selection.endColumn);
+  const selectionStartsBeforeOriginEnds =
+    selection.startLine < originEndLine ||
+    (selection.startLine === originEndLine && selection.startColumn < originEndColumn);
+  return originStartsBeforeSelectionEnds && selectionStartsBeforeOriginEnds;
 };
 
 const overlapsLines = (origin: SourceOrigin, selection: SourceSelectionRange) =>
@@ -199,12 +199,16 @@ export const entityForSourceSelection = (
   if (sourceSelectionIsInactive(selection, elaborationRanges)) {
     return undefined;
   }
+  const enclosingRanges = elaborationRanges
+    .filter((range) => range.active && containsSelection(range, selection))
+    .sort((left, right) => elaborationRangeSize(left) - elaborationRangeSize(right));
   let best: { id: string; score: number; size: number; order: number } | undefined;
 
   entities.forEach((entity, order) => {
     for (const origin of entity.origins ?? []) {
       if (!pathsReferToSameFile(origin.file, path) || !overlapsLines(origin, selection)) continue;
-      const exact = overlapsColumns(origin, selection);
+      const exact = overlapsSourceRange(origin, selection);
+      if (!exact && enclosingRanges.length > 0) continue;
       const size = originSize(origin);
       const entityPriority = entity.type === "node" ? 20 : entity.type === "group" ? 10 : 0;
       const score =
@@ -225,9 +229,6 @@ export const entityForSourceSelection = (
 
   if (best) return best.id;
 
-  const enclosingRanges = elaborationRanges
-    .filter((range) => range.active && containsSelection(range, selection))
-    .sort((left, right) => elaborationRangeSize(left) - elaborationRangeSize(right));
   for (const range of enclosingRanges) {
     const rangeSelection = {
       startLine: range.startLine,
@@ -240,7 +241,10 @@ export const entityForSourceSelection = (
       | undefined;
     entities.forEach((entity, order) => {
       for (const origin of entity.origins ?? []) {
-        if (!pathsReferToSameFile(origin.file, path) || !overlapsLines(origin, rangeSelection)) {
+        if (
+          !pathsReferToSameFile(origin.file, path) ||
+          !overlapsSourceRange(origin, rangeSelection)
+        ) {
           continue;
         }
         const lineDistance = Math.min(

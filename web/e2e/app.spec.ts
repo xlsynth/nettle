@@ -6,6 +6,8 @@ const fixture = "/tmp/nettle-browser-fixture.nettle";
 const shiftRegisterFixture = "/tmp/nettle-shift-register-fixture.nettle";
 const comparisonReferenceFixture = "/tmp/nettle-comparison-reference.nettle";
 const comparisonCandidateFixture = "/tmp/nettle-comparison-candidate.nettle";
+const generateXorFixture = process.env.NETTLE_GENERATE_XOR_FIXTURE;
+const generateOrFixture = process.env.NETTLE_GENERATE_OR_FIXTURE;
 const realComparisonReferenceFixture = process.env.NETTLE_COMPARISON_REFERENCE_FIXTURE;
 const realComparisonCandidateFixture = process.env.NETTLE_COMPARISON_CANDIDATE_FIXTURE;
 const structuralReferenceFixture = process.env.NETTLE_STRUCTURAL_REFERENCE_FIXTURE;
@@ -185,6 +187,113 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
   await expect(page.locator(".top-level-boundary")).toHaveCount(1);
   await expect(page.locator(".tree-row").filter({ hasText: "top.sv" })).toHaveCount(1);
   expect(apiRequests).toEqual([]);
+  expect(runtimeErrors).toEqual([]);
+});
+
+for (const generateCase of [
+  {
+    name: "XOR generate branch",
+    fixture: generateXorFixture,
+    activeStatement: "assign y[i] = a[i] ^ b[i];",
+    inactiveStatement: "assign y[i] = a[i] | b[i];",
+    selectedOperator: "Exclusive or",
+  },
+  {
+    name: "OR generate branch",
+    fixture: generateOrFixture,
+    activeStatement: "assign y[i] = a[i] | b[i];",
+    inactiveStatement: "assign y[i] = a[i] ^ b[i];",
+    selectedOperator: "Or",
+  },
+] as const) {
+  test(`renders and cross-probes the active ${generateCase.name}`, async ({ page }) => {
+    test.skip(!generateCase.fixture, "real generate fixtures were not supplied");
+    const runtimeErrors = captureRuntimeErrors(page);
+
+    await page.goto("/");
+    await page
+      .getByLabel("Choose a .nettle bundle")
+      .setInputFiles(generateCase.fixture ?? "");
+    await expect(page.getByText("Bundle ready")).toBeVisible();
+    await expect(page.locator(".source-status")).toContainText("rtl/top.sv");
+    await page.locator(".monaco-editor textarea").press("Control+Home");
+
+    const sourceLine = (contents: string) =>
+      page.locator(".monaco-editor .view-line").filter({ hasText: contents });
+    for (const activeStatement of [
+      generateCase.activeStatement,
+      "assign case_one_value = a[0];",
+    ]) {
+      const activeLine = sourceLine(activeStatement);
+      await expect(activeLine).toHaveCount(1);
+      await expect(activeLine.locator(".source-inactive-generate-inline")).toHaveCount(0);
+    }
+    for (const inactiveStatement of [
+      generateCase.inactiveStatement,
+      "assign optional_value = a[0];",
+      "assign empty_value = a[j];",
+      "assign case_zero_value = a[0];",
+      "assign case_default_value = b[0];",
+    ]) {
+      const inactiveLine = sourceLine(inactiveStatement);
+      await expect(inactiveLine).toHaveCount(1);
+      await expect(inactiveLine.locator(".source-inactive-generate-inline")).not.toHaveCount(0);
+    }
+    const inactiveLine = sourceLine(generateCase.inactiveStatement);
+    const inactiveDecoration = inactiveLine.locator(".source-inactive-generate-inline");
+    await expect(inactiveDecoration.first()).toHaveCSS("opacity", "0.42");
+    await expect(inactiveDecoration.first()).toHaveCSS("filter", "grayscale(1)");
+
+    const generateHeader = sourceLine("if (USE_XOR) begin : g_xor");
+    await generateHeader.getByText("if", { exact: true }).click();
+    const selected = page.locator(".node-interaction.selected");
+    await expect(selected).toHaveCount(1);
+    await expect(selected).toHaveAttribute(
+      "aria-label",
+      new RegExp(`Select operator ${generateCase.selectedOperator}`),
+    );
+    const sentinel = page.getByRole("link", { name: "Select input a", exact: true });
+    await sentinel.click();
+    const sentinelId = await sentinel.getAttribute("data-entity-id");
+    expect(sentinelId).toBeTruthy();
+
+    await inactiveLine.click();
+    await expect(page.locator(".node-interaction.selected")).toHaveAttribute(
+      "data-entity-id",
+      sentinelId ?? "",
+    );
+    expect(runtimeErrors).toEqual([]);
+  });
+}
+
+test("scopes generate activity to opposite parameterized child instances", async ({ page }) => {
+  test.skip(!generateXorFixture, "real generate fixtures were not supplied");
+  const runtimeErrors = captureRuntimeErrors(page);
+
+  await page.goto("/");
+  await page.getByLabel("Choose a .nettle bundle").setInputFiles(generateXorFixture ?? "");
+  await expect(page.getByText("Bundle ready")).toBeVisible();
+
+  const sourceLine = (contents: string) =>
+    page.locator(".monaco-editor .view-line").filter({ hasText: contents });
+  const expectActivity = async (activeStatement: string, inactiveStatement: string) => {
+    await expect(sourceLine(activeStatement).locator(".source-inactive-generate-inline")).toHaveCount(
+      0,
+    );
+    await expect(
+      sourceLine(inactiveStatement).locator(".source-inactive-generate-inline"),
+    ).not.toHaveCount(0);
+  };
+
+  await page.getByRole("link", { name: "Select module u_child_xor", exact: true }).dblclick();
+  await expect(page.getByRole("button", { name: "Up one hierarchy level" })).toBeEnabled();
+  await page.getByRole("textbox", { name: "Editor content" }).press("Control+End");
+  await expectActivity("assign y = a ^ b;", "assign y = a | b;");
+
+  await page.getByRole("button", { name: "Up one hierarchy level" }).click();
+  await page.getByRole("link", { name: "Select module u_child_or", exact: true }).dblclick();
+  await page.getByRole("textbox", { name: "Editor content" }).press("Control+End");
+  await expectActivity("assign y = a | b;", "assign y = a ^ b;");
   expect(runtimeErrors).toEqual([]);
 });
 

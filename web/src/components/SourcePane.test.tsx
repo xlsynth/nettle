@@ -163,8 +163,22 @@ describe("SourcePane", () => {
         onShowHierarchy={vi.fn()}
         onSelectRange={vi.fn()}
         elaborationRanges={[
-          { startLine: 2, startColumn: 3, endLine: 4, endColumn: 6, active: true },
-          { startLine: 4, startColumn: 7, endLine: 6, endColumn: 6, active: false },
+          {
+            file: "rtl/top.sv",
+            startLine: 2,
+            startColumn: 3,
+            endLine: 4,
+            endColumn: 6,
+            active: true,
+          },
+          {
+            file: "rtl/top.sv",
+            startLine: 4,
+            startColumn: 7,
+            endLine: 6,
+            endColumn: 6,
+            active: false,
+          },
         ]}
       />,
     );
@@ -182,7 +196,7 @@ describe("SourcePane", () => {
         options: {
           inlineClassName: "source-inactive-generate-inline",
           hoverMessage: {
-            value: "Inactive generate branch for this bundle's elaboration.",
+            value: "Inactive generate branch for the visible schematic.",
           },
         },
       },

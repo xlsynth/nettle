@@ -17,8 +17,6 @@ pub use model::{
     PortDirection, ProjectSummary, SCHEMA_VERSION, SourceElaborationRange, SourceFileRef,
     SourceOrigin, stable_id,
 };
-pub use slang::{
-    SlangMetadataError, SlangParameterMergeReport, extract_slang_elaboration_ranges,
-    merge_slang_instance_parameters,
-};
+pub(crate) use slang::{ParsedSlangAst, extract_slang_elaboration_ranges};
+pub use slang::{SlangMetadataError, SlangParameterMergeReport, merge_slang_instance_parameters};
 pub use yosys::{YosysImportError, import_yosys_json, import_yosys_value};

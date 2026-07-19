@@ -637,6 +637,7 @@ fn import_module(
         edges,
         groups: vec![],
         files: Some(files),
+        elaboration_ranges: vec![],
     })
 }
 

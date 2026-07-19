@@ -32,6 +32,8 @@ pub struct SourceOrigin {
 #[serde(rename_all = "camelCase")]
 /// One source range whose generate construct was or was not elaborated.
 pub struct SourceElaborationRange {
+    /// Project-relative source path.
+    pub file: String,
     /// One-based starting line.
     pub start_line: u32,
     /// One-based starting column.
@@ -40,7 +42,7 @@ pub struct SourceElaborationRange {
     pub end_line: u32,
     /// One-based exclusive ending column.
     pub end_column: u32,
-    /// Whether at least one elaborated hierarchy instance selected this range.
+    /// Whether the graph represented by this slice includes the range.
     pub active: bool,
 }
 
@@ -231,8 +233,11 @@ pub struct GraphSlice {
     /// Retained transparent-instance boundaries.
     pub groups: Vec<GraphGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Source files referenced by nodes and edges.
+    /// Source files referenced by graph provenance and elaboration ranges.
     pub files: Option<Vec<SourceFileRef>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Generate activity scoped to the module hierarchy represented by this slice.
+    pub elaboration_ranges: Vec<SourceElaborationRange>,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -560,6 +565,7 @@ impl DesignSnapshot {
             .groups
             .sort_by(|left, right| left.id.cmp(&right.id));
         merge_files(&mut projection.files, None);
+        merge_elaboration_ranges(&mut projection.elaboration_ranges, &[]);
         Ok(projection)
     }
 
@@ -649,6 +655,7 @@ fn sort_projection(projection: &mut GraphSlice) {
         .groups
         .sort_by(|left, right| left.id.cmp(&right.id));
     merge_files(&mut projection.files, None);
+    merge_elaboration_ranges(&mut projection.elaboration_ranges, &[]);
 }
 
 fn expand_instance(
@@ -742,6 +749,10 @@ fn expand_instance(
         child_node_ids,
     });
     merge_files(&mut projection.files, child.files.as_ref());
+    merge_elaboration_ranges(
+        &mut projection.elaboration_ranges,
+        &child.elaboration_ranges,
+    );
     Ok(())
 }
 
@@ -809,6 +820,41 @@ fn merge_files(target: &mut Option<Vec<SourceFileRef>>, additional: Option<&Vec<
         });
         files.dedup_by(|left, right| left.id == right.id && left.path == right.path);
     }
+}
+
+fn merge_elaboration_ranges(
+    target: &mut Vec<SourceElaborationRange>,
+    additional: &[SourceElaborationRange],
+) {
+    let mut merged = BTreeMap::new();
+    for range in target.iter().chain(additional) {
+        let key = (
+            range.file.clone(),
+            range.start_line,
+            range.start_column,
+            range.end_line,
+            range.end_column,
+        );
+        merged
+            .entry(key)
+            .and_modify(|active| *active |= range.active)
+            .or_insert(range.active);
+    }
+    *target = merged
+        .into_iter()
+        .map(
+            |((file, start_line, start_column, end_line, end_column), active)| {
+                SourceElaborationRange {
+                    file,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                    active,
+                }
+            },
+        )
+        .collect();
 }
 
 /// Stable, dependency-free FNV-1a identifier. The namespace makes IDs readable
@@ -946,6 +992,7 @@ mod tests {
             ],
             groups: vec![],
             files: None,
+            elaboration_ranges: vec![],
         };
         let child = GraphSlice {
             snapshot_id: "snapshot".to_owned(),
@@ -994,6 +1041,7 @@ mod tests {
             ],
             groups: vec![],
             files: None,
+            elaboration_ranges: vec![],
         };
         DesignSnapshot {
             snapshot_id: "snapshot".to_owned(),
@@ -1019,6 +1067,7 @@ mod tests {
             edges: vec![],
             groups: vec![],
             files: None,
+            elaboration_ranges: vec![],
         };
         let json = serde_json::to_value(slice).unwrap();
         assert_eq!(json["snapshotId"], "snap");
@@ -1106,6 +1155,36 @@ mod tests {
     }
 
     #[test]
+    fn transparent_projection_ors_generate_activity_for_the_visible_graph() {
+        let mut snapshot = hierarchy_snapshot();
+        let inactive = SourceElaborationRange {
+            file: "rtl/shared.sv".to_owned(),
+            start_line: 7,
+            start_column: 3,
+            end_line: 9,
+            end_column: 6,
+            active: false,
+        };
+        snapshot.modules.get_mut("top").unwrap().elaboration_ranges = vec![inactive.clone()];
+        snapshot
+            .modules
+            .get_mut("child")
+            .unwrap()
+            .elaboration_ranges = vec![SourceElaborationRange {
+            active: true,
+            ..inactive
+        }];
+
+        let base = snapshot.modules["top"].clone();
+        let projected = snapshot
+            .project_transparent_instances(&base, &["instance".to_owned()])
+            .unwrap();
+
+        assert_eq!(projected.elaboration_ranges.len(), 1);
+        assert!(projected.elaboration_ranges[0].active);
+    }
+
+    #[test]
     fn flatten_depth_expands_all_levels_and_retains_nested_boundaries() {
         let mut snapshot = hierarchy_snapshot();
         let leaf = GraphSlice {
@@ -1136,6 +1215,7 @@ mod tests {
             )],
             groups: vec![],
             files: None,
+            elaboration_ranges: vec![],
         };
         let grandchild = node(
             "grandchild",

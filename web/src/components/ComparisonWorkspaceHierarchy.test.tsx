@@ -137,14 +137,20 @@ vi.mock("./DiffSourcePane", () => ({
     hunks,
     onShowHierarchy,
   }: {
-    reference: { path: string };
-    candidate: { path: string };
+    reference: { path: string; elaborationRanges?: readonly { active: boolean }[] };
+    candidate: { path: string; elaborationRanges?: readonly { active: boolean }[] };
     hunks?: readonly ClassifiedSourceDiffHunk[];
     onShowHierarchy: () => void;
   }) => (
     <div>
       <output data-testid="selected-source-path">{candidate.path || reference.path}</output>
       <output data-testid="source-hunk-count">{hunks?.length ?? 0}</output>
+      <output data-testid="reference-elaboration-activity">
+        {reference.elaborationRanges?.map((range) => String(range.active)).join(",") ?? ""}
+      </output>
+      <output data-testid="candidate-elaboration-activity">
+        {candidate.elaborationRanges?.map((range) => String(range.active)).join(",") ?? ""}
+      </output>
       <output data-testid="source-only-hunk-count">
         {hunks?.filter((hunk) => hunk.sourceOnly).length ?? 0}
       </output>
@@ -322,6 +328,63 @@ const makeDuplicateInstancesHeuristic = (
 };
 
 describe("comparison instance hierarchy", () => {
+  it("uses each displayed slice's branch activity instead of source-index fallback activity", async () => {
+    const reference = bundle("reference");
+    const candidate = bundle("candidate");
+    const globalFallback = [
+      {
+        file: "rtl/00-display.sv",
+        startLine: 2,
+        startColumn: 1,
+        endLine: 4,
+        endColumn: 2,
+        active: true,
+      },
+      {
+        file: "rtl/00-display.sv",
+        startLine: 5,
+        startColumn: 1,
+        endLine: 7,
+        endColumn: 2,
+        active: true,
+      },
+    ];
+    reference.input.workspace.slice.elaborationRanges = [
+      globalFallback[0],
+      { ...globalFallback[1], active: false },
+    ];
+    candidate.input.workspace.slice.elaborationRanges = [
+      { ...globalFallback[0], active: false },
+      globalFallback[1],
+    ];
+    reference.getSource.mockResolvedValue({
+      ...sourceResponse("reference", "reference-display"),
+      elaborationRanges: globalFallback,
+    });
+    candidate.getSource.mockResolvedValue({
+      ...sourceResponse("candidate", "candidate-display"),
+      elaborationRanges: globalFallback,
+    });
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference.input}
+        candidate={candidate.input}
+        initialPolicy="conservative"
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("selected-source-path").textContent).toBe("rtl/00-display.sv"),
+    );
+    expect(screen.getByTestId("reference-elaboration-activity").textContent).toBe("true,false");
+    expect(screen.getByTestId("candidate-elaboration-activity").textContent).toBe("false,true");
+  });
+
   it("does not label a top-selected source hunk source-only when a reachable child changes", async () => {
     const reference = bundle("reference");
     const candidate = bundle("candidate");

@@ -72,6 +72,7 @@ describe("browser-local hierarchy projection", () => {
     expect(flattened.groups).toEqual([
       expect.objectContaining({ id: "u-child", childNodeIds: ["u-child/a", "u-child/y"] }),
     ]);
+    expect(flattened.elaborationRanges).toBeUndefined();
   });
 
   it("applies equal-depth flattening and preserves depth zero", async () => {
@@ -85,5 +86,63 @@ describe("browser-local hierarchy projection", () => {
     await expect(flattenSelected(top, ["u-child"], load, 5)).rejects.toThrow(
       "Projected graph would have 8 objects, exceeding budget 5",
     );
+  });
+
+  it("folds slice-scoped elaboration ranges while flattening", async () => {
+    const parent = structuredClone(top);
+    const nested = structuredClone(child);
+    parent.elaborationRanges = [
+      {
+        file: "rtl/shared.sv",
+        startLine: 2,
+        startColumn: 1,
+        endLine: 4,
+        endColumn: 2,
+        active: false,
+      },
+    ];
+    nested.elaborationRanges = [
+      { ...parent.elaborationRanges[0], active: true },
+      {
+        file: "rtl/shared.sv",
+        startLine: 5,
+        startColumn: 1,
+        endLine: 7,
+        endColumn: 2,
+        active: false,
+      },
+    ];
+    const loadNested = async (name: string) => (name === "child" ? nested : undefined);
+
+    const flattened = await flattenSelected(parent, ["u-child"], loadNested);
+    expect(flattened.elaborationRanges).toEqual([
+      { ...parent.elaborationRanges[0], active: true },
+      nested.elaborationRanges[1],
+    ]);
+    await expect(flattenSelected(parent, ["u-child"], loadNested, 100, 1)).rejects.toThrow(
+      "2 elaboration ranges, exceeding budget 1",
+    );
+  });
+
+  it("shares one projection budget between origins and elaboration ranges", async () => {
+    const parent = structuredClone(top);
+    const nested = structuredClone(child);
+    nested.nodes[0].origins = [{ file: "rtl/shared.sv", startLine: 1, startColumn: 1, endLine: 1 }];
+    nested.elaborationRanges = [
+      {
+        file: "rtl/shared.sv",
+        startLine: 2,
+        startColumn: 1,
+        endLine: 4,
+        endColumn: 2,
+        active: true,
+      },
+    ];
+    const loadNested = async (name: string) => (name === "child" ? nested : undefined);
+
+    await expect(flattenSelected(parent, ["u-child"], loadNested, 100, 1)).rejects.toThrow(
+      "2 origins and elaboration ranges, exceeding budget 1",
+    );
+    await expect(flattenSelected(parent, ["u-child"], loadNested, 100, 2)).resolves.toBeDefined();
   });
 });

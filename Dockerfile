@@ -206,7 +206,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
   scripts/check-toolchain.sh \
   && npm run test:designs \
   && python3 scripts/build-schematic-diff-fixtures.py \
-  && npm run test:e2e
+  && npm run test:e2e:generate
 
 # Retain a single target for developers who want every validation check in one
 # reproducible image. The integration-tests base has already run the real HDL

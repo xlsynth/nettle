@@ -153,7 +153,10 @@ const applySourceOnlyHunks = (
           hoverMessage: {
             value: "Source-only change: no changed schematic object intersects this hunk.",
           },
-          after: { content: "  source-only", inlineClassName: "source-only-hunk-label" },
+          after: {
+            content: "  source-only",
+            inlineClassName: "source-only-hunk-label",
+          },
         },
       },
     ];
@@ -179,7 +182,7 @@ const applyElaborationRanges = (
       options: {
         inlineClassName: "source-inactive-generate-inline",
         hoverMessage: {
-          value: "Inactive generate branch for this bundle's elaboration.",
+          value: "Inactive generate branch for the visible schematic.",
         },
       },
     }));

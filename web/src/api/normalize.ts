@@ -162,6 +162,10 @@ export const normalizeGraphSlice = (slice: ApiGraphSlice): GraphSlice => {
     edges,
     groups,
     files: slice.files?.map((file) => ({ ...file, path: normalizePath(file.path) })),
+    elaborationRanges: slice.elaborationRanges?.map((range) => ({
+      ...range,
+      file: normalizePath(range.file),
+    })),
   };
 };
 

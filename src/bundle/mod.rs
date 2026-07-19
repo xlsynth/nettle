@@ -44,7 +44,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 /// Bundle format major version understood by this implementation.
 pub const FORMAT_MAJOR: u32 = 1;
 /// Bundle format minor version written by this implementation.
-pub const FORMAT_MINOR: u32 = 1;
+pub const FORMAT_MINOR: u32 = 2;
 /// Canonical ZIP path of the JSON manifest.
 pub const MANIFEST_ENTRY: &str = "manifest.json";
 /// Canonical ZIP path of the Protobuf design index.
@@ -172,8 +172,6 @@ pub struct BundleSource {
     pub path: String,
     /// UTF-8 source bytes.
     pub contents: Vec<u8>,
-    /// Active and inactive generate ranges for this elaboration.
-    pub elaboration_ranges: Vec<SourceElaborationRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +272,7 @@ pub fn write_bundle_to<W: Write + Seek>(
 
     let mut modules = Vec::with_capacity(contents.snapshot.modules.len());
     for slice in contents.snapshot.modules.values() {
+        validate_graph_origin_budget(slice, MAX_ORIGINS)?;
         let entry = format!("design/modules/{}.pb", slice.module.id);
         insert_entry(
             &mut entries,
@@ -323,7 +322,7 @@ pub fn write_bundle_to<W: Write + Seek>(
             entry,
             sha256: digest,
             size: source.contents.len() as u64,
-            elaboration_ranges: source.elaboration_ranges.iter().map(Into::into).collect(),
+            elaboration_ranges: vec![],
         });
     }
     source_files.sort_by(|left, right| left.path.cmp(&right.path).then(left.id.cmp(&right.id)));
@@ -546,7 +545,9 @@ impl<R: Read + Seek> BundleReader<R> {
     /// Decodes and verifies the source index.
     pub fn source_index(&mut self) -> Result<proto::SourceIndex> {
         let entry = self.manifest.source_index.clone();
-        self.decode(&entry)
+        let mut index: proto::SourceIndex = self.decode(&entry)?;
+        normalize_legacy_source_elaboration_ranges(&mut index.files)?;
+        Ok(index)
     }
 
     /// Decodes and verifies normalized diagnostics.
@@ -710,19 +711,68 @@ fn validate_source_identities(sources: &[proto::SourceFile]) -> Result<()> {
             )));
         }
         for range in &source.elaboration_ranges {
-            if range.start_line == 0
-                || range.start_column == 0
-                || range.end_line == 0
-                || range.end_column == 0
-                || range.end_line < range.start_line
-                || (range.end_line == range.start_line && range.end_column <= range.start_column)
-            {
-                return Err(BundleError::Invalid(format!(
-                    "source {:?} has an invalid elaboration range",
+            validate_legacy_source_elaboration_range_path(&source.path, &range.file)?;
+            validate_elaboration_coordinates(range).map_err(|_| {
+                BundleError::Invalid(format!(
+                    "source {:?} has an invalid legacy elaboration range",
                     source.path
-                )));
-            }
+                ))
+            })?;
         }
+    }
+    Ok(())
+}
+
+fn validate_legacy_source_elaboration_range_path(
+    source_path: &str,
+    range_path: &str,
+) -> Result<()> {
+    if !range_path.is_empty() && range_path != source_path {
+        return Err(BundleError::Invalid(format!(
+            "source {source_path:?} has a legacy elaboration range for mismatched file {range_path:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_legacy_source_elaboration_ranges(sources: &mut [proto::SourceFile]) -> Result<()> {
+    for source in sources {
+        for range in &mut source.elaboration_ranges {
+            validate_legacy_source_elaboration_range_path(&source.path, &range.file)?;
+            range.file.clone_from(&source.path);
+        }
+    }
+    Ok(())
+}
+
+fn validate_elaboration_coordinates(range: &proto::SourceElaborationRange) -> Result<()> {
+    if range.start_line == 0
+        || range.start_column == 0
+        || range.end_line == 0
+        || range.end_column == 0
+        || range.end_line < range.start_line
+        || (range.end_line == range.start_line && range.end_column <= range.start_column)
+    {
+        return Err(BundleError::Invalid(
+            "invalid source elaboration coordinates".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_graph_origin_budget(slice: &GraphSlice, maximum: u64) -> Result<()> {
+    let origin_count = slice
+        .nodes
+        .iter()
+        .map(|node| node.origins.len() as u64)
+        .chain(slice.edges.iter().map(|edge| edge.origins.len() as u64))
+        .chain(slice.groups.iter().map(|group| group.origins.len() as u64))
+        .fold(0_u64, u64::saturating_add);
+    let count = origin_count.saturating_add(slice.elaboration_ranges.len() as u64);
+    if count > maximum {
+        return Err(BundleError::Invalid(format!(
+            "graph origin and elaboration range count exceeds supported limit {maximum}"
+        )));
     }
     Ok(())
 }
@@ -861,6 +911,20 @@ fn validate_graph_references(
             return Err(BundleError::Invalid(format!(
                 "graph origin references unlisted source path {:?}",
                 origin.file
+            )));
+        }
+    }
+    for range in &slice.elaboration_ranges {
+        if !file_paths.contains(range.file.as_str()) {
+            return Err(BundleError::Invalid(format!(
+                "graph elaboration range references unlisted source path {:?}",
+                range.file
+            )));
+        }
+        if validate_elaboration_coordinates(&range.into()).is_err() {
+            return Err(BundleError::Invalid(format!(
+                "graph has an invalid elaboration range in {:?}",
+                range.file
             )));
         }
     }
@@ -1064,8 +1128,18 @@ fn preflight_source_file(bytes: &[u8], elaboration_ranges: &mut u64) -> Result<(
             consume_budget(
                 elaboration_ranges,
                 MAX_ORIGINS,
-                "source elaboration range count",
+                "legacy source elaboration range count",
             )?;
+            preflight_elaboration_range(payload)?;
+        }
+        Ok(())
+    })
+}
+
+fn preflight_elaboration_range(bytes: &[u8]) -> Result<()> {
+    visit_proto_fields(bytes, |field, payload| {
+        if field == 6 {
+            preflight_proto_string(payload, "source elaboration range file")?;
         }
         Ok(())
     })
@@ -1144,6 +1218,14 @@ fn preflight_graph_slice(bytes: &[u8]) -> Result<()> {
             6 => {
                 consume_budget(&mut budget.files, MAX_GRAPH_FILES, "graph file count")?;
                 preflight_graph_message(payload, &mut budget, "file")?;
+            }
+            7 => {
+                consume_budget(
+                    &mut budget.origins,
+                    MAX_ORIGINS,
+                    "source elaboration range count",
+                )?;
+                preflight_elaboration_range(payload)?;
             }
             _ => {}
         }
@@ -1443,6 +1525,7 @@ impl From<&SourceElaborationRange> for proto::SourceElaborationRange {
             end_line: value.end_line,
             end_column: value.end_column,
             active: value.active,
+            file: value.file.clone(),
         }
     }
 }
@@ -1455,6 +1538,7 @@ impl From<proto::SourceElaborationRange> for SourceElaborationRange {
             end_line: value.end_line,
             end_column: value.end_column,
             active: value.active,
+            file: value.file,
         }
     }
 }
@@ -1680,6 +1764,7 @@ impl From<&GraphSlice> for proto::GraphSlice {
                 .iter()
                 .map(Into::into)
                 .collect(),
+            elaboration_ranges: value.elaboration_ranges.iter().map(Into::into).collect(),
         }
     }
 }
@@ -1707,6 +1792,11 @@ impl TryFrom<proto::GraphSlice> for GraphSlice {
                 .collect::<Result<_>>()?,
             files: (!value.files.is_empty())
                 .then(|| value.files.into_iter().map(Into::into).collect()),
+            elaboration_ranges: value
+                .elaboration_ranges
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         })
     }
 }
@@ -1774,6 +1864,7 @@ mod tests {
                 id: "file-1".to_owned(),
                 path: "rtl/top.sv".to_owned(),
             }]),
+            elaboration_ranges: vec![],
         };
         DesignSnapshot {
             snapshot_id: "snapshot-1".to_owned(),
@@ -1784,18 +1875,20 @@ mod tests {
     }
 
     fn encode_fixture() -> Vec<u8> {
-        let snapshot = fixture_snapshot();
-        let sources = vec![BundleSource {
-            id: "file-1".to_owned(),
-            path: "rtl/top.sv".to_owned(),
-            contents: b"module top; endmodule\n".to_vec(),
-            elaboration_ranges: vec![SourceElaborationRange {
+        let mut snapshot = fixture_snapshot();
+        snapshot.modules.get_mut("top").unwrap().elaboration_ranges =
+            vec![SourceElaborationRange {
+                file: "rtl/top.sv".to_owned(),
                 start_line: 1,
                 start_column: 1,
                 end_line: 1,
                 end_column: 7,
                 active: true,
-            }],
+            }];
+        let sources = vec![BundleSource {
+            id: "file-1".to_owned(),
+            path: "rtl/top.sv".to_owned(),
+            contents: b"module top; endmodule\n".to_vec(),
         }];
         let build = BuildMetadata {
             filelist: "top.f".to_owned(),
@@ -1905,8 +1998,9 @@ mod tests {
             b"module top; endmodule\n"
         );
         assert_eq!(
-            source_index.files[0].elaboration_ranges,
-            vec![proto::SourceElaborationRange {
+            graph.elaboration_ranges,
+            vec![SourceElaborationRange {
+                file: "rtl/top.sv".to_owned(),
                 start_line: 1,
                 start_column: 1,
                 end_line: 1,
@@ -1914,6 +2008,7 @@ mod tests {
                 active: true,
             }]
         );
+        assert!(source_index.files[0].elaboration_ranges.is_empty());
     }
 
     #[test]
@@ -2018,6 +2113,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_slice_elaboration_range_count_before_protobuf_decode() {
+        let bytes = repeated_empty_messages(7, MAX_ORIGINS + 1);
+        let error = preflight_protobuf("design/modules/test.pb", &bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("source elaboration range count exceeds"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_oversized_strings_before_protobuf_decode() {
         let oversized = vec![0; MAX_STRING_BYTES + 1];
         let cases = [
@@ -2106,7 +2213,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_source_elaboration_ranges() {
+    fn preserves_valid_legacy_source_elaboration_ranges() {
+        let mut source = proto::SourceFile {
+            id: "file-1".to_owned(),
+            path: "rtl/top.sv".to_owned(),
+            elaboration_ranges: vec![proto::SourceElaborationRange {
+                start_line: 2,
+                start_column: 3,
+                end_line: 4,
+                end_column: 6,
+                active: false,
+                file: String::new(),
+            }],
+            ..proto::SourceFile::default()
+        };
+        validate_source_identities(&[source.clone()]).unwrap();
+        normalize_legacy_source_elaboration_ranges(std::slice::from_mut(&mut source)).unwrap();
+        assert_eq!(source.elaboration_ranges[0].file, source.path);
+
+        source.elaboration_ranges[0].file = source.path.clone();
+        validate_source_identities(&[source]).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_legacy_source_elaboration_ranges() {
         let source = proto::SourceFile {
             id: "file-1".to_owned(),
             path: "rtl/top.sv".to_owned(),
@@ -2116,13 +2246,80 @@ mod tests {
                 end_line: 6,
                 end_column: 9,
                 active: false,
+                file: String::new(),
             }],
             ..proto::SourceFile::default()
         };
         let error = validate_source_identities(&[source])
             .unwrap_err()
             .to_string();
-        assert!(error.contains("invalid elaboration range"), "{error}");
+        assert!(
+            error.contains("invalid legacy elaboration range"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_legacy_source_elaboration_range_paths() {
+        let source = proto::SourceFile {
+            id: "file-1".to_owned(),
+            path: "rtl/top.sv".to_owned(),
+            elaboration_ranges: vec![proto::SourceElaborationRange {
+                start_line: 2,
+                start_column: 3,
+                end_line: 4,
+                end_column: 6,
+                active: false,
+                file: "rtl/other.sv".to_owned(),
+            }],
+            ..proto::SourceFile::default()
+        };
+        let error = validate_source_identities(std::slice::from_ref(&source))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mismatched file"), "{error}");
+
+        let mut sources = vec![source];
+        let error = normalize_legacy_source_elaboration_ranges(&mut sources)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mismatched file"), "{error}");
+    }
+
+    #[test]
+    fn shares_the_writer_origin_budget_with_elaboration_ranges() {
+        let mut slice = fixture_snapshot().modules.remove("top").unwrap();
+        slice.groups.push(GraphGroup {
+            id: "group-1".to_owned(),
+            name: "group".to_owned(),
+            definition_name: "child".to_owned(),
+            parameters: BTreeMap::new(),
+            origins: vec![SourceOrigin {
+                file: "rtl/top.sv".to_owned(),
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: Some(2),
+            }],
+            child_node_ids: vec![],
+        });
+        slice.elaboration_ranges.push(SourceElaborationRange {
+            file: "rtl/top.sv".to_owned(),
+            start_line: 2,
+            start_column: 1,
+            end_line: 4,
+            end_column: 2,
+            active: true,
+        });
+
+        validate_graph_origin_budget(&slice, 2).unwrap();
+        let error = validate_graph_origin_budget(&slice, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("origin and elaboration range count exceeds"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2176,7 +2373,6 @@ mod tests {
             id: "file-1".to_owned(),
             path: "rtl/top.sv".to_owned(),
             contents: b"module top; endmodule\n".to_vec(),
-            elaboration_ranges: vec![],
         }];
         let build = BuildMetadata::default();
         write_bundle(

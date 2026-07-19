@@ -60,6 +60,7 @@ import type {
   ProjectSnapshot,
 } from "../model/graph";
 import { entityForSourceSelection, sourceSelectionIsInactive } from "../source/cross-probe";
+import { elaborationRangesForSource } from "../source/elaboration-ranges";
 import { AppHeader } from "./AppHeader";
 import {
   lowSchematicOverlapWarning,
@@ -2119,7 +2120,12 @@ function ConfirmedComparisonWorkspaceView({
         endLine,
         endColumn,
       };
-      if (sourceSelectionIsInactive(selection, version.elaborationRanges ?? [])) {
+      const elaborationRanges = elaborationRangesForSource(
+        displayPair[side],
+        version.path,
+        version.elaborationRanges,
+      );
+      if (sourceSelectionIsInactive(selection, elaborationRanges)) {
         setSourceHighlightedIds(new Set());
         return;
       }
@@ -2147,7 +2153,7 @@ function ConfirmedComparisonWorkspaceView({
         version.path,
         version.source,
         selection,
-        version.elaborationRanges,
+        elaborationRanges,
       );
       if (!originalId) return;
       const entity = allEntities(comparison).find(
@@ -2171,6 +2177,11 @@ function ConfirmedComparisonWorkspaceView({
     () => ({
       reference: {
         ...sourcePair.reference,
+        elaborationRanges: elaborationRangesForSource(
+          displayPair.reference,
+          sourcePair.reference.path,
+          sourcePair.reference.elaborationRanges,
+        ),
         origin:
           referenceOrigin && pathsReferToSameFile(referenceOrigin.file, sourcePair.reference.path)
             ? referenceOrigin
@@ -2178,13 +2189,18 @@ function ConfirmedComparisonWorkspaceView({
       },
       candidate: {
         ...sourcePair.candidate,
+        elaborationRanges: elaborationRangesForSource(
+          displayPair.candidate,
+          sourcePair.candidate.path,
+          sourcePair.candidate.elaborationRanges,
+        ),
         origin:
           candidateOrigin && pathsReferToSameFile(candidateOrigin.file, sourcePair.candidate.path)
             ? candidateOrigin
             : undefined,
       },
     }),
-    [candidateOrigin, referenceOrigin, sourcePair],
+    [candidateOrigin, displayPair, referenceOrigin, sourcePair],
   );
   const sourceDiffHunks = useMemo<readonly ClassifiedSourceDiffHunk[]>(() => {
     if (matchingPending || selectedTextDiff?.status !== "complete") return [];
