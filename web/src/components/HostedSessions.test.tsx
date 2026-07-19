@@ -86,6 +86,37 @@ describe("HostedUploadDialog", () => {
     expect(screen.getByText(/raw archive is deleted after success or failure/)).toBeTruthy();
     expect(screen.getByText(/including referenced source text/)).toBeTruthy();
   });
+
+  it("allows another upload after closing the dialog during an upload", async () => {
+    harness.createHostedSession.mockImplementation(
+      (_kind, _file, _progress, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("The upload was aborted.", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const { rerender } = render(
+      <HostedUploadDialog kind="bundle" onClose={vi.fn()} onCreated={vi.fn()} />,
+    );
+
+    const file = new File(["bundle"], "design.nettle", { type: "application/zip" });
+    fireEvent.change(await screen.findByLabelText("Choose bundle to upload"), {
+      target: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload and create link" }));
+    await waitFor(() => expect(harness.createHostedSession).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText("Choose bundle to upload").hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close hosted upload dialog" }));
+    rerender(<HostedUploadDialog kind={undefined} onClose={vi.fn()} onCreated={vi.fn()} />);
+    rerender(<HostedUploadDialog kind="sources" onClose={vi.fn()} onCreated={vi.fn()} />);
+
+    const reopenedInput = await screen.findByLabelText("Choose source archive to upload");
+    await waitFor(() => expect(reopenedInput.hasAttribute("disabled")).toBe(false));
+  });
 });
 
 describe("HostedSessionPage", () => {

@@ -129,6 +129,8 @@ export function HostedUploadDialog({ kind, onClose, onCreated }: HostedUploadDia
     setUploadTransferred(false);
     setError(undefined);
     upload.current?.abort();
+    upload.current = undefined;
+    setUploading(false);
     if (!kind) return;
     const controller = new AbortController();
     setLoadingConfig(true);
