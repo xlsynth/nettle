@@ -76,10 +76,31 @@ with `:Z` when SELinux relabeling is required.
 ### Build the combined image locally
 
 Build the `nettle` target, then use `nettle:latest` in place of
-`ghcr.io/xlsynth/nettle:latest` in the command above:
+`ghcr.io/xlsynth/nettle:latest` in the command above. First record the build
+metadata from the checkout:
+
+```sh
+NETTLE_BUILD_DATE_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+NETTLE_BUILD_GIT_SHA="$(git rev-parse HEAD)"
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  NETTLE_BUILD_STATE=dirty
+elif ! git for-each-ref --contains HEAD --format='%(refname)' \
+  refs/heads/main refs/remotes |
+  grep -Eq '(^refs/heads/main$|^refs/remotes/.+/main$)'; then
+  NETTLE_BUILD_STATE=dev
+else
+  NETTLE_BUILD_STATE=clean
+fi
+export NETTLE_BUILD_DATE_UTC NETTLE_BUILD_GIT_SHA NETTLE_BUILD_STATE
+```
+
+Pass those values into the image build:
 
 ```sh
 docker build --platform linux/amd64 \
+  --build-arg NETTLE_BUILD_DATE_UTC \
+  --build-arg NETTLE_BUILD_GIT_SHA \
+  --build-arg NETTLE_BUILD_STATE \
   -f Dockerfile --target nettle -t nettle:latest .
 ```
 
@@ -129,10 +150,14 @@ Press Ctrl-C in the terminal to stop the viewer.
 
 See [Build the combined image locally](#build-the-combined-image-locally) for
 the interactive image build command. To run the complete test suite in its
-known-good toolchain container, build the root Dockerfile's `test` target:
+known-good toolchain container, record and export the same build metadata, then
+build the root Dockerfile's `test` target:
 
 ```sh
 docker build --platform linux/amd64 \
+  --build-arg NETTLE_BUILD_DATE_UTC \
+  --build-arg NETTLE_BUILD_GIT_SHA \
+  --build-arg NETTLE_BUILD_STATE \
   -f Dockerfile --target test -t nettle-test .
 ```
 

@@ -10,6 +10,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -167,16 +168,7 @@ fn emit_build_info() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=NETTLE_BUILD_GIT_SHA");
     println!("cargo:rerun-if-env-changed=NETTLE_BUILD_STATE");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
-    if let Ok(output) = Command::new("git")
-        .args(["rev-parse", "--git-path", "HEAD"])
-        .output()
-        && output.status.success()
-    {
-        println!(
-            "cargo:rerun-if-changed={}",
-            String::from_utf8_lossy(&output.stdout).trim()
-        );
-    }
+    emit_git_rerun_inputs();
 
     let build_date = match std::env::var("NETTLE_BUILD_DATE_UTC") {
         Ok(value) if !value.trim().is_empty() => value,
@@ -241,6 +233,48 @@ fn emit_build_info() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn emit_git_rerun_inputs() {
+    for path in ["HEAD", "index", "packed-refs"] {
+        emit_git_path_rerun_input(path);
+    }
+
+    if let Some(reference) = git_stdout(&["symbolic-ref", "--quiet", "HEAD"]) {
+        emit_git_path_rerun_input(reference.trim());
+    }
+
+    if let Ok(output) = Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .output()
+        && output.status.success()
+    {
+        for path in output.stdout.split(|byte| *byte == 0) {
+            if !path.is_empty() {
+                println!("cargo:rerun-if-changed={}", String::from_utf8_lossy(path));
+            }
+        }
+    }
+}
+
+fn emit_git_path_rerun_input(path: &str) {
+    if let Some(path) = git_stdout(&["rev-parse", "--git-path", path]) {
+        println!("cargo:rerun-if-changed={}", path.trim());
+    }
+}
+
+fn git_stdout(arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(arguments).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn detect_build_state() -> Result<String, Box<dyn std::error::Error>> {
     let status = Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=normal"])
@@ -282,30 +316,9 @@ fn detect_build_state() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn format_unix_timestamp(seconds: u64) -> Result<String, Box<dyn std::error::Error>> {
-    let days = i64::try_from(seconds / 86_400)?;
-    let seconds_of_day = seconds % 86_400;
-    let (year, month, day) = civil_date_from_unix_days(days);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    Ok(format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
-    ))
-}
-
-fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    (year, month, day)
+    let timestamp = OffsetDateTime::from_unix_timestamp(i64::try_from(seconds)?)?;
+    let format = time::format_description::parse("[year]-[month]-[day]T[hour]:[minute]:[second]Z")?;
+    Ok(timestamp.format(&format)?)
 }
 
 fn validate_limits(limits: &ResourceLimits) -> Result<(), Box<dyn std::error::Error>> {

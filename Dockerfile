@@ -169,6 +169,9 @@ ENTRYPOINT ["nettle", "view", "--bind-address", "0.0.0.0", "--port", "8080", "--
 # The precompiled Slang and yosys-slang distributions currently have Linux
 # amd64 binaries only; add linux/arm64 when both upstream toolchains provide it.
 FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS test-base
+ARG NETTLE_BUILD_DATE_UTC
+ARG NETTLE_BUILD_GIT_SHA
+ARG NETTLE_BUILD_STATE
 ARG TARGETARCH
 RUN test "$TARGETARCH" = "amd64" || \
     (echo "Nettle's test image currently supports linux/amd64 only" >&2; exit 1)
