@@ -220,10 +220,7 @@ for (const generateCase of [
 
     const sourceLine = (contents: string) =>
       page.locator(".monaco-editor .view-line").filter({ hasText: contents });
-    for (const activeStatement of [
-      generateCase.activeStatement,
-      "assign case_one_value = a[0];",
-    ]) {
+    for (const activeStatement of [generateCase.activeStatement]) {
       const activeLine = sourceLine(activeStatement);
       await expect(activeLine).toHaveCount(1);
       await expect(activeLine.locator(".source-inactive-generate-inline")).toHaveCount(0);
@@ -232,13 +229,28 @@ for (const generateCase of [
       generateCase.inactiveStatement,
       "assign optional_value = a[0];",
       "assign empty_value = a[j];",
-      "assign case_zero_value = a[0];",
-      "assign case_default_value = b[0];",
     ]) {
       const inactiveLine = sourceLine(inactiveStatement);
       await expect(inactiveLine).toHaveCount(1);
       await expect(inactiveLine.locator(".source-inactive-generate-inline")).not.toHaveCount(0);
     }
+
+    // Monaco virtualizes lines outside the viewport, so reveal the case-generate
+    // statements before querying their rendered decorations.
+    await page.locator(".monaco-editor textarea").press("Control+End");
+    const activeCaseLine = sourceLine("assign case_one_value = a[0];");
+    await expect(activeCaseLine).toHaveCount(1);
+    await expect(activeCaseLine.locator(".source-inactive-generate-inline")).toHaveCount(0);
+    for (const inactiveStatement of [
+      "assign case_zero_value = a[0];",
+      "assign case_default_value = b[0];",
+    ]) {
+      const inactiveCaseLine = sourceLine(inactiveStatement);
+      await expect(inactiveCaseLine).toHaveCount(1);
+      await expect(inactiveCaseLine.locator(".source-inactive-generate-inline")).not.toHaveCount(0);
+    }
+
+    await page.locator(".monaco-editor textarea").press("Control+Home");
     const inactiveLine = sourceLine(generateCase.inactiveStatement);
     const inactiveDecoration = inactiveLine.locator(".source-inactive-generate-inline");
     await expect(inactiveDecoration.first()).toHaveCSS("opacity", "0.42");

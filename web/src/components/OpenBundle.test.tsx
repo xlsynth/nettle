@@ -15,7 +15,9 @@ describe("BundleWelcome", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Hierarchy smoke test/ }));
-
     expect(onOpenDemo).toHaveBeenCalledWith(DEMOS[0]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Generate-aware datapath/ }));
+    expect(onOpenDemo).toHaveBeenCalledWith(DEMOS[1]);
   });
 });

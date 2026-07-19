@@ -7,7 +7,7 @@ export interface DemoBundle {
 
 export type Demo =
   | {
-      id: "smoke";
+      id: "smoke" | "generate";
       title: string;
       description: string;
       kind: "bundle";
@@ -30,6 +30,14 @@ export const DEMOS: readonly Demo[] = [
     description: "Open a small elaborated design with a child module and source cross-probing.",
     kind: "bundle",
     bundle: { name: "smoke.nettle", route: "/demos/smoke.nettle" },
+  },
+  {
+    id: "generate",
+    title: "Generate-aware datapath",
+    description:
+      "Explore parameterized XOR/OR branches, loop and case generates, and child instances.",
+    kind: "bundle",
+    bundle: { name: "generate.nettle", route: "/demos/generate.nettle" },
   },
   {
     id: "schematic-diff",

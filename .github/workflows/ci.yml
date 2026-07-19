@@ -470,6 +470,7 @@ jobs:
               -v "$PWD:/work" -w /work "$image" validate "$output"
           }
           build_bundle web/dist/demos/smoke.nettle integration_tests/smoke/project.f integration_tests/smoke top
+          build_bundle web/dist/demos/generate.nettle integration_tests/generate/project.f integration_tests/generate top
           build_bundle web/dist/demos/schematic-reference.nettle integration_tests/schematic-diff/reference/project.f integration_tests/schematic-diff/reference top
           build_bundle web/dist/demos/schematic-candidate.nettle integration_tests/schematic-diff/candidate/project.f integration_tests/schematic-diff/candidate top
 
