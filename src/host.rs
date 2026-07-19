@@ -10,7 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::body::Body;
@@ -51,6 +51,41 @@ const ENOSPC_METADATA_COMMIT_ATTEMPTS: usize = 3;
 const MAX_RETAINED_ERROR_BYTES: usize = 32 * 1024;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone, Copy)]
+struct BuildDeadline {
+    expires_at: Instant,
+    limit: Duration,
+}
+
+impl BuildDeadline {
+    fn new(limit: Duration) -> Result<Self> {
+        let expires_at = Instant::now()
+            .checked_add(limit)
+            .ok_or_else(|| anyhow!("source-build deadline is outside the supported range"))?;
+        Ok(Self { expires_at, limit })
+    }
+
+    fn check(self, stage: &str) -> Result<()> {
+        if Instant::now() >= self.expires_at {
+            bail!(
+                "source build exceeded the {}-second deadline during {stage}",
+                self.limit.as_secs()
+            );
+        }
+        Ok(())
+    }
+
+    fn check_io(self, stage: &str) -> io::Result<()> {
+        self.check(stage)
+            .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))
+    }
+
+    fn remaining(self, stage: &str) -> Result<Duration> {
+        self.check(stage)?;
+        Ok(self.expires_at.saturating_duration_since(Instant::now()))
+    }
+}
 
 /// Runtime settings for the single-process hosted Nettle service.
 #[derive(Debug, Clone)]
@@ -1126,10 +1161,21 @@ fn validate_bundle(path: &Path) -> Result<()> {
 }
 
 fn preflight_hosted_zip(path: &Path, max_entries: usize) -> Result<()> {
+    preflight_hosted_zip_with_deadline(path, max_entries, None)
+}
+
+fn preflight_hosted_zip_with_deadline(
+    path: &Path,
+    max_entries: usize,
+    deadline: Option<BuildDeadline>,
+) -> Result<()> {
     const EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
     const ZIP64_EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x06, 0x06];
     const ZIP64_LOCATOR_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
 
+    if let Some(deadline) = deadline {
+        deadline.check("ZIP metadata validation")?;
+    }
     let mut input = File::open(path)?;
     let file_bytes = input.metadata()?.len();
     if file_bytes < ZIP_EOCD_BYTES as u64 {
@@ -1151,6 +1197,9 @@ fn preflight_hosted_zip(path: &Path, max_entries: usize) -> Result<()> {
             .context("ZIP preflight tail does not fit in memory")?
     ];
     input.read_exact(&mut tail)?;
+    if let Some(deadline) = deadline {
+        deadline.check("ZIP metadata validation")?;
+    }
 
     let search_start = tail.len().saturating_sub(ZIP_EOCD_SEARCH_BYTES);
     let search_end = tail
@@ -1265,14 +1314,22 @@ fn preflight_hosted_zip(path: &Path, max_entries: usize) -> Result<()> {
         usize::try_from(directory_bytes).context("ZIP central directory size overflow")?,
     )
     .context("reading ZIP central directory")?;
+    if let Some(deadline) = deadline {
+        deadline.check("ZIP metadata validation")?;
+    }
     preflight_zip_central_directory(
         &directory,
         usize::try_from(total_entries).context("ZIP entry count overflow")?,
+        deadline,
     )?;
     Ok(())
 }
 
-fn preflight_zip_central_directory(directory: &[u8], entries: usize) -> Result<()> {
+fn preflight_zip_central_directory(
+    directory: &[u8],
+    entries: usize,
+    deadline: Option<BuildDeadline>,
+) -> Result<()> {
     const CENTRAL_HEADER_BYTES: usize = 46;
     const CENTRAL_HEADER_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
 
@@ -1285,6 +1342,9 @@ fn preflight_zip_central_directory(directory: &[u8], entries: usize) -> Result<(
 
     let mut cursor = 0_usize;
     for _ in 0..entries {
+        if let Some(deadline) = deadline {
+            deadline.check("ZIP metadata validation")?;
+        }
         let header = directory
             .get(cursor..cursor.saturating_add(CENTRAL_HEADER_BYTES))
             .ok_or_else(|| anyhow!("ZIP central directory header exceeds its declared size"))?;
@@ -1704,6 +1764,8 @@ async fn run_source_build(
     scratch_path: &Path,
     metadata: &SessionMetadata,
 ) -> Result<()> {
+    let deadline = BuildDeadline::new(state.0.options.build_timeout)?;
+    deadline.check("scratch preparation")?;
     if scratch_path.exists() {
         fs::remove_dir_all(scratch_path)?;
     }
@@ -1717,31 +1779,44 @@ async fn run_source_build(
     let extraction_archive = archive_path.clone();
     let extraction_root = project_root.clone();
     tokio::task::spawn_blocking(move || {
-        extract_source_archive(&extraction_archive, &extraction_root, source_format)
+        extract_source_archive_with_deadline(
+            &extraction_archive,
+            &extraction_root,
+            source_format,
+            Some(deadline),
+        )
     })
     .await
     .context("source extraction worker stopped")??;
+    deadline.check("source extraction")?;
 
     let validation_root = project_root.clone();
     let filelist = project_root.join("project.f");
-    tokio::task::spawn_blocking(move || validate_project_paths(&validation_root, &filelist))
-        .await
-        .context("filelist validation worker stopped")??;
+    tokio::task::spawn_blocking(move || {
+        validate_project_paths_with_deadline(&validation_root, &filelist, Some(deadline))
+    })
+    .await
+    .context("filelist validation worker stopped")??;
+    deadline.check("filelist validation")?;
 
     let output_path = scratch_path.join("design.nettle");
     run_build_subprocess(
         &project_root,
         &output_path,
         scratch_path,
-        state.0.options.build_timeout,
+        deadline.remaining("compiler execution")?,
     )
     .await?;
+    deadline.check("compiler execution")?;
 
-    let validation_path = output_path.clone();
-    tokio::task::spawn_blocking(move || validate_bundle(&validation_path))
-        .await
-        .context("bundle validation worker stopped")??;
-    persist_bundle(state, &output_path, session_path)?;
+    run_validate_subprocess(
+        &output_path,
+        deadline.remaining("generated-bundle validation")?,
+    )
+    .await?;
+    deadline.check("generated-bundle validation")?;
+    persist_bundle(state, &output_path, session_path, deadline)?;
+    deadline.check("bundle persistence")?;
     Ok(())
 }
 
@@ -1758,12 +1833,26 @@ fn bounded_error(error: &anyhow::Error) -> String {
     message
 }
 
-fn persist_bundle(state: &HostState, source: &Path, session_path: &Path) -> Result<()> {
-    storage_retry(state, || persist_bundle_once(source, session_path))
-        .context("persisting generated .nettle bundle")
+fn persist_bundle(
+    state: &HostState,
+    source: &Path,
+    session_path: &Path,
+    deadline: BuildDeadline,
+) -> Result<()> {
+    deadline.check("bundle persistence")?;
+    storage_retry(state, || {
+        deadline.check_io("bundle persistence")?;
+        persist_bundle_once(source, session_path, Some(deadline))
+    })
+    .context("persisting generated .nettle bundle")?;
+    deadline.check("bundle persistence")
 }
 
-fn persist_bundle_once(source: &Path, session_path: &Path) -> io::Result<()> {
+fn persist_bundle_once(
+    source: &Path,
+    session_path: &Path,
+    deadline: Option<BuildDeadline>,
+) -> io::Result<()> {
     let temporary = session_path.join(".design.nettle.tmp");
     let destination = session_path.join("design.nettle");
     let result = (|| {
@@ -1773,11 +1862,24 @@ fn persist_bundle_once(source: &Path, session_path: &Path) -> io::Result<()> {
             .truncate(true)
             .write(true)
             .open(&temporary)?;
-        io::copy(&mut input, &mut output)?;
+        copy_with_deadline(
+            &mut input,
+            &mut output,
+            u64::MAX,
+            deadline,
+            "bundle persistence",
+        )?;
+        if let Some(deadline) = deadline {
+            deadline.check_io("bundle persistence")?;
+        }
         output.sync_all()?;
         drop(output);
         fs::rename(&temporary, destination)?;
-        sync_directory(session_path)
+        sync_directory(session_path)?;
+        if let Some(deadline) = deadline {
+            deadline.check_io("bundle persistence")?;
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(temporary);
@@ -1822,6 +1924,28 @@ async fn run_build_subprocess(
     if !status.success() {
         bail!(
             "source build failed with {status}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+    Ok(())
+}
+
+async fn run_validate_subprocess(bundle_path: &Path, timeout: Duration) -> Result<()> {
+    let executable = env::current_exe().context("locating nettle executable")?;
+    let mut command = Command::new(executable);
+    command
+        .arg("validate")
+        .arg(bundle_path)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let (status, stdout, stderr) = run_bounded_command(command, timeout).await?;
+    if !status.success() {
+        bail!(
+            "generated .nettle validation failed with {status}\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&stdout),
             String::from_utf8_lossy(&stderr)
         );
@@ -1933,6 +2057,36 @@ async fn read_bounded_output(mut reader: impl AsyncRead + Unpin) -> io::Result<V
     Ok(retained)
 }
 
+fn copy_with_deadline(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    limit: u64,
+    deadline: Option<BuildDeadline>,
+    stage: &str,
+) -> io::Result<u64> {
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; STREAM_CHUNK_BYTES];
+    while copied < limit {
+        if let Some(deadline) = deadline {
+            deadline.check_io(stage)?;
+        }
+        let remaining = limit - copied;
+        let requested = buffer
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let count = reader.read(&mut buffer[..requested])?;
+        if count == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..count])?;
+        copied = copied.saturating_add(u64::try_from(count).expect("read size fits u64"));
+    }
+    if let Some(deadline) = deadline {
+        deadline.check_io(stage)?;
+    }
+    Ok(copied)
+}
+
 struct ProcessGroupGuard {
     process_id: Option<u32>,
 }
@@ -1973,21 +2127,43 @@ fn kill_process_group(process_id: u32) {
 #[cfg(not(unix))]
 fn kill_process_group(_process_id: u32) {}
 
+#[cfg(test)]
 fn extract_source_archive(
     archive_path: &Path,
     output_root: &Path,
     format: SourceFormat,
 ) -> Result<()> {
+    extract_source_archive_with_deadline(archive_path, output_root, format, None)
+}
+
+fn extract_source_archive_with_deadline(
+    archive_path: &Path,
+    output_root: &Path,
+    format: SourceFormat,
+    deadline: Option<BuildDeadline>,
+) -> Result<()> {
+    if let Some(deadline) = deadline {
+        deadline.check("source extraction")?;
+    }
     match format {
-        SourceFormat::Zip => extract_zip(archive_path, output_root)?,
+        SourceFormat::Zip => extract_zip(archive_path, output_root, deadline)?,
         SourceFormat::Tar => {
             let input = File::open(archive_path)?;
-            extract_tar(input, output_root)?;
+            extract_tar(input, output_root, None, deadline)?;
         }
         SourceFormat::TarGz => {
+            let compressed_bytes = fs::metadata(archive_path)?.len();
             let input = File::open(archive_path)?;
-            extract_tar(GzDecoder::new(input), output_root)?;
+            extract_tar(
+                GzDecoder::new(input),
+                output_root,
+                Some(compressed_bytes),
+                deadline,
+            )?;
         }
+    }
+    if let Some(deadline) = deadline {
+        deadline.check("source extraction")?;
     }
     if !output_root.join("project.f").is_file() {
         bail!("source archive must contain project.f at its root");
@@ -1995,8 +2171,12 @@ fn extract_source_archive(
     Ok(())
 }
 
-fn extract_zip(archive_path: &Path, output_root: &Path) -> Result<()> {
-    preflight_hosted_zip(archive_path, MAX_ARCHIVE_ENTRIES)?;
+fn extract_zip(
+    archive_path: &Path,
+    output_root: &Path,
+    deadline: Option<BuildDeadline>,
+) -> Result<()> {
+    preflight_hosted_zip_with_deadline(archive_path, MAX_ARCHIVE_ENTRIES, deadline)?;
     let input = File::open(archive_path)?;
     let mut archive = ZipArchive::new(input).context("opening ZIP source archive")?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
@@ -2005,6 +2185,9 @@ fn extract_zip(archive_path: &Path, output_root: &Path) -> Result<()> {
     let mut paths = BTreeSet::new();
     let mut expanded = 0_u64;
     for index in 0..archive.len() {
+        if let Some(deadline) = deadline {
+            deadline.check("ZIP source extraction")?;
+        }
         let mut entry = archive.by_index(index)?;
         let relative = safe_archive_path(Path::new(entry.name()))?;
         if !paths.insert(relative.clone()) {
@@ -2072,9 +2255,12 @@ fn extract_zip(archive_path: &Path, output_root: &Path) -> Result<()> {
             .create_new(true)
             .write(true)
             .open(&destination)?;
-        let copied = io::copy(
-            &mut entry.by_ref().take(entry_size.saturating_add(1)),
+        let copied = copy_with_deadline(
+            &mut entry,
             &mut output,
+            entry_size.saturating_add(1),
+            deadline,
+            "ZIP source extraction",
         )?;
         if copied != entry_size {
             bail!(
@@ -2100,7 +2286,11 @@ struct PaxTarMetadata {
     size: Option<u64>,
 }
 
-fn add_tar_expanded_bytes(expanded: &mut u64, size: u64) -> Result<()> {
+fn add_tar_expanded_bytes(
+    expanded: &mut u64,
+    size: u64,
+    compressed_bytes: Option<u64>,
+) -> Result<()> {
     *expanded = expanded
         .checked_add(size)
         .ok_or_else(|| anyhow!("source archive expanded size overflow"))?;
@@ -2109,6 +2299,11 @@ fn add_tar_expanded_bytes(expanded: &mut u64, size: u64) -> Result<()> {
             "source archive exceeds the {}-byte expanded-size limit",
             MAX_ARCHIVE_EXPANDED_BYTES
         );
+    }
+    if let Some(compressed_bytes) = compressed_bytes
+        && *expanded > compressed_bytes.saturating_mul(MAX_ARCHIVE_COMPRESSION_RATIO)
+    {
+        bail!("source archive exceeds the compression-ratio limit");
     }
     Ok(())
 }
@@ -2119,16 +2314,24 @@ fn read_bounded_tar_extension<R: Read>(
     limit: u64,
     description: &str,
     expanded: &mut u64,
+    compressed_bytes: Option<u64>,
+    deadline: Option<BuildDeadline>,
 ) -> Result<Vec<u8>> {
     if size > limit {
         bail!("{description} exceeds the {limit}-byte limit");
     }
-    add_tar_expanded_bytes(expanded, size)?;
+    add_tar_expanded_bytes(expanded, size, compressed_bytes)?;
+    if let Some(deadline) = deadline {
+        deadline.check("TAR source extraction")?;
+    }
     let size = usize::try_from(size).context("TAR extension size does not fit in memory")?;
     let mut body = vec![0_u8; size];
     entry
         .read_exact(&mut body)
         .with_context(|| format!("reading {description}"))?;
+    if let Some(deadline) = deadline {
+        deadline.check("TAR source extraction")?;
+    }
     Ok(body)
 }
 
@@ -2247,7 +2450,12 @@ fn parse_pax_metadata(body: &[u8], local: bool) -> Result<PaxTarMetadata> {
     Ok(metadata)
 }
 
-fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
+fn extract_tar(
+    reader: impl Read,
+    output_root: &Path,
+    compressed_bytes: Option<u64>,
+    deadline: Option<BuildDeadline>,
+) -> Result<()> {
     let mut archive = tar::Archive::new(reader);
     let mut paths = BTreeSet::new();
     let mut expanded = 0_u64;
@@ -2258,6 +2466,9 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
         .context("opening TAR source archive")?
         .raw(true);
     for entry in raw_entries {
+        if let Some(deadline) = deadline {
+            deadline.check("TAR source extraction")?;
+        }
         let mut entry = entry.context("reading TAR source archive")?;
         entries = entries.saturating_add(1);
         if entries > MAX_ARCHIVE_ENTRIES {
@@ -2275,6 +2486,8 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
                 MAX_ARCHIVE_PATH_BYTES as u64 + 1,
                 "GNU longname record",
                 &mut expanded,
+                compressed_bytes,
+                deadline,
             )?;
             set_tar_metadata_path(&mut pending.path, parse_gnu_longname(&body)?)?;
             pending.has_gnu_longname = true;
@@ -2290,6 +2503,8 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
                 MAX_TAR_EXTENSION_BYTES,
                 "PAX extension record",
                 &mut expanded,
+                compressed_bytes,
+                deadline,
             )?;
             let metadata = parse_pax_metadata(&body, true)?;
             if let Some(path) = metadata.path {
@@ -2308,6 +2523,8 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
                 MAX_TAR_EXTENSION_BYTES,
                 "global PAX extension record",
                 &mut expanded,
+                compressed_bytes,
+                deadline,
             )?;
             parse_pax_metadata(&body, false)?;
             continue;
@@ -2355,7 +2572,7 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
                 MAX_ARCHIVE_ENTRY_BYTES
             );
         }
-        add_tar_expanded_bytes(&mut expanded, size)?;
+        add_tar_expanded_bytes(&mut expanded, size, compressed_bytes)?;
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -2363,9 +2580,12 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
             .create_new(true)
             .write(true)
             .open(&destination)?;
-        let copied = io::copy(
-            &mut entry.by_ref().take(size.saturating_add(1)),
+        let copied = copy_with_deadline(
+            &mut entry,
             &mut output,
+            size.saturating_add(1),
+            deadline,
+            "TAR source extraction",
         )?;
         if copied != size {
             bail!(
@@ -2376,6 +2596,9 @@ fn extract_tar(reader: impl Read, output_root: &Path) -> Result<()> {
     }
     if pending.has_gnu_longname || pending.has_pax {
         bail!("TAR extension record is not followed by a file entry");
+    }
+    if let Some(deadline) = deadline {
+        deadline.check("TAR source extraction")?;
     }
     Ok(())
 }
@@ -2425,18 +2648,36 @@ fn validate_source_filename(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_project_paths(root: &Path, root_filelist: &Path) -> Result<()> {
+    validate_project_paths_with_deadline(root, root_filelist, None)
+}
+
+fn validate_project_paths_with_deadline(
+    root: &Path,
+    root_filelist: &Path,
+    deadline: Option<BuildDeadline>,
+) -> Result<()> {
+    if let Some(deadline) = deadline {
+        deadline.check("filelist validation")?;
+    }
     let canonical_root = fs::canonicalize(root).context("canonicalizing extracted project root")?;
     let canonical_filelist =
         fs::canonicalize(root_filelist).context("locating archive-root project.f")?;
     require_regular_within(&canonical_root, &canonical_filelist, "root filelist")?;
     let project = normalize_filelist_within_root(&canonical_filelist, None, &canonical_root)
         .context("normalizing uploaded project.f")?;
+    if let Some(deadline) = deadline {
+        deadline.check("filelist validation")?;
+    }
     if project.top.as_deref().is_none_or(str::is_empty) {
         bail!("project.f must declare the top module with --top");
     }
 
     for argument in &project.arguments {
+        if let Some(deadline) = deadline {
+            deadline.check("filelist validation")?;
+        }
         let expected_directory = matches!(
             argument.kind,
             NormalizedArgumentKind::IncludeDirectory | NormalizedArgumentKind::LibraryDirectory
@@ -2468,6 +2709,9 @@ fn validate_project_paths(root: &Path, root_filelist: &Path) -> Result<()> {
                 fs::canonicalize(&argument.origin.file).context("locating declaring filelist")?;
             require_regular_within(&canonical_root, &origin, "declaring filelist")?;
         }
+    }
+    if let Some(deadline) = deadline {
+        deadline.check("filelist validation")?;
     }
     Ok(())
 }
@@ -2916,7 +3160,7 @@ mod tests {
         let output = directory.path().join("output");
         fs::create_dir(&output).unwrap();
 
-        let error = extract_zip(&archive_path, &output).unwrap_err();
+        let error = extract_zip(&archive_path, &output, None).unwrap_err();
         assert!(
             error.to_string().contains(&format!(
                 "ZIP declares {declared_entries} entries, outside the supported range"
@@ -3091,6 +3335,58 @@ mod tests {
             "{error:#}"
         );
         assert!(!output.join("rtl").exists());
+    }
+
+    #[test]
+    fn tar_gz_extraction_enforces_the_compression_ratio_limit() {
+        let mut tar_bytes = Vec::new();
+        {
+            let mut archive = tar::Builder::new(&mut tar_bytes);
+            append_tar_file(&mut archive, "project.f", b"--top top\nrtl/top.sv\n");
+            append_tar_file(&mut archive, "rtl/top.sv", &vec![b' '; 2 * 1024 * 1024]);
+            archive.finish().unwrap();
+        }
+        let compressed = gzip(&tar_bytes);
+        assert!(
+            u64::try_from(tar_bytes.len()).unwrap()
+                > u64::try_from(compressed.len())
+                    .unwrap()
+                    .saturating_mul(MAX_ARCHIVE_COMPRESSION_RATIO)
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("compression-bomb.tar.gz");
+        fs::write(&archive_path, compressed).unwrap();
+        let output = directory.path().join("output");
+        fs::create_dir(&output).unwrap();
+
+        let error =
+            extract_source_archive(&archive_path, &output, SourceFormat::TarGz).unwrap_err();
+        assert!(
+            error.to_string().contains("compression-ratio limit"),
+            "{error:#}"
+        );
+        assert!(!output.join("rtl/top.sv").exists());
+    }
+
+    #[test]
+    fn expired_build_deadline_stops_archive_extraction() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("sources.zip");
+        fs::write(&archive_path, source_zip()).unwrap();
+        let output = directory.path().join("output");
+        fs::create_dir(&output).unwrap();
+        let deadline = BuildDeadline::new(Duration::ZERO).unwrap();
+
+        let error = extract_source_archive_with_deadline(
+            &archive_path,
+            &output,
+            SourceFormat::Zip,
+            Some(deadline),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline"), "{error:#}");
+        assert!(fs::read_dir(output).unwrap().next().is_none());
     }
 
     #[test]
