@@ -46,8 +46,8 @@ message SourceElaborationRange {
   uint32 end_line = 3;
   // Exclusive ending column.
   uint32 end_column = 4;
-  // True when the containing format 1.2 GraphSlice includes this range. In a
-  // legacy format 1.1 SourceFile, this has source-global hierarchy semantics.
+  // True when the containing GraphSlice includes this range. In a deprecated
+  // pre-release SourceFile record, this has source-global hierarchy semantics.
   bool active = 5;
   // Project-root-relative source path containing the range.
   string file = 6;
@@ -291,8 +291,8 @@ message SourceFile {
   string sha256 = 4;
   // Exact source size in bytes.
   uint64 size = 5;
-  // Legacy format 1.1 source-global generate activity. Format 1.2 writers leave
-  // this empty and store activity on each GraphSlice instead.
+  // Deprecated pre-release source-global generate activity. Writers leave this
+  // empty and store activity on each GraphSlice instead.
   repeated SourceElaborationRange elaboration_ranges = 6;
 }
 

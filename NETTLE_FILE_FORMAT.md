@@ -2,7 +2,7 @@
 
 # `.nettle` Bundle Format
 
-Status: normative for format 1.2
+Status: normative for format 1.1
 
 ## Purpose
 
@@ -26,7 +26,7 @@ must not extract entries to a filesystem. Entry names are UTF-8 relative paths
 using `/`; absolute paths, backslashes, empty components, `.` components, and
 `..` components are invalid.
 
-Format 1.2 has this layout:
+Format 1.1 has this layout:
 
 ```text
 manifest.json
@@ -50,7 +50,7 @@ raw DEFLATE. Other compression methods are not part of format 1.
 
 The manifest is UTF-8 JSON with these required camel-case fields:
 
-- `formatVersion`: `{ "major": 1, "minor": 2 }`;
+- `formatVersion`: `{ "major": 1, "minor": 1 }`;
 - `producer`: builder name and version;
 - `snapshotId` and `top`: design identity;
 - `designIndex`, `sourceIndex`, and `diagnostics`: entry names;
@@ -78,10 +78,8 @@ is the canonical schema and uses package `nettle.bundle.v1`.
   otherwise multiply assigned signals can retain multiple ranges in lexical AST
   order.
 - `SourceIndex` maps logical source IDs and project-relative display paths to
-  content-addressed source entries. Identical contents are stored once. Format
-  1.1 source records can carry source-global generate ranges; readers preserve
-  these for compatibility.
-- In format 1.2, each `GraphSlice` carries active and inactive generate ranges
+  content-addressed source entries. Identical contents are stored once.
+- In format 1.1, each `GraphSlice` carries active and inactive generate ranges
   scoped to that elaborated module graph. Ranges include their source path so
   transparent projections can merge child ranges and viewers can cross-probe
   construct headers or de-emphasize branches relative to the visible schematic.

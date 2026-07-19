@@ -18,7 +18,7 @@ export const mergeElaborationRanges = (
   right: readonly SourceElaborationRange[] | undefined,
   maximum: number,
 ): SourceElaborationRange[] | undefined => {
-  // Preserve the absence of slice-scoped metadata so format 1.1 projections
+  // Preserve the absence of slice-scoped metadata so pre-release projections
   // continue to use their source-index ranges.
   if (left === undefined && right === undefined) return undefined;
   const merged = new Map<string, SourceElaborationRange>();

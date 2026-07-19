@@ -44,7 +44,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 /// Bundle format major version understood by this implementation.
 pub const FORMAT_MAJOR: u32 = 1;
 /// Bundle format minor version written by this implementation.
-pub const FORMAT_MINOR: u32 = 2;
+pub const FORMAT_MINOR: u32 = 1;
 /// Canonical ZIP path of the JSON manifest.
 pub const MANIFEST_ENTRY: &str = "manifest.json";
 /// Canonical ZIP path of the Protobuf design index.
