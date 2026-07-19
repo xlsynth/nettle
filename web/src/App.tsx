@@ -29,6 +29,7 @@ import {
 } from "./bundle/provider";
 import type { MatchingPolicy } from "./comparison/types";
 import { AppHeader } from "./components/AppHeader";
+import { BuildInfo } from "./components/BuildInfo";
 import { ComparisonWorkspaceView } from "./components/ComparisonWorkspaceView";
 import { FileTree } from "./components/FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
@@ -454,6 +455,7 @@ export default function App() {
           void openComparison(reference, candidate, matching)
         }
       />
+      <BuildInfo />
     </div>
   );
 }

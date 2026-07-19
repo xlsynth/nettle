@@ -22,7 +22,7 @@ use serde_json::json;
 #[derive(Debug, Parser)]
 #[command(
     name = "nettle",
-    version,
+    version = nettle::build_info::VERSION,
     about = "Build and view portable Nettle RTL topology bundles"
 )]
 struct Cli {
@@ -426,6 +426,22 @@ mod tests {
     #[test]
     fn cli_schema_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn version_reports_build_metadata() {
+        let error = Cli::try_parse_from(["nettle", "--version"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+        let output = error.to_string();
+        assert!(output.contains(nettle::build_info::DATE_UTC));
+        assert!(output.contains(nettle::build_info::GIT_SHA));
+        assert!(output.contains(&format!(
+            "{}{}",
+            nettle::build_info::GIT_SHA,
+            nettle::build_info::SUFFIX
+        )));
+        assert!(output.contains("build date (UTC):"));
+        assert!(output.contains("git SHA:"));
     }
 
     #[test]

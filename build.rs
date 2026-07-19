@@ -6,8 +6,11 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -142,6 +145,8 @@ struct BrowserDisplayLimits {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    emit_build_info()?;
+
     let schema = "proto/nettle.proto";
     println!("cargo:rerun-if-changed={schema}");
     let mut config = prost_build::Config::new();
@@ -156,6 +161,164 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = PathBuf::from(std::env::var("OUT_DIR")?).join("resource_limits.rs");
     fs::write(output, generated)?;
     Ok(())
+}
+
+fn emit_build_info() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-env-changed=NETTLE_BUILD_DATE_UTC");
+    println!("cargo:rerun-if-env-changed=NETTLE_BUILD_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=NETTLE_BUILD_STATE");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    emit_git_rerun_inputs();
+
+    let build_date = match std::env::var("NETTLE_BUILD_DATE_UTC") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            let seconds = match std::env::var("SOURCE_DATE_EPOCH") {
+                Ok(value) => value
+                    .parse::<u64>()
+                    .map_err(|error| format!("invalid SOURCE_DATE_EPOCH {value:?}: {error}"))?,
+                Err(_) => SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            };
+            format_unix_timestamp(seconds)?
+        }
+    };
+    let git_sha = match std::env::var("NETTLE_BUILD_GIT_SHA") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            let output = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .map_err(|error| format!("running git rev-parse HEAD: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git rev-parse HEAD failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+                .into());
+            }
+            String::from_utf8(output.stdout)?.trim().to_owned()
+        }
+    };
+    if !matches!(git_sha.len(), 40 | 64)
+        || !git_sha
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(
+            format!("build Git SHA is not a full hexadecimal object ID: {git_sha:?}").into(),
+        );
+    }
+    let build_state = match std::env::var("NETTLE_BUILD_STATE") {
+        Ok(value) => match value.as_str() {
+            "clean" | "dev" | "dirty" => value,
+            _ => {
+                return Err(format!(
+                    "NETTLE_BUILD_STATE must be clean, dev, or dirty; got {value:?}"
+                )
+                .into());
+            }
+        },
+        Err(_) => detect_build_state()?,
+    };
+    let build_suffix = match build_state.as_str() {
+        "dirty" => " (dirty)",
+        "dev" => " (dev branch)",
+        "clean" => "",
+        _ => unreachable!("build state was validated above"),
+    };
+
+    println!("cargo:rustc-env=NETTLE_BUILD_DATE_UTC={build_date}");
+    println!("cargo:rustc-env=NETTLE_BUILD_GIT_SHA={git_sha}");
+    println!("cargo:rustc-env=NETTLE_BUILD_SUFFIX={build_suffix}");
+    Ok(())
+}
+
+fn emit_git_rerun_inputs() {
+    for path in ["HEAD", "index", "packed-refs"] {
+        emit_git_path_rerun_input(path);
+    }
+
+    if let Some(reference) = git_stdout(&["symbolic-ref", "--quiet", "HEAD"]) {
+        emit_git_path_rerun_input(reference.trim());
+    }
+
+    if let Ok(output) = Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .output()
+        && output.status.success()
+    {
+        for path in output.stdout.split(|byte| *byte == 0) {
+            if !path.is_empty() {
+                println!("cargo:rerun-if-changed={}", String::from_utf8_lossy(path));
+            }
+        }
+    }
+}
+
+fn emit_git_path_rerun_input(path: &str) {
+    if let Some(path) = git_stdout(&["rev-parse", "--git-path", path]) {
+        println!("cargo:rerun-if-changed={}", path.trim());
+    }
+}
+
+fn git_stdout(arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(arguments).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn detect_build_state() -> Result<String, Box<dyn std::error::Error>> {
+    let status = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .map_err(|error| format!("running git status: {error}"))?;
+    if !status.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        )
+        .into());
+    }
+    if !status.stdout.is_empty() {
+        return Ok("dirty".to_owned());
+    }
+
+    let containing_refs = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--contains",
+            "HEAD",
+            "--format=%(refname)",
+            "refs/heads/main",
+            "refs/remotes",
+        ])
+        .output()
+        .map_err(|error| format!("finding main refs containing HEAD: {error}"))?;
+    if !containing_refs.status.success() {
+        return Err(format!(
+            "finding main refs containing HEAD failed: {}",
+            String::from_utf8_lossy(&containing_refs.stderr).trim()
+        )
+        .into());
+    }
+    let is_on_main = String::from_utf8(containing_refs.stdout)?
+        .lines()
+        .any(|reference| reference == "refs/heads/main" || reference.ends_with("/main"));
+    Ok(if is_on_main { "clean" } else { "dev" }.to_owned())
+}
+
+fn format_unix_timestamp(seconds: u64) -> Result<String, Box<dyn std::error::Error>> {
+    let timestamp = OffsetDateTime::from_unix_timestamp(i64::try_from(seconds)?)?;
+    let format = time::format_description::parse("[year]-[month]-[day]T[hour]:[minute]:[second]Z")?;
+    Ok(timestamp.format(&format)?)
 }
 
 fn validate_limits(limits: &ResourceLimits) -> Result<(), Box<dyn std::error::Error>> {
