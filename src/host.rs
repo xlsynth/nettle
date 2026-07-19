@@ -2964,6 +2964,7 @@ mod tests {
             edges: vec![],
             groups: vec![],
             files: None,
+            elaboration_ranges: vec![],
         };
         let snapshot = DesignSnapshot {
             snapshot_id: snapshot_id.to_owned(),
