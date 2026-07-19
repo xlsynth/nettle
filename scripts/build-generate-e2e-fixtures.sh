@@ -11,13 +11,13 @@ fixture="$root/integration_tests/generate"
 build_fixture() {
   local output="$1"
   local use_xor="$2"
-  cargo run --quiet --release --offline --manifest-path "$root/Cargo.toml" -- build \
+  cargo run --quiet --release --locked --manifest-path "$root/Cargo.toml" -- build \
     --filelist "$fixture/project.f" \
     --project-root "$fixture" \
     --top top \
     --param "USE_XOR=$use_xor" \
     --output "$output"
-  cargo run --quiet --release --offline --manifest-path "$root/Cargo.toml" -- validate "$output"
+  cargo run --quiet --release --locked --manifest-path "$root/Cargo.toml" -- validate "$output"
 }
 
 build_fixture "$xor_output" 1
