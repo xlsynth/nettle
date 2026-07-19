@@ -10,6 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -214,11 +215,33 @@ struct HostStateInner {
     sessions_root: PathBuf,
     staging_root: PathBuf,
     queue: Mutex<QueueState>,
+    // Counts queued jobs plus source uploads that reserved capacity before streaming.
+    // The active build is excluded once the worker pops it from `queue.jobs`.
+    source_queue_slots: AtomicUsize,
     notify: Notify,
 }
 
 #[derive(Clone, Debug)]
 struct HostState(Arc<HostStateInner>);
+
+struct SourceQueueReservation {
+    state: HostState,
+    committed: bool,
+}
+
+impl SourceQueueReservation {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for SourceQueueReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            release_source_queue_slot(&self.state);
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -396,6 +419,7 @@ fn initialize_state(mut options: HostOptions) -> Result<HostState> {
         }
     }
     queued.sort();
+    let queued_builds = queued.len();
     let state = HostState(Arc::new(HostStateInner {
         options,
         sessions_root,
@@ -404,6 +428,7 @@ fn initialize_state(mut options: HostOptions) -> Result<HostState> {
             jobs: queued.into_iter().map(|(_, token)| token).collect(),
             next_order: max_order.saturating_add(1),
         }),
+        source_queue_slots: AtomicUsize::new(queued_builds),
         notify: Notify::new(),
     }));
     for (session_path, metadata) in deferred_terminal_metadata {
@@ -740,6 +765,7 @@ async fn create_session(
     .map_err(|error| ApiError::from_storage(&error))?;
     let upload_path = staging.path().join("upload");
     let mut kind = None;
+    let mut source_reservation = None;
     let mut original_name = None;
     let mut upload_bytes = None;
 
@@ -756,19 +782,28 @@ async fn create_session(
                     ));
                 }
                 let bytes = read_small_field(&mut field, 16).await?;
-                kind = match bytes.as_slice() {
-                    b"bundle" => Some(SessionKind::Bundle),
-                    b"sources" => Some(SessionKind::Sources),
+                let parsed_kind = match bytes.as_slice() {
+                    b"bundle" => SessionKind::Bundle,
+                    b"sources" => SessionKind::Sources,
                     _ => {
                         return Err(ApiError::bad_request(
                             "Upload kind must be bundle or sources.",
                         ));
                     }
                 };
+                if parsed_kind == SessionKind::Sources {
+                    source_reservation = Some(try_reserve_source_queue_slot(&state)?);
+                }
+                kind = Some(parsed_kind);
             }
             Some("file") => {
                 if upload_bytes.is_some() {
                     return Err(ApiError::bad_request("Upload contains duplicate files."));
+                }
+                if kind.is_none() {
+                    return Err(ApiError::bad_request(
+                        "Upload kind must precede the file field.",
+                    ));
                 }
                 let filename = field
                     .file_name()
@@ -846,12 +881,6 @@ async fn create_session(
 
     let token = generate_token().map_err(|_| ApiError::internal())?;
     let mut queue = state.0.queue.lock().await;
-    if kind == SessionKind::Sources && queue.jobs.len() >= state.0.options.max_queued_builds {
-        return Err(ApiError {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: "The source build queue is full. Try again later.".to_owned(),
-        });
-    }
     let queue_order = queue.next_order;
     queue.next_order = queue.next_order.saturating_add(1);
     let admitted_at_ms = now_ms();
@@ -899,6 +928,10 @@ async fn create_session(
     }
     if kind == SessionKind::Sources {
         queue.jobs.push_back(token.clone());
+        source_reservation
+            .take()
+            .expect("source uploads reserve queue capacity before streaming")
+            .commit();
         state.0.notify.notify_one();
     }
     drop(queue);
@@ -935,6 +968,40 @@ async fn read_small_field(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+fn try_reserve_source_queue_slot(
+    state: &HostState,
+) -> std::result::Result<SourceQueueReservation, ApiError> {
+    let max_queued_builds = state.0.options.max_queued_builds;
+    state
+        .0
+        .source_queue_slots
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |slots| {
+            (slots < max_queued_builds).then_some(slots + 1)
+        })
+        .map_err(|_| ApiError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "The source build queue is full. Try again later.".to_owned(),
+        })?;
+    Ok(SourceQueueReservation {
+        state: state.clone(),
+        committed: false,
+    })
+}
+
+fn release_source_queue_slot(state: &HostState) {
+    state
+        .0
+        .source_queue_slots
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |slots| {
+            slots.checked_sub(1)
+        })
+        .expect("source queue slot counter underflowed");
+}
+
+fn retain_requeued_source_slot(state: &HostState) {
+    state.0.source_queue_slots.fetch_add(1, Ordering::AcqRel);
 }
 
 async fn get_status(
@@ -1494,7 +1561,11 @@ async fn build_worker(state: HostState) {
         let notified = state.0.notify.notified();
         let token = {
             let mut queue = state.0.queue.lock().await;
-            queue.jobs.pop_front()
+            let token = queue.jobs.pop_front();
+            if token.is_some() {
+                release_source_queue_slot(&state);
+            }
+            token
         };
         let Some(token) = token else {
             notified.await;
@@ -1519,6 +1590,7 @@ async fn requeue_incomplete_build(state: &HostState, token: &str) -> bool {
             }
             let mut queue = state.0.queue.lock().await;
             if !queue.jobs.iter().any(|queued| queued == token) {
+                retain_requeued_source_slot(state);
                 queue.jobs.push_front(token.to_owned());
                 state.0.notify.notify_one();
             }
@@ -1531,6 +1603,7 @@ async fn requeue_incomplete_build(state: &HostState, token: &str) -> bool {
     ) {
         let mut queue = state.0.queue.lock().await;
         if !queue.jobs.iter().any(|queued| queued == token) {
+            retain_requeued_source_slot(state);
             queue.jobs.push_front(token.to_owned());
             state.0.notify.notify_one();
         }
@@ -2924,6 +2997,24 @@ mod tests {
         (format!("multipart/form-data; boundary={boundary}"), body)
     }
 
+    fn multipart_file_first(kind: &str, filename: &str, contents: &[u8]) -> (String, Vec<u8>) {
+        let boundary = "nettle-test-boundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(contents);
+        body.extend_from_slice(
+            format!(
+                "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"kind\"\r\n\r\n{kind}\r\n\
+                 --{boundary}--\r\n"
+            )
+            .as_bytes(),
+        );
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
     fn source_zip() -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
         {
@@ -3241,6 +3332,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 1);
+        assert_eq!(fs::read_dir(&host.state.0.staging_root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn in_progress_source_uploads_reserve_queue_capacity() {
+        let host = test_host(1);
+        let first = try_reserve_source_queue_slot(&host.state).unwrap();
+        let error = match try_reserve_source_queue_slot(&host.state) {
+            Ok(_) => panic!("a concurrent source upload exceeded the queue limit"),
+            Err(error) => error,
+        };
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+
+        drop(first);
+        assert!(try_reserve_source_queue_slot(&host.state).is_ok());
+    }
+
+    #[tokio::test]
+    async fn failed_source_upload_releases_its_queue_reservation() {
+        let host = test_host(1);
+        let router = host_router(host.state.clone()).unwrap();
+        let (content_type, body) = multipart("sources", "project.txt", b"not an archive");
+        let rejected = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 0);
+
+        let (content_type, body) = multipart("sources", "project.zip", &source_zip());
+        let accepted = router
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn upload_kind_must_precede_file_streaming() {
+        let host = test_host(1);
+        let (content_type, body) = multipart_file_first("sources", "project.zip", &source_zip());
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response_body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+        assert_eq!(error["error"], "Upload kind must precede the file field.");
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 0);
+        assert_eq!(fs::read_dir(&host.state.0.staging_root).unwrap().count(), 0);
     }
 
     #[test]
@@ -4132,6 +4295,7 @@ mod tests {
         assert!(requeue_incomplete_build(&host.state, &token).await);
         let queue = host.state.0.queue.lock().await;
         assert_eq!(queue.jobs.front(), Some(&token));
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 1);
     }
 
     #[test]
