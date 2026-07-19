@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync } from "node:fs";
+
 import { expect, type Page, test } from "@playwright/test";
 
 const fixture = "/tmp/nettle-browser-fixture.nettle";
@@ -12,6 +14,10 @@ const realComparisonReferenceFixture = process.env.NETTLE_COMPARISON_REFERENCE_F
 const realComparisonCandidateFixture = process.env.NETTLE_COMPARISON_CANDIDATE_FIXTURE;
 const structuralReferenceFixture = process.env.NETTLE_STRUCTURAL_REFERENCE_FIXTURE;
 const structuralCandidateFixture = process.env.NETTLE_STRUCTURAL_CANDIDATE_FIXTURE;
+const generateSourceLines = readFileSync(
+  new URL("../../integration_tests/generate/rtl/top.sv", import.meta.url),
+  "utf8",
+).split(/\r?\n/);
 
 const captureRuntimeErrors = (page: Page) => {
   const errors: string[] = [];
@@ -20,6 +26,22 @@ const captureRuntimeErrors = (page: Page) => {
   });
   page.on("pageerror", (error) => errors.push(error.message));
   return errors;
+};
+
+const sourceLine = (page: Page, contents: string) =>
+  page.locator(".monaco-editor .view-line").filter({ hasText: contents });
+
+const revealSourceLine = async (page: Page, contents: string) => {
+  const lineNumber = generateSourceLines.findIndex((line) => line.includes(contents)) + 1;
+  expect(lineNumber).toBeGreaterThan(0);
+  const editor = page.getByRole("textbox", { name: "Editor content" });
+  const line = sourceLine(page, contents);
+  await editor.press("Control+Home");
+  for (let currentLine = 1; currentLine < lineNumber; currentLine += 1) {
+    await editor.press("ArrowDown");
+  }
+  await expect(line).toHaveCount(1);
+  return line;
 };
 
 const inspectSchematicGeometry = async (page: Page) =>
@@ -216,13 +238,9 @@ for (const generateCase of [
       .setInputFiles(generateCase.fixture ?? "");
     await expect(page.getByText("Bundle ready")).toBeVisible();
     await expect(page.locator(".source-status")).toContainText("rtl/top.sv");
-    await page.locator(".monaco-editor textarea").press("Control+Home");
 
-    const sourceLine = (contents: string) =>
-      page.locator(".monaco-editor .view-line").filter({ hasText: contents });
     for (const activeStatement of [generateCase.activeStatement]) {
-      const activeLine = sourceLine(activeStatement);
-      await expect(activeLine).toHaveCount(1);
+      const activeLine = await revealSourceLine(page, activeStatement);
       await expect(activeLine.locator(".source-inactive-generate-inline")).toHaveCount(0);
     }
     for (const inactiveStatement of [
@@ -230,33 +248,26 @@ for (const generateCase of [
       "assign optional_value = a[0];",
       "assign empty_value = a[j];",
     ]) {
-      const inactiveLine = sourceLine(inactiveStatement);
-      await expect(inactiveLine).toHaveCount(1);
+      const inactiveLine = await revealSourceLine(page, inactiveStatement);
       await expect(inactiveLine.locator(".source-inactive-generate-inline")).not.toHaveCount(0);
     }
 
-    // Monaco virtualizes lines outside the viewport, so reveal the case-generate
-    // statements before querying their rendered decorations.
-    await page.locator(".monaco-editor textarea").press("Control+End");
-    const activeCaseLine = sourceLine("assign case_one_value = a[0];");
-    await expect(activeCaseLine).toHaveCount(1);
+    const activeCaseLine = await revealSourceLine(page, "assign case_one_value = a[0];");
     await expect(activeCaseLine.locator(".source-inactive-generate-inline")).toHaveCount(0);
     for (const inactiveStatement of [
       "assign case_zero_value = a[0];",
       "assign case_default_value = b[0];",
     ]) {
-      const inactiveCaseLine = sourceLine(inactiveStatement);
-      await expect(inactiveCaseLine).toHaveCount(1);
+      const inactiveCaseLine = await revealSourceLine(page, inactiveStatement);
       await expect(inactiveCaseLine.locator(".source-inactive-generate-inline")).not.toHaveCount(0);
     }
 
-    await page.locator(".monaco-editor textarea").press("Control+Home");
-    const inactiveLine = sourceLine(generateCase.inactiveStatement);
+    const inactiveLine = await revealSourceLine(page, generateCase.inactiveStatement);
     const inactiveDecoration = inactiveLine.locator(".source-inactive-generate-inline");
     await expect(inactiveDecoration.first()).toHaveCSS("opacity", "0.42");
     await expect(inactiveDecoration.first()).toHaveCSS("filter", "grayscale(1)");
 
-    const generateHeader = sourceLine("if (USE_XOR) begin : g_xor");
+    const generateHeader = await revealSourceLine(page, "if (USE_XOR) begin : g_xor");
     await generateHeader.getByText("if", { exact: true }).click();
     const selected = page.locator(".node-interaction.selected");
     await expect(selected).toHaveCount(1);
@@ -286,25 +297,21 @@ test("scopes generate activity to opposite parameterized child instances", async
   await page.getByLabel("Choose a .nettle bundle").setInputFiles(generateXorFixture ?? "");
   await expect(page.getByText("Bundle ready")).toBeVisible();
 
-  const sourceLine = (contents: string) =>
-    page.locator(".monaco-editor .view-line").filter({ hasText: contents });
   const expectActivity = async (activeStatement: string, inactiveStatement: string) => {
-    await expect(sourceLine(activeStatement).locator(".source-inactive-generate-inline")).toHaveCount(
-      0,
-    );
+    const activeLine = await revealSourceLine(page, activeStatement);
+    await expect(activeLine.locator(".source-inactive-generate-inline")).toHaveCount(0);
+    const inactiveLine = await revealSourceLine(page, inactiveStatement);
     await expect(
-      sourceLine(inactiveStatement).locator(".source-inactive-generate-inline"),
+      inactiveLine.locator(".source-inactive-generate-inline"),
     ).not.toHaveCount(0);
   };
 
   await page.getByRole("link", { name: "Select module u_child_xor", exact: true }).dblclick();
   await expect(page.getByRole("button", { name: "Up one hierarchy level" })).toBeEnabled();
-  await page.getByRole("textbox", { name: "Editor content" }).press("Control+End");
   await expectActivity("assign y = a ^ b;", "assign y = a | b;");
 
   await page.getByRole("button", { name: "Up one hierarchy level" }).click();
   await page.getByRole("link", { name: "Select module u_child_or", exact: true }).dblclick();
-  await page.getByRole("textbox", { name: "Editor content" }).press("Control+End");
   await expectActivity("assign y = a | b;", "assign y = a ^ b;");
   expect(runtimeErrors).toEqual([]);
 });
