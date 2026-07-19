@@ -148,6 +148,64 @@ describe("SourcePane", () => {
     view.unmount();
   });
 
+  it("dims only inactive generate ranges", () => {
+    const clear = vi.fn();
+    const createDecorationsCollection = vi.fn(() => ({ clear }));
+    const editor = {
+      createDecorationsCollection,
+      revealLineInCenterIfOutsideViewport: vi.fn(),
+      onDidChangeCursorSelection: vi.fn(() => ({ dispose: vi.fn() })),
+    };
+    const view = render(
+      <SourcePane
+        path="rtl/top.sv"
+        source="module top; endmodule"
+        onShowHierarchy={vi.fn()}
+        onSelectRange={vi.fn()}
+        elaborationRanges={[
+          {
+            file: "rtl/top.sv",
+            startLine: 2,
+            startColumn: 3,
+            endLine: 4,
+            endColumn: 6,
+            active: true,
+          },
+          {
+            file: "rtl/top.sv",
+            startLine: 4,
+            startColumn: 7,
+            endLine: 6,
+            endColumn: 6,
+            active: false,
+          },
+        ]}
+      />,
+    );
+
+    act(() => editorHarness.onMount?.(editor, {}));
+    expect(createDecorationsCollection).toHaveBeenCalledOnce();
+    expect(createDecorationsCollection).toHaveBeenCalledWith([
+      {
+        range: {
+          startLineNumber: 4,
+          startColumn: 7,
+          endLineNumber: 6,
+          endColumn: 6,
+        },
+        options: {
+          inlineClassName: "source-inactive-generate-inline",
+          hoverMessage: {
+            value: "Inactive generate branch for the visible schematic.",
+          },
+        },
+      },
+    ]);
+
+    view.unmount();
+    expect(clear).toHaveBeenCalled();
+  });
+
   it("ignores cursor selections caused by API, model, and view-state synchronization", () => {
     let selectionListener: ((event: SelectionEvent) => void) | undefined;
     const callback = vi.fn();

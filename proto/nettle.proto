@@ -36,6 +36,23 @@ message SourceOrigin {
   optional uint32 end_column = 5;
 }
 
+// One generate construct range and whether elaboration selected it.
+message SourceElaborationRange {
+  // Inclusive starting line.
+  uint32 start_line = 1;
+  // Inclusive starting column.
+  uint32 start_column = 2;
+  // Inclusive ending line.
+  uint32 end_line = 3;
+  // Exclusive ending column.
+  uint32 end_column = 4;
+  // True when the containing GraphSlice includes this range. In a deprecated
+  // pre-release SourceFile record, this has source-global hierarchy semantics.
+  bool active = 5;
+  // Project-root-relative source path containing the range.
+  string file = 6;
+}
+
 // Direction of a node port or design boundary.
 enum PortDirection {
   // Direction was unavailable or unrecognized.
@@ -188,8 +205,10 @@ message GraphSlice {
   repeated GraphEdge edges = 4;
   // Transparent-instance boundaries retained by a projection.
   repeated GraphGroup groups = 5;
-  // Source files referenced by nodes and edges.
+  // Source files referenced by graph provenance and elaboration ranges.
   repeated SourceFileRef files = 6;
+  // Generate activity scoped to this elaborated module graph.
+  repeated SourceElaborationRange elaboration_ranges = 7;
 }
 
 // Lightweight index record for one independently stored module graph.
@@ -272,6 +291,9 @@ message SourceFile {
   string sha256 = 4;
   // Exact source size in bytes.
   uint64 size = 5;
+  // Deprecated pre-release source-global generate activity. Writers leave this
+  // empty and store activity on each GraphSlice instead.
+  repeated SourceElaborationRange elaboration_ranges = 6;
 }
 
 // Eager index of all referenced source payloads.

@@ -91,6 +91,16 @@ const graphResponse: ApiGraphSlice = {
     },
   ],
   files: [{ id: "file-top", path: "rtl/top.sv" }],
+  elaborationRanges: [
+    {
+      file: "rtl\\top.sv",
+      startLine: 10,
+      startColumn: 1,
+      endLine: 12,
+      endColumn: 4,
+      active: false,
+    },
+  ],
 };
 
 const treeResponse: TreeResponse = {
@@ -185,6 +195,16 @@ describe("server DTO normalization", () => {
       }),
     ]);
     expect(graph.files).toEqual([{ id: "file-top", path: "rtl/top.sv" }]);
+    expect(graph.elaborationRanges).toEqual([
+      {
+        file: "rtl/top.sv",
+        startLine: 10,
+        startColumn: 1,
+        endLine: 12,
+        endColumn: 4,
+        active: false,
+      },
+    ]);
   });
 
   it("normalizes project metadata and prefers graph source IDs", () => {

@@ -9,13 +9,26 @@ import type {
   ApiSourceFileRef,
 } from "../api/contracts";
 import { RESOURCE_LIMITS } from "../generated/resource-limits";
+import { mergeElaborationRanges } from "../source/elaboration-ranges";
 
 const prefixed = (instanceId: string, childId: string) => `${instanceId}/${childId}`;
 
 export const MAX_PROJECTION_OBJECTS = RESOURCE_LIMITS.bundle.protobuf.graphObjects;
+const MAX_PROJECTION_ORIGINS = RESOURCE_LIMITS.bundle.protobuf.origins;
 
 const projectionObjectCount = (slice: ApiGraphSlice) =>
   slice.nodes.length + slice.edges.length + (slice.groups?.length ?? 0);
+
+const sourceMetadataCount = (
+  nodes: readonly ApiGraphNode[],
+  edges: readonly ApiGraphEdge[],
+  groups: readonly ApiGraphGroup[],
+  elaborationRangeCount: number,
+) =>
+  nodes.reduce((count, node) => count + (node.origins?.length ?? 0), 0) +
+  edges.reduce((count, edge) => count + (edge.origins?.length ?? 0), 0) +
+  groups.reduce((count, group) => count + (group.origins?.length ?? 0), 0) +
+  elaborationRangeCount;
 
 const instancePort = (
   instance: ApiGraphNode,
@@ -67,6 +80,7 @@ export const expandInstance = (
   instance: ApiGraphNode,
   child: ApiGraphSlice,
   maximumObjects: number = MAX_PROJECTION_OBJECTS,
+  maximumOrigins: number = MAX_PROJECTION_ORIGINS,
 ) => {
   if (!instance.definitionName) throw new Error(`Instance ${instance.label} has no definition`);
   const expandedObjectCount =
@@ -128,10 +142,25 @@ export const expandInstance = (
     origins: instance.origins,
     childNodeIds: childNodes.map((node) => node.id).sort(),
   };
-  projection.nodes = [...projection.nodes.filter((node) => node.id !== instance.id), ...childNodes];
-  projection.edges = [...rewiredEdges, ...childEdges];
-  projection.groups = [...(projection.groups ?? []), ...childGroups, group];
+  const nodes = [...projection.nodes.filter((node) => node.id !== instance.id), ...childNodes];
+  const edges = [...rewiredEdges, ...childEdges];
+  const groups = [...(projection.groups ?? []), ...childGroups, group];
+  const elaborationRanges = mergeElaborationRanges(
+    projection.elaborationRanges,
+    child.elaborationRanges,
+    maximumOrigins,
+  );
+  const metadataCount = sourceMetadataCount(nodes, edges, groups, elaborationRanges?.length ?? 0);
+  if (metadataCount > maximumOrigins) {
+    throw new Error(
+      `Projected graph would have ${metadataCount} origins and elaboration ranges, exceeding budget ${maximumOrigins}`,
+    );
+  }
+  projection.nodes = nodes;
+  projection.edges = edges;
+  projection.groups = groups;
   projection.files = mergeFiles(projection.files, child.files);
+  projection.elaborationRanges = elaborationRanges;
 };
 
 const sortProjection = (slice: ApiGraphSlice) => {
@@ -145,6 +174,7 @@ export const flattenSlice = async (
   depth: number,
   loadDefinition: (name: string) => Promise<ApiGraphSlice | undefined>,
   maximumObjects: number = MAX_PROJECTION_OBJECTS,
+  maximumOrigins: number = MAX_PROJECTION_ORIGINS,
 ): Promise<ApiGraphSlice> => {
   if (depth <= 0) return cloneSlice(base);
   const projection = cloneSlice(base);
@@ -153,8 +183,14 @@ export const flattenSlice = async (
     if (!instance.definitionName) continue;
     const child = await loadDefinition(instance.definitionName);
     if (!child) continue;
-    const flattenedChild = await flattenSlice(child, depth - 1, loadDefinition, maximumObjects);
-    expandInstance(projection, instance, flattenedChild, maximumObjects);
+    const flattenedChild = await flattenSlice(
+      child,
+      depth - 1,
+      loadDefinition,
+      maximumObjects,
+      maximumOrigins,
+    );
+    expandInstance(projection, instance, flattenedChild, maximumObjects, maximumOrigins);
   }
   sortProjection(projection);
   return projection;
@@ -165,6 +201,7 @@ export const flattenSelected = async (
   instanceIds: string[],
   loadDefinition: (name: string) => Promise<ApiGraphSlice | undefined>,
   maximumObjects: number = MAX_PROJECTION_OBJECTS,
+  maximumOrigins: number = MAX_PROJECTION_ORIGINS,
 ) => {
   const projection = cloneSlice(base);
   for (const id of [...new Set(instanceIds)].sort()) {
@@ -174,7 +211,7 @@ export const flattenSelected = async (
     if (!instance.definitionName) throw new Error(`Instance ${instance.label} has no definition`);
     const child = await loadDefinition(instance.definitionName);
     if (!child) throw new Error(`Definition ${instance.definitionName} is not in this bundle`);
-    expandInstance(projection, instance, child, maximumObjects);
+    expandInstance(projection, instance, child, maximumObjects, maximumOrigins);
   }
   sortProjection(projection);
   return projection;

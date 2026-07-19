@@ -6,6 +6,7 @@ import type {
   ApiGraphNode,
   ApiGraphPort,
   ApiGraphSlice,
+  ApiSourceElaborationRange,
   ApiSourceFileRef,
   ApiSourceOrigin,
   ProjectResponse,
@@ -34,6 +35,7 @@ export const DESIGN_INDEX_DECODE_LIMITS = {
 
 export const SOURCE_INDEX_DECODE_LIMITS = {
   sources: RESOURCE_LIMITS.bundle.protobuf.sources,
+  elaborationRanges: RESOURCE_LIMITS.bundle.protobuf.origins,
 } as const;
 
 export const DIAGNOSTICS_DECODE_LIMITS = {
@@ -115,6 +117,7 @@ export interface BundleSourceFile {
   entry: string;
   sha256: string;
   size: number;
+  elaborationRanges: ApiSourceElaborationRange[];
 }
 
 export interface BundleDiagnostic {
@@ -497,6 +500,11 @@ export const validateGraphReferences = (slice: ApiGraphSlice) => {
       throw new Error(`Graph origin references unlisted source path ${origin.file}`);
     }
   }
+  for (const range of slice.elaborationRanges ?? []) {
+    if (!range.file || !filePaths.has(range.file)) {
+      throw new Error(`Graph elaboration range references unlisted source path ${range.file}`);
+    }
+  }
 };
 
 export const decodeGraphSlice = (bytes: Uint8Array): ApiGraphSlice => {
@@ -508,6 +516,7 @@ export const decodeGraphSlice = (bytes: Uint8Array): ApiGraphSlice => {
   };
   const groups: ApiGraphGroup[] = [];
   const files: ApiSourceFileRef[] = [];
+  const elaborationRanges: ApiSourceElaborationRange[] = [];
   const budget: GraphDecodeBudget = {
     objects: 0,
     nodes: 0,
@@ -539,10 +548,19 @@ export const decodeGraphSlice = (bytes: Uint8Array): ApiGraphSlice => {
     } else if (field === 6) {
       consumeGraphBudget(budget, "files", GRAPH_DECODE_LIMITS.files, "Graph file count");
       files.push(reader.message(wire, decodeFileRef));
+    } else if (field === 7) {
+      consumeGraphBudget(
+        budget,
+        "origins",
+        GRAPH_DECODE_LIMITS.origins,
+        "Graph elaboration range count",
+      );
+      elaborationRanges.push(reader.message(wire, decodeSourceElaborationRange));
     } else reader.skip(wire);
   });
   if (groups.length) slice.groups = groups;
   if (files.length) slice.files = files;
+  if (elaborationRanges.length) slice.elaborationRanges = elaborationRanges;
   validateGraphReferences(slice);
   return slice;
 };
@@ -671,21 +689,78 @@ export const decodeDesignIndex = (bytes: Uint8Array): BundleDesignIndex => {
   return index;
 };
 
-const decodeSourceFile = (reader: ProtoReader): BundleSourceFile => {
-  const file: BundleSourceFile = { id: "", path: "", entry: "", sha256: "", size: 0 };
+const decodeSourceElaborationRange = (reader: ProtoReader): ApiSourceElaborationRange => {
+  const range: ApiSourceElaborationRange = {
+    file: "",
+    startLine: 0,
+    startColumn: 0,
+    endLine: 0,
+    endColumn: 0,
+    active: false,
+  };
+  forEachField(reader, (field, wire) => {
+    if (field === 1) range.startLine = reader.uint32(wire);
+    else if (field === 2) range.startColumn = reader.uint32(wire);
+    else if (field === 3) range.endLine = reader.uint32(wire);
+    else if (field === 4) range.endColumn = reader.uint32(wire);
+    else if (field === 5) range.active = reader.uint32(wire) !== 0;
+    else if (field === 6) range.file = reader.string(wire);
+    else reader.skip(wire);
+  });
+  if (
+    range.startLine === 0 ||
+    range.startColumn === 0 ||
+    range.endLine === 0 ||
+    range.endColumn === 0 ||
+    range.endLine < range.startLine ||
+    (range.endLine === range.startLine && range.endColumn <= range.startColumn)
+  ) {
+    throw new Error("Source elaboration range is invalid");
+  }
+  return range;
+};
+
+const decodeSourceFile = (
+  reader: ProtoReader,
+  budget: { elaborationRanges: number },
+): BundleSourceFile => {
+  const file: BundleSourceFile = {
+    id: "",
+    path: "",
+    entry: "",
+    sha256: "",
+    size: 0,
+    elaborationRanges: [],
+  };
   forEachField(reader, (field, wire) => {
     if (field === 1) file.id = reader.string(wire);
     else if (field === 2) file.path = reader.string(wire);
     else if (field === 3) file.entry = reader.string(wire);
     else if (field === 4) file.sha256 = reader.string(wire);
     else if (field === 5) file.size = reader.uint64(wire);
-    else reader.skip(wire);
+    else if (field === 6) {
+      budget.elaborationRanges = consumeCount(
+        budget.elaborationRanges,
+        SOURCE_INDEX_DECODE_LIMITS.elaborationRanges,
+        "Source elaboration range count",
+      );
+      file.elaborationRanges.push(reader.message(wire, decodeSourceElaborationRange));
+    } else reader.skip(wire);
   });
+  for (const range of file.elaborationRanges) {
+    if (range.file && range.file !== file.path) {
+      throw new Error(
+        `Legacy source elaboration range file ${range.file} does not match source ${file.path}`,
+      );
+    }
+    range.file = file.path;
+  }
   return file;
 };
 
 export const decodeSourceIndex = (bytes: Uint8Array): BundleSourceFile[] => {
   const files: BundleSourceFile[] = [];
+  const budget = { elaborationRanges: 0 };
   const reader = new ProtoReader(bytes);
   forEachField(reader, (field, wire) => {
     if (field === 1) {
@@ -694,7 +769,7 @@ export const decodeSourceIndex = (bytes: Uint8Array): BundleSourceFile[] => {
           `Source count exceeds the supported limit ${SOURCE_INDEX_DECODE_LIMITS.sources}`,
         );
       }
-      files.push(reader.message(wire, decodeSourceFile));
+      files.push(reader.message(wire, (source) => decodeSourceFile(source, budget)));
     } else reader.skip(wire);
   });
   return files;

@@ -8,7 +8,8 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?worker&url";
 import { useCallback, useEffect, useRef } from "react";
 import type { ClassifiedSourceDiffHunk, SourceDiffStatus } from "../comparison";
-import type { SourceOrigin } from "../model/graph";
+import type { SourceElaborationRange, SourceOrigin } from "../model/graph";
+import type { SourceSelectionRange } from "../source/cross-probe";
 import { diffStatusLabel } from "./comparison-types";
 import { sourceLanguageForPath } from "./source-language";
 
@@ -30,6 +31,7 @@ export interface DiffSourceVersion {
   loading?: boolean;
   error?: string;
   origin?: SourceOrigin;
+  elaborationRanges?: readonly SourceElaborationRange[];
 }
 
 export type DiffSourceSide = "reference" | "candidate";
@@ -44,10 +46,8 @@ export interface DiffSourcePaneProps {
   onShowHierarchy: () => void;
   onSelectRange: (
     side: DiffSourceSide,
-    startLine: number,
-    startColumn: number,
-    endLine: number,
-    endColumn: number,
+    clickedRange: SourceSelectionRange,
+    hunkRange?: SourceSelectionRange,
   ) => void;
 }
 
@@ -152,11 +152,39 @@ const applySourceOnlyHunks = (
           hoverMessage: {
             value: "Source-only change: no changed schematic object intersects this hunk.",
           },
-          after: { content: "  source-only", inlineClassName: "source-only-hunk-label" },
+          after: {
+            content: "  source-only",
+            inlineClassName: "source-only-hunk-label",
+          },
         },
       },
     ];
   });
+  return decorations.length ? instance.createDecorationsCollection(decorations) : null;
+};
+
+const applyElaborationRanges = (
+  instance: editor.IStandaloneCodeEditor,
+  collection: editor.IEditorDecorationsCollection | null,
+  ranges: readonly SourceElaborationRange[] | undefined,
+) => {
+  collection?.clear();
+  const decorations = (ranges ?? [])
+    .filter((range) => !range.active)
+    .map((range) => ({
+      range: {
+        startLineNumber: range.startLine,
+        startColumn: range.startColumn,
+        endLineNumber: range.endLine,
+        endColumn: range.endColumn,
+      },
+      options: {
+        inlineClassName: "source-inactive-generate-inline",
+        hoverMessage: {
+          value: "Inactive generate branch for the visible schematic.",
+        },
+      },
+    }));
   return decorations.length ? instance.createDecorationsCollection(decorations) : null;
 };
 
@@ -175,6 +203,8 @@ export function DiffSourcePane({
   const candidateDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
   const referenceSourceOnlyDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
   const candidateSourceOnlyDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
+  const referenceElaborationDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
+  const candidateElaborationDecorations = useRef<editor.IEditorDecorationsCollection | null>(null);
   const listeners = useRef<Array<{ dispose: () => void }>>([]);
   const modelsRef = useRef<{
     reference: editor.ITextModel | null;
@@ -227,7 +257,23 @@ export function DiffSourcePane({
       hunks,
       "candidate",
     );
-  }, [candidate.origin, hunks, reference.origin]);
+    referenceElaborationDecorations.current = applyElaborationRanges(
+      instance.getOriginalEditor(),
+      referenceElaborationDecorations.current,
+      reference.elaborationRanges,
+    );
+    candidateElaborationDecorations.current = applyElaborationRanges(
+      instance.getModifiedEditor(),
+      candidateElaborationDecorations.current,
+      candidate.elaborationRanges,
+    );
+  }, [
+    candidate.elaborationRanges,
+    candidate.origin,
+    hunks,
+    reference.elaborationRanges,
+    reference.origin,
+  ]);
 
   const releaseEditor = useCallback(() => {
     for (const listener of listeners.current) listener.dispose();
@@ -240,6 +286,10 @@ export function DiffSourcePane({
     referenceSourceOnlyDecorations.current = null;
     candidateSourceOnlyDecorations.current?.clear();
     candidateSourceOnlyDecorations.current = null;
+    referenceElaborationDecorations.current?.clear();
+    referenceElaborationDecorations.current = null;
+    candidateElaborationDecorations.current?.clear();
+    candidateElaborationDecorations.current = null;
 
     const instance = editorRef.current;
     const referenceModel = instance?.getOriginalEditor().getModel() ?? modelsRef.current.reference;
@@ -295,24 +345,27 @@ export function DiffSourcePane({
               selection.startLineNumber <= end
             );
           });
-          const startLine =
-            (side === "reference" ? hunk?.referenceStartLine : hunk?.candidateStartLine) ??
-            selection.startLineNumber;
-          const endLine =
-            (side === "reference" ? hunk?.referenceEndLine : hunk?.candidateEndLine) ??
-            selection.endLineNumber;
-          const endColumn = hunk
-            ? (sideEditor.getModel()?.getLineMaxColumn(endLine) ?? selection.endColumn)
-            : selection.isEmpty()
-              ? selection.startColumn + 1
-              : selection.endColumn;
-          onSelectRangeRef.current(
-            side,
-            startLine,
-            hunk ? 1 : selection.startColumn,
-            endLine,
-            endColumn,
-          );
+          const clickedRange = {
+            startLine: selection.startLineNumber,
+            startColumn: selection.startColumn,
+            endLine: selection.endLineNumber,
+            endColumn: selection.isEmpty() ? selection.startColumn + 1 : selection.endColumn,
+          };
+          const hunkStartLine =
+            side === "reference" ? hunk?.referenceStartLine : hunk?.candidateStartLine;
+          const hunkEndLine =
+            side === "reference" ? hunk?.referenceEndLine : hunk?.candidateEndLine;
+          const hunkRange =
+            hunkStartLine === undefined || hunkEndLine === undefined
+              ? undefined
+              : {
+                  startLine: hunkStartLine,
+                  startColumn: 1,
+                  endLine: hunkEndLine,
+                  endColumn:
+                    sideEditor.getModel()?.getLineMaxColumn(hunkEndLine) ?? selection.endColumn,
+                };
+          onSelectRangeRef.current(side, clickedRange, hunkRange);
         }),
         sideEditor.onDidChangeModel(() => {
           const model = sideEditor.getModel();

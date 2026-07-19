@@ -10,6 +10,15 @@ export interface ApiSourceOrigin {
   endColumn?: number;
 }
 
+export interface ApiSourceElaborationRange {
+  file: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  active: boolean;
+}
+
 export type ApiNodeKind =
   | "input"
   | "output"
@@ -86,6 +95,7 @@ export interface ApiGraphSlice {
   edges: ApiGraphEdge[];
   groups?: ApiGraphGroup[];
   files?: ApiSourceFileRef[];
+  elaborationRanges?: ApiSourceElaborationRange[];
 }
 
 export interface GraphSliceRequest {
@@ -187,6 +197,7 @@ export interface SourceResponse {
   path: string;
   version: string;
   content: string;
+  elaborationRanges: ApiSourceElaborationRange[];
 }
 
 /** Metadata available without loading a bundled source file's contents. */

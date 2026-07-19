@@ -13,6 +13,8 @@ for integration testing and end-user demonstrations:
 - `opentitan/`: OpenTitan's AES cryptographic engine;
 - `schematic-diff/`: Nettle-owned reference and candidate RTL projects that
   change ports, module instances, connectivity, and operator structure; and
+- `generate/`: a parameterized Nettle-owned source-correlation fixture with a
+  generate loop and mutually exclusive generate branches; and
 - `smoke/`: a tiny Nettle-authored compiler smoke fixture.
 
 No third-party HDL is stored in the Nettle source tree. Each corpus manifest

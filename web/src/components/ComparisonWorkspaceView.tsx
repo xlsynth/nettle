@@ -59,7 +59,12 @@ import type {
   GraphSlice,
   ProjectSnapshot,
 } from "../model/graph";
-import { entityForSourceSelection } from "../source/cross-probe";
+import {
+  entityForSourceSelection,
+  type SourceSelectionRange,
+  sourceSelectionIsInactive,
+} from "../source/cross-probe";
+import { elaborationRangesForSource } from "../source/elaboration-ranges";
 import { AppHeader } from "./AppHeader";
 import {
   lowSchematicOverlapWarning,
@@ -1279,6 +1284,7 @@ function ConfirmedComparisonWorkspaceView({
           path: normalizePath(response.path),
           source: response.content,
           modelId: `${side}:${response.fileId}:${response.version}`,
+          elaborationRanges: response.elaborationRanges,
         };
       } catch (reason) {
         if (controller.signal.aborted) throw reason;
@@ -2105,21 +2111,29 @@ function ConfirmedComparisonWorkspaceView({
   const selectSourceRange = useCallback(
     (
       side: DiffSourceSide,
-      startLine: number,
-      startColumn: number,
-      endLine: number,
-      endColumn: number,
+      clickedRange: SourceSelectionRange,
+      hunkRange?: SourceSelectionRange,
     ) => {
       const version = sourcePair[side];
       if (!version.path || version.loading || version.error) return;
+      const selection = hunkRange ?? clickedRange;
+      const elaborationRanges = elaborationRangesForSource(
+        displayPair[side],
+        version.path,
+        version.elaborationRanges,
+      );
+      if (sourceSelectionIsInactive(clickedRange, elaborationRanges)) {
+        setSourceHighlightedIds(new Set());
+        return;
+      }
       const changedIds = matchingPending
         ? []
         : changedComparisonEntitiesForSourceRange(
             comparison,
             side,
             version.path,
-            startLine,
-            endLine,
+            selection.startLine,
+            selection.endLine,
             sources.flatMap((source) => (source[side] ? [source[side].path] : [])),
           );
       setSourceHighlightedIds(new Set(changedIds));
@@ -2131,12 +2145,13 @@ function ConfirmedComparisonWorkspaceView({
         setSelectedOriginal({ side, kind: firstKind, id: firstOriginal.id });
         return;
       }
-      const originalId = entityForSourceSelection(displayPair[side], version.path, version.source, {
-        startLine,
-        startColumn,
-        endLine,
-        endColumn,
-      });
+      const originalId = entityForSourceSelection(
+        displayPair[side],
+        version.path,
+        version.source,
+        selection,
+        elaborationRanges,
+      );
       if (!originalId) return;
       const entity = allEntities(comparison).find(
         (candidateEntity) => candidateEntity[side]?.id === originalId,
@@ -2159,6 +2174,11 @@ function ConfirmedComparisonWorkspaceView({
     () => ({
       reference: {
         ...sourcePair.reference,
+        elaborationRanges: elaborationRangesForSource(
+          displayPair.reference,
+          sourcePair.reference.path,
+          sourcePair.reference.elaborationRanges,
+        ),
         origin:
           referenceOrigin && pathsReferToSameFile(referenceOrigin.file, sourcePair.reference.path)
             ? referenceOrigin
@@ -2166,13 +2186,18 @@ function ConfirmedComparisonWorkspaceView({
       },
       candidate: {
         ...sourcePair.candidate,
+        elaborationRanges: elaborationRangesForSource(
+          displayPair.candidate,
+          sourcePair.candidate.path,
+          sourcePair.candidate.elaborationRanges,
+        ),
         origin:
           candidateOrigin && pathsReferToSameFile(candidateOrigin.file, sourcePair.candidate.path)
             ? candidateOrigin
             : undefined,
       },
     }),
-    [candidateOrigin, referenceOrigin, sourcePair],
+    [candidateOrigin, displayPair, referenceOrigin, sourcePair],
   );
   const sourceDiffHunks = useMemo<readonly ClassifiedSourceDiffHunk[]>(() => {
     if (matchingPending || selectedTextDiff?.status !== "complete") return [];

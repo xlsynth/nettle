@@ -7,7 +7,7 @@ import type { editor } from "monaco-editor";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?worker&url";
 import { useCallback, useEffect, useRef } from "react";
-import type { SourceOrigin } from "../model/graph";
+import type { SourceElaborationRange, SourceOrigin } from "../model/graph";
 import { sourceLanguageForPath } from "./source-language";
 
 export { sourceLanguageForPath } from "./source-language";
@@ -24,6 +24,7 @@ interface SourcePaneProps {
   error?: string;
   onShowHierarchy: () => void;
   origin?: SourceOrigin;
+  elaborationRanges?: readonly SourceElaborationRange[];
   onSelectRange: (
     startLine: number,
     startColumn: number,
@@ -39,11 +40,13 @@ export function SourcePane({
   error,
   onShowHierarchy,
   origin,
+  elaborationRanges = [],
   onSelectRange,
 }: SourcePaneProps) {
   const language = sourceLanguageForPath(path);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
+  const elaborationDecorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
   const selectionListenerRef = useRef<{ dispose: () => void } | null>(null);
   const onSelectRangeRef = useRef(onSelectRange);
   const originRef = useRef(origin);
@@ -99,6 +102,33 @@ export function SourcePane({
     [],
   );
 
+  const applyElaborationRanges = useCallback(
+    (instance: editor.IStandaloneCodeEditor, ranges: readonly SourceElaborationRange[]) => {
+      elaborationDecorationsRef.current?.clear();
+      elaborationDecorationsRef.current = null;
+      const decorations = ranges
+        .filter((range) => !range.active)
+        .map((range) => ({
+          range: {
+            startLineNumber: range.startLine,
+            startColumn: range.startColumn,
+            endLineNumber: range.endLine,
+            endColumn: range.endColumn,
+          },
+          options: {
+            inlineClassName: "source-inactive-generate-inline",
+            hoverMessage: {
+              value: "Inactive generate branch for the visible schematic.",
+            },
+          },
+        }));
+      if (decorations.length) {
+        elaborationDecorationsRef.current = instance.createDecorationsCollection(decorations);
+      }
+    },
+    [],
+  );
+
   const onMount = useCallback<OnMount>(
     (instance) => {
       editorRef.current = instance;
@@ -116,8 +146,9 @@ export function SourcePane({
         },
       );
       applyOrigin(instance, originRef.current);
+      applyElaborationRanges(instance, elaborationRanges);
     },
-    [applyOrigin],
+    [applyElaborationRanges, applyOrigin, elaborationRanges],
   );
 
   useEffect(() => {
@@ -126,12 +157,20 @@ export function SourcePane({
     applyOrigin(instance, origin);
   }, [applyOrigin, origin]);
 
+  useEffect(() => {
+    const instance = editorRef.current;
+    if (!instance) return;
+    applyElaborationRanges(instance, elaborationRanges);
+  }, [applyElaborationRanges, elaborationRanges]);
+
   useEffect(
     () => () => {
       selectionListenerRef.current?.dispose();
       selectionListenerRef.current = null;
       decorationsRef.current?.clear();
       decorationsRef.current = null;
+      elaborationDecorationsRef.current?.clear();
+      elaborationDecorationsRef.current = null;
       editorRef.current = null;
     },
     [],

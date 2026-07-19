@@ -14,7 +14,9 @@ pub use filelist::{
 pub use model::{
     DesignSnapshot, Diagnostic, DiagnosticSeverity, GraphEdge, GraphGroup, GraphModule, GraphNode,
     GraphPort, GraphProjectionError, GraphSlice, GraphSliceRequest, ModuleSummary, NodeKind,
-    PortDirection, ProjectSummary, SCHEMA_VERSION, SourceFileRef, SourceOrigin, stable_id,
+    PortDirection, ProjectSummary, SCHEMA_VERSION, SourceElaborationRange, SourceFileRef,
+    SourceOrigin, stable_id,
 };
+pub(crate) use slang::{ParsedSlangAst, extract_slang_elaboration_ranges};
 pub use slang::{SlangMetadataError, SlangParameterMergeReport, merge_slang_instance_parameters};
 pub use yosys::{YosysImportError, import_yosys_json, import_yosys_value};

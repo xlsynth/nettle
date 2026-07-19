@@ -303,6 +303,7 @@ fn write_comparison_fixture(output: &Path, candidate: bool) {
         edges,
         groups: vec![],
         files: Some(files),
+        elaboration_ranges: vec![],
     };
     let mut child_input = comparison_boundary(
         "child-data-i",
@@ -347,6 +348,7 @@ fn write_comparison_fixture(output: &Path, candidate: bool) {
             id: "file-child".to_owned(),
             path: "rtl/child.sv".to_owned(),
         }]),
+        elaboration_ranges: vec![],
     };
     let mut one_sided_boundary = comparison_boundary(
         "one-sided-data-o",
@@ -373,6 +375,7 @@ fn write_comparison_fixture(output: &Path, candidate: bool) {
             id: one_sided_file_id.to_owned(),
             path: one_sided_path.to_owned(),
         }]),
+        elaboration_ranges: vec![],
     };
     let mut modules = BTreeMap::from([("child".to_owned(), child), ("top".to_owned(), top)]);
     modules.insert(one_sided_definition.to_owned(), one_sided_child);
@@ -573,6 +576,7 @@ fn main() {
         }],
         groups: vec![],
         files: Some(vec![file.clone()]),
+        elaboration_ranges: vec![],
     };
     let top = GraphSlice {
         snapshot_id: "snapshot-browser-fixture".to_owned(),
@@ -634,6 +638,7 @@ fn main() {
         ],
         groups: vec![],
         files: Some(vec![file]),
+        elaboration_ranges: vec![],
     };
     let snapshot = DesignSnapshot {
         snapshot_id: "snapshot-browser-fixture".to_owned(),

@@ -17,6 +17,7 @@
     "test": "npm --workspace web run test",
     "test:designs": "scripts/check-design-corpus.py",
     "test:e2e": "npm --workspace web run test:e2e",
+    "test:e2e:generate": "export NETTLE_GENERATE_XOR_FIXTURE=\"${NETTLE_GENERATE_XOR_FIXTURE:-/tmp/nettle-generate-xor.nettle}\" NETTLE_GENERATE_OR_FIXTURE=\"${NETTLE_GENERATE_OR_FIXTURE:-/tmp/nettle-generate-or.nettle}\"; scripts/build-generate-e2e-fixtures.sh && npm --workspace web run test:e2e",
     "bench:graph": "npm --workspace web run bench:graph",
     "bench:browser": "npm --workspace web run bench:browser"
   },

@@ -9,6 +9,10 @@ use thiserror::Error;
 
 use super::{DesignSnapshot, GraphSlice, NodeKind, SourceFileRef, SourceOrigin, stable_id};
 
+mod generate;
+
+pub(crate) use generate::extract_slang_elaboration_ranges;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Counts metadata merged from one elaborated Slang AST.
 pub struct SlangParameterMergeReport {
@@ -27,8 +31,8 @@ pub struct SlangParameterMergeReport {
 #[derive(Debug, Error)]
 /// Failure encountered while reading Slang semantic metadata.
 pub enum SlangMetadataError {
-    /// Slang AST output is not valid JSON.
-    #[error("invalid Slang AST JSON: {0}")]
+    /// Slang AST or CST output is not valid JSON.
+    #[error("invalid Slang JSON metadata: {0}")]
     Json(#[from] serde_json::Error),
     /// The AST lacks an elaborated instance matching the selected top.
     #[error("Slang AST JSON does not contain an elaborated design instance")]
@@ -39,6 +43,75 @@ pub enum SlangMetadataError {
     /// A serialized node link refers to an address absent from the document.
     #[error("Slang AST JSON contains a dangling node address link {0}")]
     DanglingNodeAddress(u64),
+}
+
+/// Parsed Slang AST shared by semantic enrichment and generate correlation.
+///
+/// Compiler AST JSON can be hundreds of megabytes, so the builder parses it
+/// once and lends the same immutable tree to each metadata pass.
+#[derive(Debug)]
+pub(crate) struct ParsedSlangAst {
+    root: Value,
+}
+
+/// One address-indexed view over a parsed Slang AST.
+///
+/// Keep this view alive across metadata passes to avoid rebuilding the
+/// whole-document address index.
+pub(crate) struct ResolvedSlangAst<'a> {
+    ast: &'a ParsedSlangAst,
+    resolver: AstAddressResolver<'a>,
+}
+
+impl ParsedSlangAst {
+    /// Parses one complete Slang AST JSON document.
+    pub(crate) fn parse(ast_json: &str) -> Result<Self, SlangMetadataError> {
+        Ok(Self {
+            root: serde_json::from_str(ast_json)?,
+        })
+    }
+
+    /// Merges parameters and source provenance into a Yosys snapshot.
+    pub(crate) fn merge_instance_parameters(
+        &self,
+        snapshot: &mut DesignSnapshot,
+    ) -> Result<SlangParameterMergeReport, SlangMetadataError> {
+        self.resolve()?.merge_instance_parameters(snapshot)
+    }
+
+    /// Builds the process-local Slang node-address index once.
+    pub(crate) fn resolve(&self) -> Result<ResolvedSlangAst<'_>, SlangMetadataError> {
+        Ok(ResolvedSlangAst {
+            ast: self,
+            resolver: AstAddressResolver::new(&self.root)?,
+        })
+    }
+}
+
+impl ResolvedSlangAst<'_> {
+    /// Merges parameters and source provenance into a Yosys snapshot.
+    pub(crate) fn merge_instance_parameters(
+        &self,
+        snapshot: &mut DesignSnapshot,
+    ) -> Result<SlangParameterMergeReport, SlangMetadataError> {
+        let root = find_root_instance(&self.ast.root, &snapshot.top, &self.resolver)?
+            .ok_or(SlangMetadataError::MissingDesignInstance)?;
+        let root_key = snapshot
+            .modules
+            .contains_key(&snapshot.top)
+            .then(|| snapshot.top.clone())
+            .or_else(|| {
+                root.get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| snapshot.modules.contains_key(*name))
+                    .map(str::to_owned)
+            })
+            .ok_or(SlangMetadataError::MissingDesignInstance)?;
+
+        let mut report = SlangParameterMergeReport::default();
+        merge_instance(snapshot, root, &root_key, &self.resolver, &mut report)?;
+        Ok(report)
+    }
 }
 
 /// Resolves process-local node links from Slang v10 and newer.
@@ -142,25 +215,7 @@ pub fn merge_slang_instance_parameters(
     snapshot: &mut DesignSnapshot,
     ast_json: &str,
 ) -> Result<SlangParameterMergeReport, SlangMetadataError> {
-    let ast: Value = serde_json::from_str(ast_json)?;
-    let resolver = AstAddressResolver::new(&ast)?;
-    let root = find_root_instance(&ast, &snapshot.top, &resolver)?
-        .ok_or(SlangMetadataError::MissingDesignInstance)?;
-    let root_key = snapshot
-        .modules
-        .contains_key(&snapshot.top)
-        .then(|| snapshot.top.clone())
-        .or_else(|| {
-            root.get("name")
-                .and_then(Value::as_str)
-                .filter(|name| snapshot.modules.contains_key(*name))
-                .map(str::to_owned)
-        })
-        .ok_or(SlangMetadataError::MissingDesignInstance)?;
-
-    let mut report = SlangParameterMergeReport::default();
-    merge_instance(snapshot, root, &root_key, &resolver, &mut report)?;
-    Ok(report)
+    ParsedSlangAst::parse(ast_json)?.merge_instance_parameters(snapshot)
 }
 
 fn find_root_instance<'a>(
@@ -681,6 +736,7 @@ fn direct_child_instances<'a>(
                             .into_iter()
                             .flatten()
                         {
+                            let member = resolver.resolve(member)?;
                             let index = member
                                 .get("constructIndex")
                                 .and_then(Value::as_u64)
@@ -1010,15 +1066,19 @@ mod tests {
             }
         });
         let slang = r#"{
+          "objects": [
+            {"kind": "GenerateBlock", "name": "", "addr": 100, "constructIndex": 0, "members": [
+              {"kind": "Instance", "name": "u_leaf", "source_file": "rtl/top.sv", "source_line": 4, "source_column": 10, "body": {"name": "leaf", "members": []}}
+            ]},
+            {"kind": "GenerateBlock", "name": "", "addr": 101, "constructIndex": 1, "members": [
+              {"kind": "Instance", "name": "u_leaf", "source_file": "rtl/top.sv", "source_line": 4, "source_column": 10, "body": {"name": "leaf", "members": []}}
+            ]}
+          ],
           "design": {"members": [{"kind": "Instance", "name": "top", "body": {
             "name": "top", "members": [
               {"kind": "GenerateBlockArray", "name": "lanes", "members": [
-                {"kind": "GenerateBlock", "name": "", "constructIndex": 0, "members": [
-                  {"kind": "Instance", "name": "u_leaf", "source_file": "rtl/top.sv", "source_line": 4, "source_column": 10, "body": {"name": "leaf", "members": []}}
-                ]},
-                {"kind": "GenerateBlock", "name": "", "constructIndex": 1, "members": [
-                  {"kind": "Instance", "name": "u_leaf", "source_file": "rtl/top.sv", "source_line": 4, "source_column": 10, "body": {"name": "leaf", "members": []}}
-                ]}
+                "100 lanes[0]",
+                "101 lanes[1]"
               ]},
               {"kind": "GenerateBlock", "name": "optional", "members": [
                 {"kind": "Instance", "name": "u_extra", "source_file": "rtl/top.sv", "source_line": 7, "source_column": 10, "body": {"name": "leaf", "members": []}}

@@ -1601,6 +1601,11 @@ button:focus-visible {
   background: var(--green);
 }
 
+.source-inactive-generate-inline {
+  opacity: 0.42;
+  filter: grayscale(1);
+}
+
 .schematic-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

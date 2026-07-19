@@ -29,6 +29,7 @@ const source = (path: string): BundleSourceFile => ({
   entry: "sources/digest",
   sha256: "digest",
   size: 0,
+  elaborationRanges: [],
 });
 
 const deferred = <T>() => {
@@ -188,6 +189,7 @@ describe("bundle load cancellation", () => {
         entry: "sources/top.sv",
         sha256: "digest",
         size: bytes.length,
+        elaborationRanges: [],
       },
     ]);
     const controller = new AbortController();
@@ -221,6 +223,7 @@ describe("bundle load cancellation", () => {
         entry: "sources/top.sv",
         sha256: "digest",
         size: bytes.length,
+        elaborationRanges: [],
       },
     ]);
     const obsoleteController = new AbortController();
@@ -300,6 +303,7 @@ describe("bundle load cancellation", () => {
         entry: `sources/source-${index}.sv`,
         sha256: `digest-${index}`,
         size: 1,
+        elaborationRanges: [],
       }),
     );
     let active = 0;

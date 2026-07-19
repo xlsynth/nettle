@@ -22,10 +22,11 @@ investigation, design review, and static-site deployment.
 
 The GitHub Pages deployment at <https://xlsynth.github.io/nettle> hosts the
 browser viewer with public bundles generated from Nettle-owned integration
-fixtures. Choose an example to explore a single design or schematic diff, or
-open a local `.nettle` file; local files are read and rendered entirely in the
-browser and are never uploaded. The demo is a static viewer, not a hosted HDL
-compiler, and its bundled examples (including their sources) are public.
+fixtures. Choose an example to explore a small hierarchy, parameter-selected
+generate branches, or a schematic diff, or open a local `.nettle` file; local
+files are read and rendered entirely in the browser and are never uploaded.
+The demo is a static viewer, not a hosted HDL compiler, and its bundled
+examples (including their sources) are public.
 
 ## Demo
 

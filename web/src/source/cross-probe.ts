@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { pathsReferToSameFile } from "../api/normalize";
-import type { GraphEdge, GraphGroup, GraphNode, GraphSlice, SourceOrigin } from "../model/graph";
+import type {
+  GraphEdge,
+  GraphGroup,
+  GraphNode,
+  GraphSlice,
+  SourceElaborationRange,
+  SourceOrigin,
+} from "../model/graph";
 
 export interface SourceSelectionRange {
   startLine: number;
@@ -82,21 +89,40 @@ const groupEntity = (group: GraphGroup): SourceEntity => ({
   origins: group.origins,
 });
 
-const overlapsColumns = (origin: SourceOrigin, selection: SourceSelectionRange) => {
+const overlapsSourceRange = (origin: SourceOrigin, selection: SourceSelectionRange) => {
   const originEndLine = origin.endLine ?? origin.startLine;
   const originEndColumn = origin.endColumn ?? origin.startColumn + 1;
-  const selectionStartsAfterOrigin =
-    selection.startLine > originEndLine ||
-    (selection.startLine === originEndLine && selection.startColumn > originEndColumn);
-  const selectionEndsBeforeOrigin =
-    selection.endLine < origin.startLine ||
-    (selection.endLine === origin.startLine && selection.endColumn < origin.startColumn);
-  return !selectionStartsAfterOrigin && !selectionEndsBeforeOrigin;
+  const originStartsBeforeSelectionEnds =
+    origin.startLine < selection.endLine ||
+    (origin.startLine === selection.endLine && origin.startColumn < selection.endColumn);
+  const selectionStartsBeforeOriginEnds =
+    selection.startLine < originEndLine ||
+    (selection.startLine === originEndLine && selection.startColumn < originEndColumn);
+  return originStartsBeforeSelectionEnds && selectionStartsBeforeOriginEnds;
 };
 
 const overlapsLines = (origin: SourceOrigin, selection: SourceSelectionRange) =>
   selection.startLine <= (origin.endLine ?? origin.startLine) &&
   selection.endLine >= origin.startLine;
+
+const containsSelection = (range: SourceElaborationRange, selection: SourceSelectionRange) => {
+  const startsBeforeSelection =
+    range.startLine < selection.startLine ||
+    (range.startLine === selection.startLine && range.startColumn <= selection.startColumn);
+  const endsAfterSelection =
+    range.endLine > selection.endLine ||
+    (range.endLine === selection.endLine && range.endColumn >= selection.endColumn);
+  return startsBeforeSelection && endsAfterSelection;
+};
+
+export const sourceSelectionIsInactive = (
+  selection: SourceSelectionRange,
+  elaborationRanges: readonly SourceElaborationRange[],
+) => elaborationRanges.some((range) => !range.active && containsSelection(range, selection));
+
+const elaborationRangeSize = (range: SourceElaborationRange) =>
+  (range.endLine - range.startLine) * 1_000 +
+  (range.endLine === range.startLine ? range.endColumn - range.startColumn : 0);
 
 const originSize = (origin: SourceOrigin) => {
   const endLine = origin.endLine ?? origin.startLine;
@@ -162,6 +188,7 @@ export const entityForSourceSelection = (
   path: string,
   source: string,
   selection: SourceSelectionRange,
+  elaborationRanges: readonly SourceElaborationRange[] = [],
 ): string | undefined => {
   const token = sourceTokenAt(source, selection);
   const entities: SourceEntity[] = [
@@ -169,12 +196,19 @@ export const entityForSourceSelection = (
     ...slice.edges.map(edgeEntity),
     ...(slice.groups ?? []).map(groupEntity),
   ];
+  if (sourceSelectionIsInactive(selection, elaborationRanges)) {
+    return undefined;
+  }
+  const enclosingRanges = elaborationRanges
+    .filter((range) => range.active && containsSelection(range, selection))
+    .sort((left, right) => elaborationRangeSize(left) - elaborationRangeSize(right));
   let best: { id: string; score: number; size: number; order: number } | undefined;
 
   entities.forEach((entity, order) => {
     for (const origin of entity.origins ?? []) {
       if (!pathsReferToSameFile(origin.file, path) || !overlapsLines(origin, selection)) continue;
-      const exact = overlapsColumns(origin, selection);
+      const exact = overlapsSourceRange(origin, selection);
+      if (!exact && enclosingRanges.length > 0) continue;
       const size = originSize(origin);
       const entityPriority = entity.type === "node" ? 20 : entity.type === "group" ? 10 : 0;
       const score =
@@ -193,5 +227,45 @@ export const entityForSourceSelection = (
     }
   });
 
-  return best?.id;
+  if (best) return best.id;
+
+  for (const range of enclosingRanges) {
+    const rangeSelection = {
+      startLine: range.startLine,
+      startColumn: range.startColumn,
+      endLine: range.endLine,
+      endColumn: range.endColumn,
+    };
+    let nearest:
+      | { id: string; lineDistance: number; columnDistance: number; order: number }
+      | undefined;
+    entities.forEach((entity, order) => {
+      for (const origin of entity.origins ?? []) {
+        if (
+          !pathsReferToSameFile(origin.file, path) ||
+          !overlapsSourceRange(origin, rangeSelection)
+        ) {
+          continue;
+        }
+        const lineDistance = Math.min(
+          Math.abs(origin.startLine - selection.startLine),
+          Math.abs((origin.endLine ?? origin.startLine) - selection.endLine),
+        );
+        const columnDistance =
+          lineDistance === 0 ? Math.abs(origin.startColumn - selection.startColumn) : 0;
+        if (
+          !nearest ||
+          lineDistance < nearest.lineDistance ||
+          (lineDistance === nearest.lineDistance && columnDistance < nearest.columnDistance) ||
+          (lineDistance === nearest.lineDistance &&
+            columnDistance === nearest.columnDistance &&
+            order < nearest.order)
+        ) {
+          nearest = { id: entity.id, lineDistance, columnDistance, order };
+        }
+      }
+    });
+    if (nearest) return nearest.id;
+  }
+  return undefined;
 };

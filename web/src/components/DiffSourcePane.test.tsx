@@ -121,8 +121,43 @@ describe("DiffSourcePane bounded states", () => {
       <DiffSourcePane
         {...baseProps}
         status="modified"
-        reference={{ path: "rtl/top.sv", source: "old" }}
-        candidate={{ path: "rtl/top.sv", source: "new" }}
+        reference={{
+          path: "rtl/top.sv",
+          source: "old",
+          elaborationRanges: [
+            {
+              file: "rtl/top.sv",
+              startLine: 2,
+              startColumn: 3,
+              endLine: 4,
+              endColumn: 5,
+              active: false,
+            },
+          ],
+        }}
+        candidate={{
+          path: "rtl/top.sv",
+          source: "new",
+          elaborationRanges: [
+            {
+              file: "rtl/top.sv",
+              startLine: 6,
+              startColumn: 7,
+              endLine: 8,
+              endColumn: 9,
+              active: false,
+            },
+          ],
+        }}
+        hunks={[
+          {
+            referenceStartLine: 4,
+            referenceEndLine: 6,
+            candidateStartLine: 4,
+            candidateEndLine: 6,
+            sourceOnly: false,
+          },
+        ]}
         onSelectRange={onSelectRange}
       />,
     );
@@ -130,6 +165,38 @@ describe("DiffSourcePane bounded states", () => {
     expect(editorHarness.props?.keepCurrentOriginalModel).toBe(true);
     expect(editorHarness.props?.keepCurrentModifiedModel).toBe(true);
     act(() => editorHarness.props?.onMount?.(diffEditor, {}));
+    expect(referenceEditor.createDecorationsCollection).toHaveBeenCalledWith([
+      {
+        range: {
+          startLineNumber: 2,
+          startColumn: 3,
+          endLineNumber: 4,
+          endColumn: 5,
+        },
+        options: {
+          inlineClassName: "source-inactive-generate-inline",
+          hoverMessage: {
+            value: "Inactive generate branch for the visible schematic.",
+          },
+        },
+      },
+    ]);
+    expect(candidateEditor.createDecorationsCollection).toHaveBeenCalledWith([
+      {
+        range: {
+          startLineNumber: 6,
+          startColumn: 7,
+          endLineNumber: 8,
+          endColumn: 9,
+        },
+        options: {
+          inlineClassName: "source-inactive-generate-inline",
+          hoverMessage: {
+            value: "Inactive generate branch for the visible schematic.",
+          },
+        },
+      },
+    ]);
 
     const selection = {
       isEmpty: () => true,
@@ -145,7 +212,25 @@ describe("DiffSourcePane bounded states", () => {
     });
     expect(onSelectRange).not.toHaveBeenCalled();
     act(() => referenceSelectionListener?.({ source: "mouse", selection }));
-    expect(onSelectRange).toHaveBeenCalledWith("reference", 2, 3, 2, 4);
+    expect(onSelectRange).toHaveBeenCalledWith(
+      "reference",
+      { startLine: 2, startColumn: 3, endLine: 2, endColumn: 4 },
+      undefined,
+    );
+
+    const hunkSelection = {
+      isEmpty: () => true,
+      startLineNumber: 5,
+      startColumn: 4,
+      endLineNumber: 5,
+      endColumn: 4,
+    };
+    act(() => referenceSelectionListener?.({ source: "mouse", selection: hunkSelection }));
+    expect(onSelectRange).toHaveBeenLastCalledWith(
+      "reference",
+      { startLine: 5, startColumn: 4, endLine: 5, endColumn: 5 },
+      { startLine: 4, startColumn: 1, endLine: 6, endColumn: 12 },
+    );
 
     referenceEditor.getModel.mockReturnValue(nextReferenceModel);
     act(() => referenceModelListener?.());

@@ -26,6 +26,15 @@ export interface SourceOrigin {
   quality?: "exact" | "inherited" | "macro" | "synthetic";
 }
 
+export interface SourceElaborationRange {
+  file: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  active: boolean;
+}
+
 export interface GraphPort {
   id: string;
   name: string;
@@ -98,6 +107,7 @@ export interface GraphSlice {
   edges: GraphEdge[];
   groups?: GraphGroup[];
   files?: SourceFileRef[];
+  elaborationRanges?: SourceElaborationRange[];
 }
 
 export interface FileTreeEntry {
