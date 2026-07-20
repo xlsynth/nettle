@@ -3444,6 +3444,11 @@ button:focus-visible {
   stroke-dasharray: 8 3 2 3;
 }
 
+/* Preserve inferred correspondence without adding a separate badge. */
+.group-layer .diff-heuristic .group-boundary {
+  stroke-dasharray: 2 2;
+}
+
 .top-level-layer.diff-removed .top-level-boundary {
   fill: rgb(252 232 231 / 12%);
   stroke: var(--diff-red);

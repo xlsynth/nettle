@@ -283,8 +283,6 @@ cargo run --locked -- compare reference.nettle candidate.nettle \
   --port 8090
 ```
 
-![Nettle schematic diff of the br_enc_priority_encoder design](assets/schematic_diff_conservative.jpg)
-
 The command copies and validates both inputs in anonymous delete-on-close
 storage before starting the viewer and exposes the private snapshots only
 through separate non-cacheable startup routes. The two snapshots can consume
@@ -292,17 +290,17 @@ up to twice the configured per-bundle temporary-storage ceiling; the operating
 system reclaims them when their final handles close, including after abrupt
 termination. The default conservative policy accepts exact and uniquely
 determined graph correspondence. Pass
-`--matching aggressive`, or switch policy in the viewer, to add visibly marked
+`--matching aggressive`, or switch policy in the viewer, to distinguish
 heuristic matches for logic whose compiler-generated identities changed.
 
 The viewer constructs one union graph and lays it out once: reference-only
 objects are red and dashed, candidate-only objects are green, matched changes
-are yellow, and unchanged logic remains neutral. `−`, `+`, and `±` badges keep
-status independent of color, while `≈` identifies heuristic correspondence.
-The single View menu selects a neutral reference or candidate snapshot, the
-complete diff overlay, changes-only presentation, or custom status visibility;
-every view reuses the union geometry. Matching is a structural review aid, not
-a functional-equivalence result.
+are yellow, and unchanged logic remains neutral. Line and outline treatments
+distinguish diff status and heuristic correspondence. The single View menu
+selects a neutral reference or candidate snapshot, the complete diff overlay,
+changes-only presentation, or custom status visibility; every view reuses the
+union geometry. Matching is a structural review aid, not a functional-
+equivalence result.
 
 Hierarchy navigation and flattening use the same selected policy. Recursive
 flattening compares child modules before splicing their union through paired

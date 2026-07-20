@@ -1695,7 +1695,7 @@ describe("SchematicCanvas comparison presentation", () => {
             operator: { status: "modified" },
             node: { status: "modified" },
             edge: { status: "modified" },
-            group: { status: "modified", sourceHighlighted: true },
+            group: { status: "modified", matchMethod: "heuristic", sourceHighlighted: true },
           },
           comparisonSlice,
           referenceDefines: [{ name: "REFERENCE_BUILD" }],
@@ -1725,6 +1725,7 @@ describe("SchematicCanvas comparison presentation", () => {
     expect(edge()?.classList).toContain("diff-modified");
     expect(node()?.querySelector(".diff-modified-outline")).not.toBeNull();
     expect(view.container.querySelector(".group-layer > .diff-modified")).not.toBeNull();
+    expect(view.container.querySelector(".group-layer > .diff-heuristic")).not.toBeNull();
     expect(
       view.container.querySelector(".group-layer .source-cross-probed .transparent-group.selected"),
     ).not.toBeNull();
