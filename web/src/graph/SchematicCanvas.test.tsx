@@ -840,7 +840,12 @@ describe("SchematicCanvas comparison presentation", () => {
             "old-net": { status: "removed", referenceId: "old-net" },
             "new-net": { status: "added", candidateId: "new-net" },
             "old-constant": { status: "removed", referenceId: "old-constant" },
-            "new-constant": { status: "added", candidateId: "new-constant" },
+            "new-constant": {
+              status: "added",
+              candidateId: "new-constant",
+              matchMethod: "heuristic",
+              sourceHighlighted: true,
+            },
             "changed-constant": { status: "modified" },
           },
         }}
@@ -872,9 +877,13 @@ describe("SchematicCanvas comparison presentation", () => {
     expect(removedConstant?.querySelector(".constant-value")?.textContent).toBe("1'b0");
     expect(addedConstant?.querySelector(".diff-constant-outline.added")).not.toBeNull();
     expect(addedConstant?.querySelector(".constant-value")?.textContent).toBe("1'b1");
+    expect(addedConstant?.classList).toContain("diff-heuristic");
+    expect(addedConstant?.classList).toContain("source-cross-probed");
+    expect(addedConstant?.getAttribute("aria-label")).toContain("heuristic match");
     expect(modifiedConstant?.querySelector(".diff-modified-outline")).not.toBeNull();
     expect(modifiedConstant?.classList).toContain("diff-modified");
-    expect(added?.querySelector(".diff-node-badge")?.textContent).toBe("+≈");
+    expect(view.container.querySelector(".diff-node-badge")).toBeNull();
+    expect(view.container.querySelector(".diff-edge-badge")).toBeNull();
     expect(
       screen.getByRole("button", { name: /Schematic comparison view:/ }).textContent,
     ).toContain("Diff overlay");
@@ -1694,7 +1703,7 @@ describe("SchematicCanvas comparison presentation", () => {
             operator: { status: "modified" },
             node: { status: "modified" },
             edge: { status: "modified" },
-            group: { status: "modified", sourceHighlighted: true },
+            group: { status: "modified", matchMethod: "heuristic", sourceHighlighted: true },
           },
           comparisonSlice,
           referenceDefines: [{ name: "REFERENCE_BUILD" }],
@@ -1724,6 +1733,7 @@ describe("SchematicCanvas comparison presentation", () => {
     expect(edge()?.classList).toContain("diff-modified");
     expect(node()?.querySelector(".diff-modified-outline")).not.toBeNull();
     expect(view.container.querySelector(".group-layer > .diff-modified")).not.toBeNull();
+    expect(view.container.querySelector(".group-layer > .diff-heuristic")).not.toBeNull();
     expect(
       view.container.querySelector(".group-layer .source-cross-probed .transparent-group.selected"),
     ).not.toBeNull();

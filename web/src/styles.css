@@ -3854,13 +3854,19 @@ button:focus-visible {
   font-weight: 750;
 }
 
-.node-interaction.diff-heuristic .node-shape {
+.node-interaction.diff-heuristic .node-shape,
+.node-interaction.diff-heuristic .constant-value {
   filter: drop-shadow(0 0 2px rgb(100 60 121 / 34%));
 }
 
 .node-interaction .node-shape.selected,
 .node-interaction .constant-value.selected {
   filter: drop-shadow(0 0 3px rgb(53 104 181 / 58%));
+}
+
+.node-interaction.diff-heuristic .node-shape.selected,
+.node-interaction.diff-heuristic .constant-value.selected {
+  filter: drop-shadow(0 0 2px rgb(100 60 121 / 34%)) drop-shadow(0 0 3px rgb(53 104 181 / 58%));
 }
 
 .node-interaction.diff-added .node-shape.selected,
@@ -3880,6 +3886,17 @@ button:focus-visible {
   filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 3px rgb(53 104 181 / 68%));
 }
 
+.node-interaction.diff-heuristic.source-cross-probed .node-shape,
+.node-interaction.diff-heuristic.source-cross-probed .constant-value {
+  filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 2px rgb(100 60 121 / 34%));
+}
+
+.node-interaction.diff-heuristic.source-cross-probed.selected .node-shape,
+.node-interaction.diff-heuristic.source-cross-probed.selected .constant-value {
+  filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 2px rgb(100 60 121 / 34%))
+    drop-shadow(0 0 3px rgb(53 104 181 / 68%));
+}
+
 .group-layer .source-cross-probed .transparent-group.selected .group-boundary {
   filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 3px rgb(53 104 181 / 68%));
 }
@@ -3887,60 +3904,6 @@ button:focus-visible {
 .schematic-edge.source-cross-probed .edge-line {
   filter: drop-shadow(0 0 2.5px rgb(0 110 140 / 82%));
   stroke-width: 2.8;
-}
-
-.diff-node-badge,
-.diff-edge-badge {
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-weight: 750;
-  pointer-events: none;
-  user-select: none;
-}
-
-.diff-node-badge circle,
-.diff-edge-badge rect {
-  fill: #fff;
-  stroke-width: 1.2;
-  vector-effect: non-scaling-stroke;
-}
-
-.diff-node-badge text,
-.diff-edge-badge text {
-  font-size: 8px;
-  text-anchor: middle;
-  dominant-baseline: central;
-}
-
-.diff-node-badge.removed circle,
-.diff-edge-badge.removed rect {
-  stroke: var(--diff-red);
-}
-
-.diff-node-badge.removed text,
-.diff-edge-badge.removed text {
-  fill: var(--diff-red-dark);
-}
-
-.diff-node-badge.added circle,
-.diff-edge-badge.added rect {
-  stroke: var(--diff-green);
-}
-
-.diff-node-badge.added text,
-.diff-edge-badge.added text {
-  fill: var(--diff-green-dark);
-}
-
-.diff-node-badge.modified circle,
-.diff-edge-badge.modified rect {
-  fill: var(--diff-yellow-soft);
-  stroke: var(--diff-yellow);
-  stroke-dasharray: 5 2;
-}
-
-.diff-node-badge.modified text,
-.diff-edge-badge.modified text {
-  fill: var(--diff-yellow-dark);
 }
 
 .schematic-edge.diff-removed .edge-line {
@@ -3987,6 +3950,11 @@ button:focus-visible {
   stroke: var(--diff-yellow);
   fill: rgb(255 244 184 / 48%);
   stroke-dasharray: 8 3 2 3;
+}
+
+/* Preserve inferred correspondence without adding a separate badge. */
+.group-layer .diff-heuristic .group-boundary {
+  stroke-dasharray: 2 2;
 }
 
 .top-level-layer.diff-removed .top-level-boundary {

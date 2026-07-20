@@ -186,10 +186,10 @@ the shared node/port identities, pair edges by those remapped endpoints, build
 the union, and invoke layout. Matching policy answers _whether two objects
 correspond_; diff status then answers _whether the paired payloads differ_.
 Consequently, switching from conservative to aggressive can collapse a red
-removal and green addition into one matched object marked `≈`; payload
-comparison then classifies that object as unchanged or yellow modified. This is
-an inferred correspondence, not a functional-equivalence result, and changing
-the correspondence can change union topology and require a new layout.
+removal and green addition into one heuristically styled matched object;
+payload comparison then classifies that object as unchanged or yellow modified.
+This is an inferred correspondence, not a functional-equivalence result, and
+changing the correspondence can change union topology and require a new layout.
 
 Status classification deliberately excludes snapshot IDs, source ranges,
 placement, and volatile compiler provenance:
@@ -217,19 +217,19 @@ modified.
 
 The single View menu combines presets and status visibility controls:
 
-| View               | Semantics on the fixed union geometry                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration.                                                                                             |
-| Diff overlay       | Shows the complete union: removed red/dashed with `−`, added green with `+`, modified yellow with `±`, unchanged neutral, and heuristic correspondence additionally marked `≈`. |
-| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration.                                                                                             |
-| Changes only       | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change.                                               |
+| View               | Semantics on the fixed union geometry                                                                                             |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration.                                               |
+| Diff overlay       | Shows the complete union: removed red/dashed, added green, modified yellow/dashed, and unchanged neutral.                         |
+| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration.                                               |
+| Changes only       | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change. |
 
 Matched union objects use candidate-visible payloads in Diff overlay. All four
 views reuse the same union geometry and do not relayout merely to change a
 preset. Reference and Candidate are therefore side-specific semantic
-projections, not independently laid-out standalone schematics. Color is never
-the sole status signal: line patterns, `−`/`+`/`±` badges, accessible status
-text, and `≈` confidence markers remain visible where applicable. Status
+projections, not independently laid-out standalone schematics. Diff status is
+communicated by red/green/yellow highlighting, line patterns, and accessible
+status text. Status
 toggles are offered for overlay views and omitted when they have no entities in
 the active projection; the UI does not assume that `modified` is globally
 impossible under conservative matching.

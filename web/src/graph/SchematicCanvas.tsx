@@ -159,14 +159,6 @@ const diffClassName = (
   }${contextVisible ? " diff-context" : ""}${visibility[status] || contextVisible ? "" : " diff-filtered"}`;
 };
 
-const diffMarker = (metadata: EntityDiffPresentation | undefined, emphasizeDifference = true) => {
-  if (!emphasizeDifference) return "";
-  const status = metadata?.status ?? "unchanged";
-  const marker =
-    status === "added" ? "+" : status === "removed" ? "−" : status === "modified" ? "±" : "";
-  return `${marker}${metadata?.matchMethod === "heuristic" ? "≈" : ""}`;
-};
-
 const semanticSideForPreset = (preset: DiffPreset): ComparisonSemanticSide | undefined =>
   preset === "reference" || preset === "candidate" ? preset : undefined;
 
@@ -2090,7 +2082,6 @@ export function SchematicCanvas({
               <g className="group-layer">
                 {renderedLayout.groups.map((group) => {
                   const metadata = entityDiff(group.id);
-                  const marker = diffMarker(metadata, emphasizeDifferences);
                   return (
                     <g
                       className={
@@ -2106,15 +2097,6 @@ export function SchematicCanvas({
                         hovered={group.id === hoveredId}
                         labelSettings={labelSettings}
                       />
-                      {marker ? (
-                        <g
-                          className={`diff-node-badge ${metadata?.status ?? "unchanged"}`}
-                          transform={`translate(${group.x + group.width - 10} ${group.y + 12})`}
-                        >
-                          <circle r={9} />
-                          <text>{marker}</text>
-                        </g>
-                      ) : null}
                     </g>
                   );
                 })}
@@ -2141,7 +2123,6 @@ export function SchematicCanvas({
                   const showBitWidth = !hidden && labelSettings.bitWidths && (edge.width ?? 1) > 1;
                   const bitWidthText = String(edge.width ?? 1);
                   const bitWidthLabelWidth = Math.max(12, bitWidthText.length * 5.5 + 5);
-                  const marker = diffMarker(metadata, emphasizeDifferences);
                   const lineLaneOffset = emphasizeDifferences
                     ? metadata?.status === "removed"
                       ? -2.5
@@ -2222,15 +2203,6 @@ export function SchematicCanvas({
                           <text y={-7}>{bitWidthText}</text>
                         </g>
                       ) : null}
-                      {marker && label ? (
-                        <g
-                          className={`diff-edge-badge ${metadata?.status ?? "unchanged"}`}
-                          transform={`translate(${label.x} ${label.y + 13 + labelLaneOffset})`}
-                        >
-                          <rect x={-10} y={-7} width={20} height={12} rx={5} />
-                          <text>{marker}</text>
-                        </g>
-                      ) : null}
                     </a>
                   );
                 })}
@@ -2238,7 +2210,6 @@ export function SchematicCanvas({
               <g className="node-layer">
                 {renderedLayout.nodes.map((node) => {
                   const metadata = entityDiff(node.id);
-                  const marker = diffMarker(metadata, emphasizeDifferences);
                   const contextVisible = changesOnlyContext.nodeIds.has(node.id);
                   const boundaryHitWidth =
                     node.kind === "input" || node.kind === "output"
@@ -2340,15 +2311,6 @@ export function SchematicCanvas({
                         labelSettings={labelSettings}
                         constantRadix={node.kind === "constant" ? constantRadix : "binary"}
                       />
-                      {marker ? (
-                        <g
-                          className={`diff-node-badge ${metadata?.status ?? "unchanged"}`}
-                          transform={`translate(${node.x + node.width - 2} ${node.y + 2})`}
-                        >
-                          <circle r={9} />
-                          <text>{marker}</text>
-                        </g>
-                      ) : null}
                     </a>
                   );
                 })}
@@ -2420,15 +2382,6 @@ export function SchematicCanvas({
                     : ""
                 }`}
               >
-                {comparison && diffMarker(entityDiff(TOP_MODULE_ID), emphasizeDifferences) ? (
-                  <g
-                    className={`diff-node-badge ${entityDiff(TOP_MODULE_ID)?.status ?? "unchanged"}`}
-                    transform={`translate(${renderedLayout.width - 22} 25)`}
-                  >
-                    <circle r={9} />
-                    <text>{diffMarker(entityDiff(TOP_MODULE_ID), emphasizeDifferences)}</text>
-                  </g>
-                ) : null}
                 <a
                   className={
                     comparison
