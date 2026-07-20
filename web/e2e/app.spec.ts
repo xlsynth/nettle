@@ -180,8 +180,8 @@ const inspectSchematicGeometry = async (page: Page) =>
 
 const openFixture = async (page: Page) => {
   await page.goto("/");
-  await page.getByLabel("Choose a .nettle bundle").setInputFiles(fixture);
-  await expect(page.getByText("LOCAL")).toBeVisible();
+  await page.getByLabel("Open a .nettle bundle locally").setInputFiles(fixture);
+  await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");
   await expect(page.getByText("Bundle ready")).toBeVisible();
   await expect(page.getByText(/slang .*ready/i)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open bundle" })).toContainText(
@@ -198,11 +198,13 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
 
   await page.goto("/");
   await expect(page).toHaveTitle(/Nettle/);
-  await expect(page.getByRole("heading", { name: "Open an elaborated design" })).toBeVisible();
-  await expect(page.getByText("never uploaded")).toBeVisible();
-  await page.getByLabel("Choose a .nettle bundle").setInputFiles(fixture);
+  await expect(
+    page.getByRole("heading", { name: "Open or share an elaborated design" }),
+  ).toBeVisible();
+  await expect(page.getByText(/This file stays in your browser/)).toBeVisible();
+  await page.getByLabel("Open a .nettle bundle locally").setInputFiles(fixture);
 
-  await expect(page.getByText("LOCAL")).toBeVisible();
+  await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");
   await expect(page.locator(".source-status")).toContainText("rtl/top.sv");
   await expect(page.locator(".monaco-editor")).toContainText("module top");
   await expect(page.locator(".schematic-node.kind-module")).toHaveCount(1);
@@ -234,7 +236,7 @@ for (const generateCase of [
 
     await page.goto("/");
     await page
-      .getByLabel("Choose a .nettle bundle")
+      .getByLabel("Open a .nettle bundle locally")
       .setInputFiles(generateCase.fixture ?? "");
     await expect(page.getByText("Bundle ready")).toBeVisible();
     await expect(page.locator(".source-status")).toContainText("rtl/top.sv");
@@ -294,7 +296,9 @@ test("scopes generate activity to opposite parameterized child instances", async
   const runtimeErrors = captureRuntimeErrors(page);
 
   await page.goto("/");
-  await page.getByLabel("Choose a .nettle bundle").setInputFiles(generateXorFixture ?? "");
+  await page
+    .getByLabel("Open a .nettle bundle locally")
+    .setInputFiles(generateXorFixture ?? "");
   await expect(page.getByText("Bundle ready")).toBeVisible();
 
   const expectActivity = async (activeStatement: string, inactiveStatement: string) => {
@@ -319,7 +323,7 @@ test("scopes generate activity to opposite parameterized child instances", async
 test("renders an inferred vector shift register as distinct pipeline stages", async ({ page }) => {
   const runtimeErrors = captureRuntimeErrors(page);
   await page.goto("/");
-  await page.getByLabel("Choose a .nettle bundle").setInputFiles(shiftRegisterFixture);
+  await page.getByLabel("Open a .nettle bundle locally").setInputFiles(shiftRegisterFixture);
 
   await expect(page.getByText("Bundle ready")).toBeVisible();
   await expect(page.locator(".schematic-node.kind-register")).toHaveCount(4);
@@ -341,7 +345,7 @@ test("automatically opens a bundle supplied by the viewer host", async ({ page }
   );
 
   await page.goto("/");
-  await expect(page.getByText("LOCAL")).toBeVisible();
+  await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");
   await expect(page.getByRole("button", { name: "Open bundle" })).toContainText("startup.nettle");
   await expect(page.locator(".schematic-node.kind-module")).toHaveCount(1);
   expect(runtimeErrors).toEqual([]);

@@ -13,6 +13,12 @@ import {
 } from "react";
 import type { SourceInventoryEntry } from "./api/contracts";
 import {
+  type HostedSessionCreated,
+  type HostedUploadKind,
+  hostedSessionTokenFromPath,
+  isHostedSessionPath,
+} from "./api/hosted";
+import {
   findSourceReference,
   firstSourceReference,
   type LoadedWorkspace,
@@ -33,6 +39,13 @@ import { BuildInfo } from "./components/BuildInfo";
 import { ComparisonWorkspaceView } from "./components/ComparisonWorkspaceView";
 import { FileTree } from "./components/FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
+import {
+  HostedSessionBanner,
+  HostedSessionNotFound,
+  HostedSessionPage,
+  HostedUploadDialog,
+  type HostedViewerSession,
+} from "./components/HostedSessions";
 import { Inspector } from "./components/Inspector";
 import { InstanceHierarchy } from "./components/InstanceHierarchy";
 import { BundleWelcome, CompareBundlesDialog, OpenBundleDialog } from "./components/OpenBundle";
@@ -56,8 +69,10 @@ interface SourceView {
 
 interface OpenedBundle {
   installationId: number;
+  file: File;
   provider: LocalBundleProvider;
   workspace: LoadedWorkspace;
+  hostedSession?: HostedViewerSession;
 }
 
 interface OpenedComparisonBundle {
@@ -66,6 +81,7 @@ interface OpenedComparisonBundle {
   workspace: LoadedWorkspace;
   inventory: SourceInventoryEntry[];
   modules: Array<{ id: string; name: string; definitionName: string }>;
+  hostedSession?: HostedViewerSession;
 }
 
 interface OpenedComparison {
@@ -147,6 +163,15 @@ export class OpenRequestOwner {
 export default function App() {
   const [opened, setOpened] = useState<OpenedBundle>();
   const [comparison, setComparison] = useState<OpenedComparison>();
+  const [hostedToken, setHostedToken] = useState(() =>
+    hostedSessionTokenFromPath(window.location.pathname),
+  );
+  const [invalidHostedRoute, setInvalidHostedRoute] = useState(
+    () =>
+      isHostedSessionPath(window.location.pathname) &&
+      !hostedSessionTokenFromPath(window.location.pathname),
+  );
+  const [hostedUploadKind, setHostedUploadKind] = useState<HostedUploadKind>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -155,40 +180,80 @@ export default function App() {
   const generation = useRef(0);
   const openOwner = useRef(new OpenRequestOwner());
   const startupRequested = useRef(false);
+  const initialHostedRoute = useRef(Boolean(hostedToken) || invalidHostedRoute);
 
-  const openBundle = useCallback(async (file: File) => {
-    const request = ++generation.current;
-    const controller = openOwner.current.begin();
-    setLoading(true);
-    setError(undefined);
-    setStatusDetail(`Validating ${file.name} in this browser`);
-    try {
-      const provider = await LocalBundleProvider.open(
-        file,
-        DEFAULT_BUNDLE_CACHE_LIMITS,
-        controller.signal,
-      );
-      const workspace = await loadWorkspace(provider, controller.signal);
-      if (request !== generation.current || controller.signal.aborted) return;
-      setOpened({ installationId: request, provider, workspace });
-      setComparison(undefined);
-      setDialogOpen(false);
-      setCompareDialogOpen(false);
-      setStatusDetail(`Local snapshot ${workspace.slice.snapshotId}`);
-    } catch (reason) {
-      if (request !== generation.current || controller.signal.aborted) return;
-      controller.abort();
-      const message = reason instanceof Error ? reason.message : String(reason);
-      setError(message);
-      setStatusDetail(`Could not open ${file.name}: ${message}`);
-    } finally {
-      openOwner.current.finish(controller);
-      if (request === generation.current) setLoading(false);
-    }
-  }, []);
+  const openBundle = useCallback(
+    async (
+      file: File,
+      hostedSession?: HostedViewerSession,
+      reportPhase?: (phase: string) => void,
+    ) => {
+      const request = ++generation.current;
+      const controller = openOwner.current.begin();
+      const phase = (detail: string) => {
+        setStatusDetail(detail);
+        reportPhase?.(detail);
+      };
+      setLoading(true);
+      setError(undefined);
+      phase(`Reading ${file.name} in this browser…`);
+      try {
+        await Promise.resolve();
+        phase(`Validating ${file.name} in this browser…`);
+        const provider = await LocalBundleProvider.open(
+          file,
+          DEFAULT_BUNDLE_CACHE_LIMITS,
+          controller.signal,
+        );
+        phase("Launching viewer…");
+        const workspace = await loadWorkspace(provider, controller.signal);
+        if (request !== generation.current || controller.signal.aborted) return;
+        setOpened({ installationId: request, file, provider, workspace, hostedSession });
+        setComparison(undefined);
+        setDialogOpen(false);
+        setCompareDialogOpen(false);
+        setHostedUploadKind(undefined);
+        setHostedToken(hostedSession?.token);
+        setInvalidHostedRoute(false);
+        if (!hostedSession && isHostedSessionPath(window.location.pathname)) {
+          window.history.replaceState(null, "", staticAssetRoute("/"));
+        }
+        setStatusDetail(
+          hostedSession
+            ? `Shareable snapshot ${workspace.slice.snapshotId}`
+            : `Local snapshot ${workspace.slice.snapshotId}`,
+        );
+      } catch (reason) {
+        if (request !== generation.current || controller.signal.aborted) return;
+        controller.abort();
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setError(message);
+        phase(`Could not open ${file.name}: ${message}`);
+        if (reportPhase) throw reason;
+      } finally {
+        openOwner.current.finish(controller);
+        if (request === generation.current) setLoading(false);
+      }
+    },
+    [],
+  );
+
+  const openHostedBundle = useCallback(
+    (file: File, session: HostedViewerSession, reportPhase: (phase: string) => void) =>
+      openBundle(file, session, reportPhase),
+    [openBundle],
+  );
 
   const openComparison = useCallback(
-    async (referenceFile: File, candidateFile: File, matching: MatchingPolicy) => {
+    async (
+      referenceFile: File,
+      candidateFile: File,
+      matching: MatchingPolicy,
+      hostedSessions?: {
+        reference?: HostedViewerSession;
+        candidate?: HostedViewerSession;
+      },
+    ) => {
       const request = ++generation.current;
       const controller = openOwner.current.begin();
       setLoading(true);
@@ -231,6 +296,7 @@ export default function App() {
             workspace: referenceWorkspace,
             inventory: referenceInventory,
             modules: referenceProject.modules,
+            hostedSession: hostedSessions?.reference,
           },
           candidate: {
             file: candidateFile,
@@ -238,10 +304,16 @@ export default function App() {
             workspace: candidateWorkspace,
             inventory: candidateInventory,
             modules: candidateProject.modules,
+            hostedSession: hostedSessions?.candidate,
           },
           initialPolicy: matching,
         });
         setOpened(undefined);
+        setHostedToken(undefined);
+        setInvalidHostedRoute(false);
+        if (isHostedSessionPath(window.location.pathname)) {
+          window.history.replaceState(null, "", staticAssetRoute("/"));
+        }
         setDialogOpen(false);
         setCompareDialogOpen(false);
         setStatusDetail(`${referenceFile.name} → ${candidateFile.name}`);
@@ -267,6 +339,24 @@ export default function App() {
   const openCompareDialog = useCallback(() => {
     setError(undefined);
     setCompareDialogOpen(true);
+  }, []);
+
+  const openHostedUpload = useCallback((kind: HostedUploadKind) => {
+    generation.current += 1;
+    openOwner.current.abort();
+    setError(undefined);
+    setHostedUploadKind(kind);
+  }, []);
+
+  const acceptHostedSession = useCallback((session: HostedSessionCreated) => {
+    generation.current += 1;
+    openOwner.current.abort();
+    setHostedUploadKind(undefined);
+    setOpened(undefined);
+    setComparison(undefined);
+    setInvalidHostedRoute(false);
+    window.history.pushState(null, "", session.url);
+    setHostedToken(session.token);
   }, []);
 
   const openDemo = useCallback(
@@ -313,7 +403,26 @@ export default function App() {
   );
 
   useEffect(() => {
+    const navigate = () => {
+      generation.current += 1;
+      openOwner.current.abort();
+      setLoading(false);
+      setDialogOpen(false);
+      setCompareDialogOpen(false);
+      setHostedUploadKind(undefined);
+      setOpened(undefined);
+      setComparison(undefined);
+      const token = hostedSessionTokenFromPath(window.location.pathname);
+      setHostedToken(token);
+      setInvalidHostedRoute(isHostedSessionPath(window.location.pathname) && !token);
+    };
+    window.addEventListener("popstate", navigate);
+    return () => window.removeEventListener("popstate", navigate);
+  }, []);
+
+  useEffect(() => {
     if (startupRequested.current) return;
+    if (initialHostedRoute.current) return;
     startupRequested.current = true;
     const controller = new AbortController();
     const startupGeneration = generation.current;
@@ -378,7 +487,7 @@ export default function App() {
       }}
       onDrop={(event) => {
         if (event.defaultPrevented) return;
-        if (dialogOpen || compareDialogOpen) {
+        if (dialogOpen || compareDialogOpen || hostedUploadKind) {
           event.preventDefault();
           return;
         }
@@ -398,6 +507,8 @@ export default function App() {
           setStatusDetail={setStatusDetail}
           onOpenBundle={openDialog}
           onCompareBundles={openCompareDialog}
+          hostedReference={comparison.reference.hostedSession}
+          hostedCandidate={comparison.candidate.hostedSession}
           onPolicyChange={(policy) =>
             setComparison((current) => (current ? { ...current, initialPolicy: policy } : current))
           }
@@ -411,12 +522,17 @@ export default function App() {
           setStatusDetail={setStatusDetail}
           onOpenBundle={openDialog}
           onCompareBundles={openCompareDialog}
+          hostedSession={opened.hostedSession}
         />
+      ) : hostedToken ? (
+        <HostedSessionPage key={hostedToken} token={hostedToken} onOpenBundle={openHostedBundle} />
+      ) : invalidHostedRoute ? (
+        <HostedSessionNotFound />
       ) : (
         <>
           <AppHeader
             projectName="Open .nettle bundle"
-            statusText={loading ? "Validating bundle…" : "No bundle open"}
+            statusText={loading ? statusDetail : "No bundle open"}
             dataMode={loading ? "loading" : "empty"}
             statusDetail={statusDetail}
             onOpenProject={openDialog}
@@ -429,6 +545,8 @@ export default function App() {
             error={error}
             onSelect={(file) => void openBundle(file)}
             onCompare={openCompareDialog}
+            onUploadBundle={() => openHostedUpload("bundle")}
+            onUploadSources={() => openHostedUpload("sources")}
             demos={publicDemosEnabled ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
           />
@@ -443,19 +561,38 @@ export default function App() {
         }}
         onSelect={(file) => void openBundle(file)}
       />
+      <HostedUploadDialog
+        kind={hostedUploadKind}
+        onClose={() => setHostedUploadKind(undefined)}
+        onCreated={acceptHostedSession}
+      />
       <CompareBundlesDialog
         open={compareDialogOpen}
         loading={loading}
         error={error}
-        initialReference={comparison?.reference.file}
+        initialReference={comparison?.reference.file ?? opened?.file}
         initialCandidate={comparison?.candidate.file}
         initialMatching={comparison?.initialPolicy}
+        hostedFiles={[
+          ...(opened?.hostedSession ? [opened.file] : []),
+          ...(comparison?.reference.hostedSession ? [comparison.reference.file] : []),
+          ...(comparison?.candidate.hostedSession ? [comparison.candidate.file] : []),
+        ]}
         onClose={() => {
           if (!loading) setCompareDialogOpen(false);
         }}
-        onCompare={(reference, candidate, matching) =>
-          void openComparison(reference, candidate, matching)
-        }
+        onCompare={(reference, candidate, matching) => {
+          const hostedSessionFor = (file: File) => {
+            if (opened?.file === file) return opened.hostedSession;
+            if (comparison?.reference.file === file) return comparison.reference.hostedSession;
+            if (comparison?.candidate.file === file) return comparison.candidate.hostedSession;
+            return undefined;
+          };
+          void openComparison(reference, candidate, matching, {
+            reference: hostedSessionFor(reference),
+            candidate: hostedSessionFor(candidate),
+          });
+        }}
       />
       <BuildInfo />
     </div>
@@ -465,6 +602,7 @@ export default function App() {
 interface WorkspaceViewProps {
   provider: LocalBundleProvider;
   initial: LoadedWorkspace;
+  hostedSession?: HostedViewerSession;
   statusDetail: string;
   setStatusDetail: (detail: string) => void;
   onOpenBundle: () => void;
@@ -474,6 +612,7 @@ interface WorkspaceViewProps {
 function WorkspaceView({
   provider,
   initial,
+  hostedSession,
   statusDetail,
   setStatusDetail,
   onOpenBundle,
@@ -866,13 +1005,14 @@ function WorkspaceView({
       <AppHeader
         projectName={provider.fileName}
         statusText={initial.project.bundleStatus}
-        dataMode="bundle"
+        dataMode={hostedSession ? "hosted" : "bundle"}
         statusDetail={statusDetail}
         onOpenProject={onOpenBundle}
         onCompareBundles={onCompareBundles}
         onSearch={() => setUtilityDialog("search")}
         onHelp={() => setUtilityDialog("help")}
       />
+      {hostedSession ? <HostedSessionBanner session={hostedSession} /> : null}
       <ProjectSearchDialog
         open={utilityDialog === "search"}
         files={initial.project.files}
@@ -883,7 +1023,9 @@ function WorkspaceView({
       />
       <HelpDialog open={utilityDialog === "help"} onClose={() => setUtilityDialog(undefined)} />
       <main
-        className={`workspace${inspectorOpen ? " inspector-visible" : ""}`}
+        className={`workspace${inspectorOpen ? " inspector-visible" : ""}${
+          hostedSession ? " hosted-session" : ""
+        }`}
         style={
           sourcePaneWidth === undefined
             ? undefined

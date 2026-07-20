@@ -123,20 +123,21 @@ USER nettle
 WORKDIR /work
 ENTRYPOINT ["nettle"]
 
-# The interactive image combines the compiler toolchain with the static viewer
-# so `nettle render` can build and serve a bundle in one container.
+# The interactive image combines the compiler toolchain with the web
+# application. It can run the persistent hosted service in one container or
+# use `nettle render` for a one-off local build.
 FROM builder AS nettle
 USER root
-RUN apt-get update \
-  && apt-get install --yes --no-install-recommends curl \
-  && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /data /scratch \
+  && chown nettle:nettle /data /scratch \
+  && chmod 0700 /data /scratch
 COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \
   NETTLE_BIND_ADDRESS=0.0.0.0 \
   NETTLE_PORT=8080
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null || exit 1
+  CMD bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3; read -r protocol status _ <&3; test "$protocol" = HTTP/1.1; test "$status" = 200'
 USER nettle
 CMD ["view"]
 

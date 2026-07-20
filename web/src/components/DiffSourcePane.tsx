@@ -225,7 +225,11 @@ export function DiffSourcePane({
         ),
       );
       for (const model of retired) {
-        if (!active.has(model)) model.dispose();
+        // A different DiffSourcePane instance can reuse the same URI-backed
+        // model after this instance unmounts (for example, Diff → Hierarchy
+        // → Source). Never let the retired instance dispose a model that the
+        // replacement widget has already attached.
+        if (!active.has(model) && !model.isAttachedToEditor()) model.dispose();
       }
     }, RETIRED_MODEL_DISPOSAL_DELAY_MS);
   }, []);
@@ -294,6 +298,7 @@ export function DiffSourcePane({
     const instance = editorRef.current;
     const referenceModel = instance?.getOriginalEditor().getModel() ?? modelsRef.current.reference;
     const candidateModel = instance?.getModifiedEditor().getModel() ?? modelsRef.current.candidate;
+    instance?.setModel(null);
     editorRef.current = null;
     modelsRef.current = { reference: null, candidate: null };
     const models = new Set(retiredModelsRef.current);
@@ -302,8 +307,8 @@ export function DiffSourcePane({
     retiredModelsRef.current.clear();
 
     // @monaco-editor/react owns the diff editor and disposes it in its child
-    // cleanup. Because keepCurrent*Model is enabled, dispose the retained
-    // models only after that synchronous cleanup has completed.
+    // cleanup. Detach its models first, then dispose the retained models only
+    // after the synchronous widget cleanup and any in-flight worker result.
     scheduleModelDisposal(models);
   }, [scheduleModelDisposal]);
 
@@ -372,12 +377,15 @@ export function DiffSourcePane({
           if (!model) return;
           const previous = modelsRef.current[side];
           modelsRef.current[side] = model;
+          // Monaco updates the two sides of a diff independently and can
+          // still have an advanced diff computation in flight for a previous
+          // pair. Retain replaced models until the whole widget is detached.
           if (previous && previous !== model) retiredModelsRef.current.add(previous);
         }),
       ]);
-      // A model-path change remounts DiffEditor (see the key below). By the
-      // time this new editor mounts, the wrapper has disposed the old editor,
-      // so its retained models can be released on the next task.
+      // A model-path change remounts DiffEditor (see the key below). Its old
+      // widget has been disposed before this mount effect runs, so models that
+      // were not reused by another editor can now be released.
       if (previousModels.size > 0) {
         scheduleModelDisposal(previousModels);
       }

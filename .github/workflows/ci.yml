@@ -234,6 +234,10 @@ jobs:
           done
           curl --fail --silent --show-error http://127.0.0.1:8080/startup.nettle --output /dev/null
 
+      - name: Smoke-test hosted source workflow
+        if: matrix.image == 'nettle'
+        run: scripts/check-hosted-image.sh "nettle-${{ matrix.image }}:${{ github.sha }}"
+
       - name: Save tested image
         run: docker save "nettle-${{ matrix.image }}:${{ github.sha }}" --output "/tmp/${{ matrix.image }}-${{ matrix.arch }}.tar"
 

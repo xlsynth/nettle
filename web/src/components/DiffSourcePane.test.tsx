@@ -82,14 +82,17 @@ describe("DiffSourcePane bounded states", () => {
     const referenceModel = {
       dispose: vi.fn(() => order.push("dispose-reference")),
       getLineMaxColumn: vi.fn(() => 12),
+      isAttachedToEditor: vi.fn(() => false),
     };
     const candidateModel = {
       dispose: vi.fn(() => order.push("dispose-candidate")),
       getLineMaxColumn: vi.fn(() => 12),
+      isAttachedToEditor: vi.fn(() => false),
     };
     const nextReferenceModel = {
       dispose: vi.fn(() => order.push("dispose-next-reference")),
       getLineMaxColumn: vi.fn(() => 12),
+      isAttachedToEditor: vi.fn(() => false),
     };
     const sideEditor = (
       model: typeof referenceModel,
@@ -250,8 +253,11 @@ describe("DiffSourcePane bounded states", () => {
     expect(candidateModel.dispose).not.toHaveBeenCalled();
 
     view.unmount();
+    expect(reusedDiffEditor.setModel).toHaveBeenCalledWith(null);
+    referenceModel.isAttachedToEditor.mockReturnValue(true);
     await act(async () => vi.runAllTimers());
-    expect(order).toEqual(["dispose-next-reference", "dispose-reference", "dispose-candidate"]);
+    expect(order).toEqual(["dispose-next-reference", "dispose-candidate"]);
+    expect(referenceModel.dispose).not.toHaveBeenCalled();
   });
 
   it("does not ask Monaco to repeat a source diff rejected by the worker limit", () => {

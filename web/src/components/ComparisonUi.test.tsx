@@ -56,6 +56,28 @@ describe("comparison bundle picker", () => {
     expect(onCompare).toHaveBeenCalledWith(candidate, reference, "conservative");
   });
 
+  it("discloses which comparison side already has a shareable URL", () => {
+    const hosted = new File(["hosted"], "design.nettle", {
+      type: "application/zip",
+    });
+
+    render(
+      <CompareBundlesDialog
+        open
+        loading={false}
+        initialReference={hosted}
+        hostedFiles={[hosted]}
+        onCompare={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Reference already has a shareable URL/)).toBeTruthy();
+    expect(screen.getByText(/Any local bundle stays in this browser/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Swap reference and candidate bundles" }));
+    expect(screen.getByText(/Candidate already has a shareable URL/)).toBeTruthy();
+  });
+
   it("contains dropped files instead of dispatching them to an enclosing workspace", () => {
     const enclosingDrop = vi.fn();
     const reference = new File(["reference"], "reference.nettle", {

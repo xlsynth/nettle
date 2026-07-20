@@ -18,7 +18,9 @@ test("opens and lays out the synthesized Bedrock CDC FIFO netlist", async ({ pag
   const runtimeErrors = captureRuntimeErrors(page);
 
   await page.goto("/");
-  await page.getByLabel("Choose a .nettle bundle").setInputFiles(netlistFixture ?? "");
+  await page
+    .getByLabel("Open a .nettle bundle locally")
+    .setInputFiles(netlistFixture ?? "");
   await expect(page.getByText("Bundle ready")).toBeVisible();
   await expect(page.locator(".source-status")).toContainText("br_cdc_fifo_flops_synth.v", {
     timeout: 30_000,

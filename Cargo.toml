@@ -8,9 +8,12 @@ default-run = "nettle"
 [dependencies]
 anyhow = "=1.0.102"
 async-stream = "=0.3.6"
-axum = "=0.8.9"
+axum = { version = "=0.8.9", features = ["multipart"] }
 clap = { version = "=4.6.1", features = ["derive", "env"] }
+flate2 = "=1.1.9"
+getrandom = "=0.3.4"
 hex = "=0.4.3"
+libc = "=0.2.186"
 prost = "=0.13.5"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
@@ -18,7 +21,8 @@ serde_yaml_ng = "=0.10.0"
 sha2 = "=0.10.8"
 thiserror = "=2.0.18"
 tempfile = "=3.16.0"
-tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal"] }
+tar = { version = "=0.4.44", default-features = false }
+tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tower-http = { version = "=0.6.11", features = ["compression-gzip", "fs", "set-header"] }
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
