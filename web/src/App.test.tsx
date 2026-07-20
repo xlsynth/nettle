@@ -283,6 +283,36 @@ describe("App comparison installation", () => {
     await waitFor(() => expect(screen.getByText("LOCAL · NOT UPLOADED")).toBeTruthy());
   });
 
+  it("clears local bundle loading when history navigation aborts validation", async () => {
+    const provider = deferred<{
+      fileName: string;
+      marker: number;
+      getSourceInventory: ReturnType<typeof vi.fn>;
+      getProject: ReturnType<typeof vi.fn>;
+    }>();
+    harness.open.mockReturnValueOnce(provider.promise);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open bundle" }));
+    const dialog = screen.getByRole("dialog", { name: "Open Nettle bundle" });
+    fireEvent.change(within(dialog).getByLabelText("Choose a .nettle bundle"), {
+      target: {
+        files: [new File(["bundle"], "local.nettle", { type: "application/zip" })],
+      },
+    });
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+
+    window.history.pushState(null, "", "/");
+    fireEvent.popState(window);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Open Nettle bundle" })).toBeNull(),
+    );
+    expect(screen.getByLabelText("Open a .nettle bundle locally").hasAttribute("disabled")).toBe(
+      false,
+    );
+  });
+
   it("aborts eager validation when a rapid bundle replacement supersedes it", () => {
     const owner = new OpenRequestOwner();
     const first = owner.begin();

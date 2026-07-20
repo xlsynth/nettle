@@ -406,6 +406,9 @@ export default function App() {
     const navigate = () => {
       generation.current += 1;
       openOwner.current.abort();
+      setLoading(false);
+      setDialogOpen(false);
+      setCompareDialogOpen(false);
       setOpened(undefined);
       setComparison(undefined);
       const token = hostedSessionTokenFromPath(window.location.pathname);

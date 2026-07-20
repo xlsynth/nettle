@@ -49,6 +49,8 @@ const ZIP_EOCD_SEARCH_BYTES: usize = ZIP_EOCD_BYTES + u16::MAX as usize;
 const ZIP64_LOCATOR_BYTES: u64 = 20;
 const ZIP64_EOCD_MIN_BYTES: usize = 56;
 const ENOSPC_METADATA_COMMIT_ATTEMPTS: usize = 3;
+const TERMINAL_METADATA_COMMIT_ATTEMPTS: usize = 3;
+const TERMINAL_METADATA_RETRY_DELAY: Duration = Duration::from_millis(100);
 const SCRATCH_CLEANUP_ATTEMPTS: usize = 3;
 const SCRATCH_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const TERMINAL_CLEANUP_ATTEMPTS: usize = 3;
@@ -1807,6 +1809,7 @@ async fn commit_terminal_metadata_with_operations(
     mut cleanup_artifacts: impl FnMut(&Path, &SessionMetadata) -> bool,
 ) -> TerminalCommitOutcome {
     let mut enospc_attempts = 0_usize;
+    let mut other_attempts = 0_usize;
     loop {
         match commit_metadata(session_path, metadata) {
             Ok(()) => break,
@@ -1822,8 +1825,18 @@ async fn commit_terminal_metadata_with_operations(
                 tokio::task::yield_now().await;
             }
             Err(error) => {
-                eprintln!("could not commit a terminal hosted build state; retrying: {error}");
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                other_attempts = other_attempts.saturating_add(1);
+                eprintln!(
+                    "could not commit a terminal hosted build state \
+                     (attempt {other_attempts}/{TERMINAL_METADATA_COMMIT_ATTEMPTS}): {error}"
+                );
+                if other_attempts >= TERMINAL_METADATA_COMMIT_ATTEMPTS {
+                    return TerminalCommitOutcome {
+                        committed: false,
+                        cleanup_deferred: false,
+                    };
+                }
+                tokio::time::sleep(TERMINAL_METADATA_RETRY_DELAY).await;
             }
         }
     }
@@ -4163,6 +4176,51 @@ mod tests {
         assert!(outcome.cleanup_deferred);
         assert_eq!(commits, 1);
         assert_eq!(cleanup_attempts, TERMINAL_CLEANUP_ATTEMPTS);
+        assert_eq!(
+            read_metadata(&session_path).unwrap().state,
+            SessionState::Ready
+        );
+        let mut queue = host.state.0.queue.lock().await;
+        assert_eq!(queue.jobs.pop_front(), Some(next_token));
+        assert!(queue.jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persistent_terminal_metadata_failure_is_deferred_without_blocking_the_queue() {
+        let host = test_host(2);
+        let token = "c".repeat(64);
+        let next_token = "d".repeat(64);
+        let mut ready = test_source_metadata(&token, SessionState::Ready, 1);
+        ready.completed_at_ms = Some(now_ms());
+        let session_path = write_test_session(&host.state, &ready);
+        host.state
+            .0
+            .queue
+            .lock()
+            .await
+            .jobs
+            .push_back(next_token.clone());
+
+        let mut commits = 0_usize;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            commit_terminal_metadata_with_operations(
+                &host.state,
+                &session_path,
+                &ready,
+                |_, _| {
+                    commits = commits.saturating_add(1);
+                    Err(io::Error::from_raw_os_error(libc::EACCES))
+                },
+                |_, _| true,
+            ),
+        )
+        .await
+        .expect("persistent metadata failure must not block the FIFO worker");
+
+        assert!(!outcome.committed);
+        assert!(!outcome.cleanup_deferred);
+        assert_eq!(commits, TERMINAL_METADATA_COMMIT_ATTEMPTS);
         assert_eq!(
             read_metadata(&session_path).unwrap().state,
             SessionState::Ready
