@@ -409,6 +409,7 @@ export default function App() {
       setLoading(false);
       setDialogOpen(false);
       setCompareDialogOpen(false);
+      setHostedUploadKind(undefined);
       setOpened(undefined);
       setComparison(undefined);
       const token = hostedSessionTokenFromPath(window.location.pathname);

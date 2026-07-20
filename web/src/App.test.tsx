@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
   open: vi.fn(),
   createHostedSession: vi.fn(),
+  getHostedConfig: vi.fn(),
   getHostedSessionStatus: vi.fn(),
   loadHostedBundle: vi.fn(),
   providerSequence: 0,
@@ -29,6 +30,7 @@ vi.mock("./api/hosted", async (importOriginal) => {
   return {
     ...original,
     createHostedSession: harness.createHostedSession,
+    getHostedConfig: harness.getHostedConfig,
     getHostedSessionStatus: harness.getHostedSessionStatus,
     loadHostedBundle: harness.loadHostedBundle,
   };
@@ -89,6 +91,17 @@ const project = {
   tools: [],
 };
 
+const hostedConfig = {
+  hostingEnabled: true,
+  retention: {
+    mode: "expires" as const,
+    seconds: 2_592_000,
+    display: "Retained for 30 days after completion",
+  },
+  limits: { maxUploadBytes: 1024 * 1024, maxQueuedBuilds: 32 },
+  sourceFormats: ["zip", "tar", "tar.gz", "tgz"],
+};
+
 const deferred = <T,>() => {
   let resolve: (value: T) => void = () => undefined;
   const promise = new Promise<T>((resolvePromise) => {
@@ -120,6 +133,7 @@ beforeEach(() => {
       edges: [],
     },
   }));
+  harness.getHostedConfig.mockResolvedValue(hostedConfig);
   harness.getHostedSessionStatus.mockResolvedValue({
     state: "ready",
     admittedAtMs: 1_000,
@@ -311,6 +325,40 @@ describe("App comparison installation", () => {
     expect(screen.getByLabelText("Open a .nettle bundle locally").hasAttribute("disabled")).toBe(
       false,
     );
+  });
+
+  it("aborts an active hosted upload when history navigation changes routes", async () => {
+    let uploadSignal: AbortSignal | undefined;
+    harness.createHostedSession.mockImplementation(
+      (_kind: string, _file: File, _progress: (value: unknown) => void, signal: AbortSignal) => {
+        uploadSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("The upload was aborted.", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    render(<App />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Upload bundle and create shareable session/ }),
+    );
+    fireEvent.change(await screen.findByLabelText("Choose bundle to upload"), {
+      target: { files: [new File(["bundle"], "design.nettle")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload and create link" }));
+    await waitFor(() => expect(harness.createHostedSession).toHaveBeenCalledOnce());
+
+    window.history.pushState(null, "", `/s/${"a".repeat(64)}`);
+    fireEvent.popState(window);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Upload bundle and create link" })).toBeNull(),
+    );
+    expect(uploadSignal?.aborted).toBe(true);
   });
 
   it("aborts eager validation when a rapid bundle replacement supersedes it", () => {

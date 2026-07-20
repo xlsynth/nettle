@@ -394,6 +394,7 @@ fn initialize_state(mut options: HostOptions) -> Result<HostState> {
 
     let mut queued = Vec::new();
     let mut deferred_terminal_metadata = Vec::new();
+    let mut deferred_terminal_cleanup = Vec::new();
     let mut max_order = 0_u64;
     for entry in fs::read_dir(&sessions_root)? {
         let entry = entry?;
@@ -417,6 +418,9 @@ fn initialize_state(mut options: HostOptions) -> Result<HostState> {
         match reconcile_startup_session(&path, metadata, write_metadata)? {
             StartupSessionDisposition::Queue { order, token } => queued.push((order, token)),
             StartupSessionDisposition::Terminal => {}
+            StartupSessionDisposition::CleanupDeferred(metadata) => {
+                deferred_terminal_cleanup.push((path, metadata));
+            }
             StartupSessionDisposition::Deferred(metadata) => {
                 deferred_terminal_metadata.push((path, metadata));
             }
@@ -438,12 +442,16 @@ fn initialize_state(mut options: HostOptions) -> Result<HostState> {
     for (session_path, metadata) in deferred_terminal_metadata {
         spawn_terminal_metadata_retry(state.clone(), session_path, metadata);
     }
+    for (session_path, metadata) in deferred_terminal_cleanup {
+        spawn_terminal_artifact_cleanup(session_path, metadata);
+    }
     Ok(state)
 }
 
 enum StartupSessionDisposition {
     Queue { order: u64, token: String },
     Terminal,
+    CleanupDeferred(SessionMetadata),
     Deferred(SessionMetadata),
 }
 
@@ -453,8 +461,13 @@ fn reconcile_startup_session(
     mut commit_metadata: impl FnMut(&Path, &SessionMetadata) -> io::Result<()>,
 ) -> Result<StartupSessionDisposition> {
     if matches!(metadata.state, SessionState::Ready | SessionState::Failed) {
-        cleanup_terminal_artifacts_once(session_path, &metadata);
-        return Ok(StartupSessionDisposition::Terminal);
+        return Ok(
+            if cleanup_terminal_artifacts_once(session_path, &metadata) {
+                StartupSessionDisposition::Terminal
+            } else {
+                StartupSessionDisposition::CleanupDeferred(metadata)
+            },
+        );
     }
 
     let archive_exists = metadata
@@ -524,12 +537,18 @@ fn commit_startup_terminal_metadata(
     metadata: SessionMetadata,
     commit_metadata: &mut impl FnMut(&Path, &SessionMetadata) -> io::Result<()>,
 ) -> Result<StartupSessionDisposition> {
-    cleanup_terminal_artifacts_once(session_path, &metadata);
+    let mut artifacts_cleaned = cleanup_terminal_artifacts_once(session_path, &metadata);
     for _ in 0..ENOSPC_METADATA_COMMIT_ATTEMPTS {
         match commit_metadata(session_path, &metadata) {
-            Ok(()) => return Ok(StartupSessionDisposition::Terminal),
+            Ok(()) => {
+                return Ok(if artifacts_cleaned {
+                    StartupSessionDisposition::Terminal
+                } else {
+                    StartupSessionDisposition::CleanupDeferred(metadata)
+                });
+            }
             Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => {
-                cleanup_terminal_artifacts_once(session_path, &metadata);
+                artifacts_cleaned |= cleanup_terminal_artifacts_once(session_path, &metadata);
             }
             Err(error) => return Err(error).context("committing hosted terminal recovery"),
         }
@@ -1652,7 +1671,15 @@ async fn process_queued_build_with_metadata_writer(
             .await;
             return Ok(());
         }
-        return Err(error).context("committing hosted build start");
+        eprintln!("could not commit hosted build start; failing the session: {error}");
+        fail_build_after_start_metadata_error(
+            state,
+            &session_path,
+            &mut metadata,
+            &mut commit_metadata,
+        )
+        .await;
+        return Ok(());
     }
 
     let scratch_path = state.0.options.scratch_root.join(token);
@@ -1748,6 +1775,30 @@ async fn fail_build_after_start_enospc(
     }
 
     spawn_terminal_metadata_retry(state.clone(), session_path.to_owned(), metadata.clone());
+}
+
+async fn fail_build_after_start_metadata_error(
+    state: &HostState,
+    session_path: &Path,
+    metadata: &mut SessionMetadata,
+    commit_metadata: &mut impl FnMut(&Path, &SessionMetadata) -> io::Result<()>,
+) {
+    metadata.state = SessionState::Failed;
+    metadata.build_started_at_ms = None;
+    metadata.completed_at_ms = Some(now_ms());
+    metadata.error =
+        Some("Build could not start because Nettle could not persist its build state.".to_owned());
+
+    if !commit_terminal_metadata_with_writer(
+        state,
+        session_path,
+        metadata,
+        |session_path, metadata| commit_metadata(session_path, metadata),
+    )
+    .await
+    {
+        spawn_terminal_metadata_retry(state.clone(), session_path.to_owned(), metadata.clone());
+    }
 }
 
 fn cleanup_failed_artifacts_once(session_path: &Path, format: Option<SourceFormat>) {
@@ -4079,6 +4130,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_start_metadata_failure_is_deferred_without_requeueing_at_the_head() {
+        let host = test_host(2);
+        let token = "4".repeat(64);
+        let next_token = "5".repeat(64);
+        let metadata = test_source_metadata(&token, SessionState::Queued, 1);
+        let session_path = write_test_session(&host.state, &metadata);
+        fs::write(
+            session_path.join(SourceFormat::Zip.stored_filename()),
+            b"raw source upload",
+        )
+        .unwrap();
+        host.state
+            .0
+            .queue
+            .lock()
+            .await
+            .jobs
+            .push_back(next_token.clone());
+
+        let mut commits = 0_usize;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            process_queued_build_with_metadata_writer(&host.state, &token, |_, _| {
+                commits = commits.saturating_add(1);
+                Err(io::Error::from_raw_os_error(libc::EACCES))
+            }),
+        )
+        .await
+        .expect("a session-specific metadata failure must not block the FIFO worker")
+        .unwrap();
+
+        assert_eq!(commits, 1 + TERMINAL_METADATA_COMMIT_ATTEMPTS);
+        let failed = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let current = read_metadata(&session_path).unwrap();
+                if current.state == SessionState::Failed {
+                    break current;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the background retry should persist the failed session");
+        assert_eq!(failed.build_started_at_ms, None);
+        assert!(failed.completed_at_ms.is_some());
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("could not persist its build state")
+        );
+        assert!(!requeue_incomplete_build(&host.state, &token).await);
+
+        let mut queue = host.state.0.queue.lock().await;
+        assert_eq!(queue.jobs.pop_front(), Some(next_token));
+        assert!(queue.jobs.is_empty());
+    }
+
+    #[tokio::test]
     async fn persistent_terminal_enospc_preserves_ready_session_while_queue_advances() {
         let host = test_host(2);
         let token = "8".repeat(64);
@@ -4513,6 +4624,35 @@ mod tests {
         let recovered_failed = read_metadata(&recovered.0.sessions_root.join(&failed)).unwrap();
         assert_eq!(recovered_failed.state, SessionState::Failed);
         assert_eq!(recovered_failed.error.as_deref(), Some("compiler failed"));
+    }
+
+    #[tokio::test]
+    async fn startup_retries_terminal_artifact_cleanup_in_the_background() {
+        let host = test_host(2);
+        let token = "7".repeat(64);
+        let ready = test_source_metadata(&token, SessionState::Ready, 1);
+        let session_path = write_test_session(&host.state, &ready);
+        let archive_path = session_path.join(SourceFormat::Zip.stored_filename());
+
+        // A directory at the archive path makes the synchronous startup
+        // remove_file attempt fail deterministically.
+        fs::create_dir(&archive_path).unwrap();
+        let recovered = initialize_state(test_options(&host)).unwrap();
+        assert!(archive_path.is_dir());
+
+        // The spawned task cannot run until this async test yields. Replace
+        // the blocker with a normal archive and verify that its first
+        // background attempt removes it.
+        fs::remove_dir(&archive_path).unwrap();
+        fs::write(&archive_path, b"lingering source upload").unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while archive_path.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("startup should retry terminal cleanup outside initialization");
+        assert!(recovered.0.queue.lock().await.jobs.is_empty());
     }
 
     #[cfg(unix)]
