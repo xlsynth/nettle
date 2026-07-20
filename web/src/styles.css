@@ -3372,6 +3372,10 @@ button:focus-visible {
   filter: drop-shadow(0 0 3px rgb(53 104 181 / 58%));
 }
 
+.node-interaction.diff-heuristic .node-shape.selected {
+  filter: drop-shadow(0 0 2px rgb(100 60 121 / 34%)) drop-shadow(0 0 3px rgb(53 104 181 / 58%));
+}
+
 .node-interaction.diff-added .node-shape.selected,
 .node-interaction.diff-removed .node-shape.selected,
 .node-interaction.diff-modified .node-shape.selected {
@@ -3387,6 +3391,15 @@ button:focus-visible {
 .node-interaction.source-cross-probed.selected .node-shape,
 .node-interaction.source-cross-probed.selected .constant-value {
   filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 3px rgb(53 104 181 / 68%));
+}
+
+.node-interaction.diff-heuristic.source-cross-probed .node-shape {
+  filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 2px rgb(100 60 121 / 34%));
+}
+
+.node-interaction.diff-heuristic.source-cross-probed.selected .node-shape {
+  filter: drop-shadow(0 0 3px rgb(0 110 140 / 78%)) drop-shadow(0 0 2px rgb(100 60 121 / 34%))
+    drop-shadow(0 0 3px rgb(53 104 181 / 68%));
 }
 
 .group-layer .source-cross-probed .transparent-group.selected .group-boundary {
