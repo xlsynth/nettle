@@ -20,7 +20,7 @@ serde_json = "=1.0.150"
 serde_yaml_ng = "=0.10.0"
 sha2 = "=0.10.8"
 thiserror = "=2.0.18"
-tempfile = "=3.16.0"
+tempfile = "=3.27.0"
 tar = { version = "=0.4.44", default-features = false }
 tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tower-http = { version = "=0.6.11", features = ["compression-gzip", "fs", "set-header"] }
