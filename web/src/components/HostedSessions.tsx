@@ -466,6 +466,12 @@ export function HostedSessionPage({ token, onOpenBundle }: HostedSessionPageProp
       .catch((reason) => {
         if (controller.signal.aborted) return;
         opening.current = false;
+        if (reason instanceof HostedApiError && reason.status === 404) {
+          setNotFound(true);
+          setStatus(undefined);
+          setError(undefined);
+          return;
+        }
         setViewerOpenEnabled(false);
         setError(messageFor(reason));
         setPhase("The viewer could not open this bundle.");

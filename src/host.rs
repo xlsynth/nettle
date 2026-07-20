@@ -51,6 +51,8 @@ const ZIP64_EOCD_MIN_BYTES: usize = 56;
 const ENOSPC_METADATA_COMMIT_ATTEMPTS: usize = 3;
 const SCRATCH_CLEANUP_ATTEMPTS: usize = 3;
 const SCRATCH_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
+const TERMINAL_CLEANUP_ATTEMPTS: usize = 3;
+const TERMINAL_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_RETAINED_ERROR_BYTES: usize = 32 * 1024;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -1609,16 +1611,7 @@ async fn requeue_incomplete_build(state: &HostState, token: &str) -> bool {
         }
         return true;
     }
-    while let Err(error) = remove_source_archive(&session_path, metadata.source_format) {
-        eprintln!("could not remove a terminal hosted source archive; retrying: {error}");
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    if metadata.state == SessionState::Failed {
-        while let Err(error) = remove_persisted_bundle(&session_path) {
-            eprintln!("could not remove a failed hosted bundle; retrying: {error}");
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    }
+    finish_terminal_artifact_cleanup(session_path, metadata).await;
     false
 }
 
@@ -1782,22 +1775,49 @@ async fn commit_terminal_metadata(
 }
 
 async fn commit_terminal_metadata_with_writer(
+    state: &HostState,
+    session_path: &Path,
+    metadata: &SessionMetadata,
+    commit_metadata: impl FnMut(&Path, &SessionMetadata) -> io::Result<()>,
+) -> bool {
+    let outcome = commit_terminal_metadata_with_operations(
+        state,
+        session_path,
+        metadata,
+        commit_metadata,
+        cleanup_terminal_artifacts_once,
+    )
+    .await;
+    if outcome.cleanup_deferred {
+        spawn_terminal_artifact_cleanup(session_path.to_owned(), metadata.clone());
+    }
+    outcome.committed
+}
+
+struct TerminalCommitOutcome {
+    committed: bool,
+    cleanup_deferred: bool,
+}
+
+async fn commit_terminal_metadata_with_operations(
     _state: &HostState,
     session_path: &Path,
     metadata: &SessionMetadata,
     mut commit_metadata: impl FnMut(&Path, &SessionMetadata) -> io::Result<()>,
-) -> bool {
+    mut cleanup_artifacts: impl FnMut(&Path, &SessionMetadata) -> bool,
+) -> TerminalCommitOutcome {
     let mut enospc_attempts = 0_usize;
-    let mut saw_enospc = false;
     loop {
         match commit_metadata(session_path, metadata) {
             Ok(()) => break,
             Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => {
-                saw_enospc = true;
-                cleanup_terminal_artifacts_once(session_path, metadata);
+                cleanup_artifacts(session_path, metadata);
                 enospc_attempts = enospc_attempts.saturating_add(1);
                 if enospc_attempts >= ENOSPC_METADATA_COMMIT_ATTEMPTS {
-                    return false;
+                    return TerminalCommitOutcome {
+                        committed: false,
+                        cleanup_deferred: false,
+                    };
                 }
                 tokio::task::yield_now().await;
             }
@@ -1807,30 +1827,49 @@ async fn commit_terminal_metadata_with_writer(
             }
         }
     }
-    if saw_enospc {
-        for attempt in 1..=ENOSPC_METADATA_COMMIT_ATTEMPTS {
-            if cleanup_terminal_artifacts_once(session_path, metadata) {
-                return true;
-            }
-            if attempt < ENOSPC_METADATA_COMMIT_ATTEMPTS {
-                tokio::task::yield_now().await;
-            }
-        }
-        eprintln!("hosted terminal artifacts could not be fully cleaned after ENOSPC");
-        return true;
+    let cleaned =
+        retry_terminal_artifact_cleanup_with(session_path, metadata, &mut cleanup_artifacts).await;
+    TerminalCommitOutcome {
+        committed: true,
+        cleanup_deferred: !cleaned,
     }
+}
 
-    while let Err(error) = remove_source_archive(session_path, metadata.source_format) {
-        eprintln!("could not remove a terminal hosted source archive; retrying: {error}");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+async fn finish_terminal_artifact_cleanup(session_path: PathBuf, metadata: SessionMetadata) {
+    let mut cleanup = cleanup_terminal_artifacts_once;
+    if retry_terminal_artifact_cleanup_with(&session_path, &metadata, &mut cleanup).await {
+        return;
     }
-    if metadata.state == SessionState::Failed {
-        while let Err(error) = remove_persisted_bundle(session_path) {
-            eprintln!("could not remove a failed hosted bundle; retrying: {error}");
+    eprintln!("terminal hosted artifact cleanup is continuing in the background");
+    spawn_terminal_artifact_cleanup(session_path, metadata);
+}
+
+async fn retry_terminal_artifact_cleanup_with(
+    session_path: &Path,
+    metadata: &SessionMetadata,
+    cleanup: &mut impl FnMut(&Path, &SessionMetadata) -> bool,
+) -> bool {
+    for attempt in 1..=TERMINAL_CLEANUP_ATTEMPTS {
+        if cleanup(session_path, metadata) {
+            return true;
+        }
+        if attempt < TERMINAL_CLEANUP_ATTEMPTS {
+            tokio::time::sleep(TERMINAL_CLEANUP_RETRY_DELAY).await;
+        }
+    }
+    false
+}
+
+fn spawn_terminal_artifact_cleanup(session_path: PathBuf, metadata: SessionMetadata) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        eprintln!("hosted terminal artifact cleanup deferred until the next server restart");
+        return;
+    };
+    drop(runtime.spawn(async move {
+        while !cleanup_terminal_artifacts_once(&session_path, &metadata) {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-    }
-    true
+    }));
 }
 
 fn spawn_terminal_metadata_retry(
@@ -1861,6 +1900,14 @@ fn spawn_terminal_metadata_retry(
 }
 
 fn cleanup_terminal_artifacts_once(session_path: &Path, metadata: &SessionMetadata) -> bool {
+    match fs::metadata(session_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+        Err(error) => {
+            eprintln!("could not inspect hosted session before terminal cleanup: {error}");
+            return false;
+        }
+    }
     let mut cleaned = true;
     if let Err(error) = remove_source_archive(session_path, metadata.source_format) {
         eprintln!("could not remove storage-exhausted hosted source archive: {error}");
@@ -4073,6 +4120,56 @@ mod tests {
         );
         assert!(design_path.is_file());
         assert!(recovered.0.queue.lock().await.jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persistent_terminal_cleanup_is_deferred_without_blocking_the_queue() {
+        let host = test_host(2);
+        let token = "a".repeat(64);
+        let next_token = "b".repeat(64);
+        let mut ready = test_source_metadata(&token, SessionState::Ready, 1);
+        ready.completed_at_ms = Some(now_ms());
+        let session_path = write_test_session(&host.state, &ready);
+        host.state
+            .0
+            .queue
+            .lock()
+            .await
+            .jobs
+            .push_back(next_token.clone());
+
+        let mut commits = 0_usize;
+        let mut cleanup_attempts = 0_usize;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            commit_terminal_metadata_with_operations(
+                &host.state,
+                &session_path,
+                &ready,
+                |path, metadata| {
+                    commits = commits.saturating_add(1);
+                    write_metadata(path, metadata)
+                },
+                |_, _| {
+                    cleanup_attempts = cleanup_attempts.saturating_add(1);
+                    false
+                },
+            ),
+        )
+        .await
+        .expect("persistent cleanup must not block the FIFO worker");
+
+        assert!(outcome.committed);
+        assert!(outcome.cleanup_deferred);
+        assert_eq!(commits, 1);
+        assert_eq!(cleanup_attempts, TERMINAL_CLEANUP_ATTEMPTS);
+        assert_eq!(
+            read_metadata(&session_path).unwrap().state,
+            SessionState::Ready
+        );
+        let mut queue = host.state.0.queue.lock().await;
+        assert_eq!(queue.jobs.pop_front(), Some(next_token));
+        assert!(queue.jobs.is_empty());
     }
 
     #[test]

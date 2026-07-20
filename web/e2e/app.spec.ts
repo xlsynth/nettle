@@ -236,7 +236,7 @@ for (const generateCase of [
 
     await page.goto("/");
     await page
-      .getByLabel("Choose a .nettle bundle")
+      .getByLabel("Open a .nettle bundle locally")
       .setInputFiles(generateCase.fixture ?? "");
     await expect(page.getByText("Bundle ready")).toBeVisible();
     await expect(page.locator(".source-status")).toContainText("rtl/top.sv");
@@ -296,7 +296,9 @@ test("scopes generate activity to opposite parameterized child instances", async
   const runtimeErrors = captureRuntimeErrors(page);
 
   await page.goto("/");
-  await page.getByLabel("Choose a .nettle bundle").setInputFiles(generateXorFixture ?? "");
+  await page
+    .getByLabel("Open a .nettle bundle locally")
+    .setInputFiles(generateXorFixture ?? "");
   await expect(page.getByText("Bundle ready")).toBeVisible();
 
   const expectActivity = async (activeStatement: string, inactiveStatement: string) => {

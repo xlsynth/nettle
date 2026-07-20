@@ -185,6 +185,24 @@ describe("HostedSessionPage", () => {
     expect(screen.queryByText(/Anyone with this link/)).toBeNull();
   });
 
+  it("switches to the expired presentation when a ready bundle disappears before download", async () => {
+    harness.getHostedSessionStatus.mockResolvedValue({
+      state: "ready",
+      admittedAtMs: 10_000,
+      completedAtMs: 20_000,
+      expiresAtMs: 20_001,
+      serverTimeMs: 21_000,
+    });
+    harness.loadHostedBundle.mockRejectedValue(
+      new HostedApiError("Session not found or expired.", 404),
+    );
+
+    render(<HostedSessionPage token={"a".repeat(43)} onOpenBundle={vi.fn()} />);
+
+    expect(await screen.findByText("Session not found or expired")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry viewer launch" })).toBeNull();
+  });
+
   it("allows a failed ready-bundle viewer launch to be retried", async () => {
     const file = new File(["bundle"], "design.nettle");
     harness.getHostedSessionStatus.mockResolvedValue({
