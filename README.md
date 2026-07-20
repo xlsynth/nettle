@@ -295,8 +295,9 @@ heuristic matches for logic whose compiler-generated identities changed.
 
 The viewer constructs one union graph and lays it out once: reference-only
 objects are red and dashed, candidate-only objects are green, matched changes
-are yellow, and unchanged logic remains neutral. Line and outline treatments
-distinguish diff status and heuristic correspondence. The single View menu
+are yellow, and unchanged logic remains neutral. Line, outline, and subtle
+shadow treatments distinguish diff status and heuristic correspondence. The
+single View menu
 selects a neutral reference or candidate snapshot, the complete diff overlay,
 changes-only presentation, or custom status visibility; every view reuses the
 union geometry. Matching is a structural review aid, not a functional-

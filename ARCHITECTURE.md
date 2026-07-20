@@ -179,10 +179,10 @@ the shared node/port identities, pair edges by those remapped endpoints, build
 the union, and invoke layout. Matching policy answers _whether two objects
 correspond_; diff status then answers _whether the paired payloads differ_.
 Consequently, switching from conservative to aggressive can collapse a red
-removal and green addition into one matched object marked `≈`; payload
-comparison then classifies that object as unchanged or yellow modified. This is
-an inferred correspondence, not a functional-equivalence result, and changing
-the correspondence can change union topology and require a new layout.
+removal and green addition into one heuristically styled matched object;
+payload comparison then classifies that object as unchanged or yellow modified.
+This is an inferred correspondence, not a functional-equivalence result, and
+changing the correspondence can change union topology and require a new layout.
 
 Status classification deliberately excludes snapshot IDs, source ranges,
 placement, and volatile compiler provenance:

@@ -840,7 +840,12 @@ describe("SchematicCanvas comparison presentation", () => {
             "old-net": { status: "removed", referenceId: "old-net" },
             "new-net": { status: "added", candidateId: "new-net" },
             "old-constant": { status: "removed", referenceId: "old-constant" },
-            "new-constant": { status: "added", candidateId: "new-constant" },
+            "new-constant": {
+              status: "added",
+              candidateId: "new-constant",
+              matchMethod: "heuristic",
+              sourceHighlighted: true,
+            },
             "changed-constant": { status: "modified" },
           },
         }}
@@ -872,6 +877,9 @@ describe("SchematicCanvas comparison presentation", () => {
     expect(removedConstant?.querySelector(".constant-value")?.textContent).toBe("1'b0");
     expect(addedConstant?.querySelector(".diff-constant-outline.added")).not.toBeNull();
     expect(addedConstant?.querySelector(".constant-value")?.textContent).toBe("1'b1");
+    expect(addedConstant?.classList).toContain("diff-heuristic");
+    expect(addedConstant?.classList).toContain("source-cross-probed");
+    expect(addedConstant?.getAttribute("aria-label")).toContain("heuristic match");
     expect(modifiedConstant?.querySelector(".diff-modified-outline")).not.toBeNull();
     expect(modifiedConstant?.classList).toContain("diff-modified");
     expect(view.container.querySelector(".diff-node-badge")).toBeNull();
