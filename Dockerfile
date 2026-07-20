@@ -6,9 +6,8 @@ ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
 ARG NETTLE_BUILD_STATE
 
-# Nettle publishes three images from this Dockerfile: the compiler-equipped
-# linux/amd64 builder, the linux/amd64 and linux/arm64 static viewer, and their
-# combined linux/amd64 interactive runtime.
+# Nettle publishes one linux/amd64 interactive runtime from this Dockerfile.
+# Other stages support its build and integration-test workflows.
 
 # Download, verify, and isolate the HDL toolchain used only by the linux/amd64
 # builder, combined runtime, and integration-test targets.
@@ -105,7 +104,7 @@ COPY scripts/generate-resource-limits.mjs scripts/generate-resource-limits.mjs
 COPY web web
 RUN npm run build
 
-# Publishable build-only runtime: CLI plus HDL compilers, without web assets.
+# Shared compiler runtime used by the final image and test stages.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends bash ca-certificates coreutils libgcc-s1 passwd \
@@ -127,41 +126,30 @@ ENTRYPOINT ["nettle"]
 # application. It can run the persistent hosted service in one container or
 # use `nettle render` for a one-off local build.
 FROM builder AS nettle
+ARG OPENSSH_SERVER_VERSION=1:9.2p1-2+deb12u10
+ARG OPENSSH_SERVER_SHA256=933cd92a2329f9bf26d22660a834ae18ebdbe8df9c6127e4d9fcb098dac9cf72
 USER root
-RUN mkdir -p /data /scratch \
+RUN apt-get update \
+  && apt-get install --yes --download-only --no-install-recommends \
+    "openssh-server=${OPENSSH_SERVER_VERSION}" \
+  && openssh_deb="$(find /var/cache/apt/archives -maxdepth 1 -name 'openssh-server_*.deb' -print -quit)" \
+  && test -n "$openssh_deb" \
+  && echo "${OPENSSH_SERVER_SHA256}  ${openssh_deb}" | sha256sum --check --strict \
+  && apt-get install --yes --no-install-recommends \
+    "openssh-server=${OPENSSH_SERVER_VERSION}" \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data /scratch \
   && chown nettle:nettle /data /scratch \
   && chmod 0700 /data /scratch
 COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \
   NETTLE_BIND_ADDRESS=0.0.0.0 \
-  NETTLE_PORT=8080
+  NETTLE_PORT=8080 \
+  PATH=/opt/oss-cad-suite/bin:/opt/slang:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3; read -r protocol status _ <&3; test "$protocol" = HTTP/1.1; test "$status" = 200'
-USER nettle
 CMD ["view"]
-
-# The deployable viewer contains no HDL compiler or project source. It remains
-# published for linux/amd64 and linux/arm64 because it carries only the Nettle
-# CLI and static web build.
-FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS viewer
-RUN apt-get update \
-  && apt-get install --yes --no-install-recommends ca-certificates curl passwd \
-  && rm -rf /var/lib/apt/lists/* \
-  && useradd --create-home --home-dir /home/nettle --uid 10001 --user-group nettle
-COPY --from=rust-builder /tmp/nettle /usr/local/bin/nettle
-COPY --from=web-builder /src/web/dist /opt/nettle/web
-RUN chmod 0555 /usr/local/bin/nettle \
-  && chown -R nettle:nettle /home/nettle
-
-ENV HOME=/home/nettle
-USER nettle
-WORKDIR /opt/nettle
-EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null || exit 1
-
-ENTRYPOINT ["nettle", "view", "--bind-address", "0.0.0.0", "--port", "8080", "--web-root", "/opt/nettle/web"]
 
 # Assemble the full integration environment from the checked-out source and
 # verified HDL toolchain; it is not a published runtime image.
@@ -223,6 +211,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
   && npm test \
   && npm run build
 
-# Keep the compact builder as the default final image. The comprehensive test
-# environment is built only when --target test is requested.
-FROM builder AS release
+# Keep the full interactive runtime as the default final image. The
+# comprehensive test environment is built only when --target test is requested.
+FROM nettle
