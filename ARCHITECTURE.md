@@ -210,12 +210,12 @@ modified.
 
 The single View menu combines presets and status visibility controls:
 
-| View               | Semantics on the fixed union geometry                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration.                                                                                             |
-| Diff overlay       | Shows the complete union: removed red/dashed, added green, modified yellow/dashed, and unchanged neutral.                                                                   |
-| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration.                                                                                             |
-| Changes only       | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change.                                               |
+| View               | Semantics on the fixed union geometry                                                                                             |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Reference snapshot | Uses reference payloads, hides candidate-only objects, and removes diff decoration.                                               |
+| Diff overlay       | Shows the complete union: removed red/dashed, added green, modified yellow/dashed, and unchanged neutral.                         |
+| Candidate snapshot | Uses candidate payloads, hides reference-only objects, and removes diff decoration.                                               |
+| Changes only       | Uses diff-overlay semantics while hiding unchanged objects except dim connectivity context needed to understand a visible change. |
 
 Matched union objects use candidate-visible payloads in Diff overlay. All four
 views reuse the same union geometry and do not relayout merely to change a
