@@ -522,7 +522,22 @@ fn reconcile_startup_session(
                     &mut commit_metadata,
                 );
             }
-            Err(error) => return Err(error).context("committing hosted restart recovery"),
+            Err(error) => {
+                eprintln!(
+                    "could not commit hosted restart recovery; quarantining the session: {error}"
+                );
+                metadata.state = SessionState::Failed;
+                metadata.completed_at_ms = Some(now_ms());
+                metadata.error = Some(
+                    "Build could not resume because Nettle could not persist its recovery state."
+                        .to_owned(),
+                );
+                return commit_startup_terminal_metadata(
+                    session_path,
+                    metadata,
+                    &mut commit_metadata,
+                );
+            }
         }
     }
 
@@ -550,7 +565,10 @@ fn commit_startup_terminal_metadata(
             Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => {
                 artifacts_cleaned |= cleanup_terminal_artifacts_once(session_path, &metadata);
             }
-            Err(error) => return Err(error).context("committing hosted terminal recovery"),
+            Err(error) => {
+                eprintln!("could not commit hosted terminal recovery; deferring it: {error}");
+                return Ok(StartupSessionDisposition::Deferred(metadata));
+            }
         }
     }
     Ok(StartupSessionDisposition::Deferred(metadata))
@@ -1541,14 +1559,41 @@ fn sweep_retention(state: &HostState) -> Result<()> {
 }
 
 fn sweep_retention_root(sessions_root: &Path, evict_after: Option<Duration>) -> Result<()> {
+    sweep_retention_root_with(
+        sessions_root,
+        evict_after,
+        |path| fs::remove_dir_all(path),
+        sync_directory,
+    )
+}
+
+fn sweep_retention_root_with(
+    sessions_root: &Path,
+    evict_after: Option<Duration>,
+    mut remove_session: impl FnMut(&Path) -> io::Result<()>,
+    mut sync_sessions: impl FnMut(&Path) -> io::Result<()>,
+) -> Result<()> {
     let Some(evict_after) = evict_after else {
         return Ok(());
     };
     let now = now_ms();
     let retention_ms = evict_after.as_millis().try_into().unwrap_or(u64::MAX);
     for entry in fs::read_dir(sessions_root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("could not inspect one hosted session during retention: {error}");
+                continue;
+            }
+        };
+        let is_directory = match entry.file_type() {
+            Ok(file_type) => file_type.is_dir(),
+            Err(error) => {
+                eprintln!("could not inspect one hosted session type during retention: {error}");
+                continue;
+            }
+        };
+        if !is_directory {
             continue;
         }
         let path = entry.path();
@@ -1563,8 +1608,13 @@ fn sweep_retention_root(sessions_root: &Path, evict_after: Option<Duration>) -> 
             .map(|completed| completed.saturating_add(retention_ms))
             .is_some_and(|expires| expires <= now)
         {
-            fs::remove_dir_all(path)?;
-            sync_directory(sessions_root)?;
+            if let Err(error) = remove_session(&path) {
+                eprintln!("could not remove one expired hosted session: {error}");
+                continue;
+            }
+            if let Err(error) = sync_sessions(sessions_root) {
+                eprintln!("could not synchronize a hosted retention deletion: {error}");
+            }
         }
     }
     Ok(())
@@ -1607,17 +1657,11 @@ async fn requeue_incomplete_build(state: &HostState, token: &str) -> bool {
     let session_path = state.0.sessions_root.join(token);
     let metadata = match read_metadata(&session_path) {
         Ok(metadata) => metadata,
-        Err(_) => {
-            if !metadata_path(&session_path).exists() {
-                return false;
-            }
-            let mut queue = state.0.queue.lock().await;
-            if !queue.jobs.iter().any(|queued| queued == token) {
-                retain_requeued_source_slot(state);
-                queue.jobs.push_front(token.to_owned());
-                state.0.notify.notify_one();
-            }
-            return true;
+        Err(error) => {
+            eprintln!(
+                "hosted build metadata remained unreadable; quarantining the queue entry: {error:#}"
+            );
+            return false;
         }
     };
     if matches!(
@@ -4383,6 +4427,43 @@ mod tests {
         assert!(!session_path.join(".design.nettle.tmp").exists());
     }
 
+    #[test]
+    fn startup_quarantines_a_session_when_recovery_metadata_cannot_be_written() {
+        let host = test_host(2);
+        let token = "6".repeat(64);
+        let metadata = test_source_metadata(&token, SessionState::Building, 1);
+        let session_path = write_test_session(&host.state, &metadata);
+        let archive_path = session_path.join(SourceFormat::Zip.stored_filename());
+        fs::write(&archive_path, b"raw source upload").unwrap();
+        let mut commits = 0_usize;
+
+        let disposition = reconcile_startup_session(&session_path, metadata, |_, _| {
+            commits = commits.saturating_add(1);
+            Err(io::Error::from_raw_os_error(libc::EACCES))
+        })
+        .unwrap();
+
+        let StartupSessionDisposition::Deferred(failed) = disposition else {
+            panic!("a session-specific recovery failure should be deferred");
+        };
+        assert_eq!(commits, 2);
+        assert_eq!(failed.state, SessionState::Failed);
+        assert_eq!(failed.build_started_at_ms, None);
+        assert!(failed.completed_at_ms.is_some());
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("could not persist its recovery state")
+        );
+        assert!(!archive_path.exists());
+        assert_eq!(
+            read_metadata(&session_path).unwrap().state,
+            SessionState::Building
+        );
+    }
+
     #[tokio::test]
     async fn restart_preserves_fifo_and_retries_an_interrupted_build_once() {
         let host = test_host(2);
@@ -4514,6 +4595,44 @@ mod tests {
         assert!(host.state.0.sessions_root.join(fresh_ready).is_dir());
     }
 
+    #[test]
+    fn retention_continues_after_one_expired_session_cannot_be_removed() {
+        let host = test_host(2);
+        let blocked = "6".repeat(64);
+        let removable = "7".repeat(64);
+        let mut blocked_metadata = test_source_metadata(&blocked, SessionState::Ready, 1);
+        blocked_metadata.completed_at_ms = Some(0);
+        let blocked_path = write_test_session(&host.state, &blocked_metadata);
+        let mut removable_metadata = test_source_metadata(&removable, SessionState::Failed, 2);
+        removable_metadata.completed_at_ms = Some(0);
+        let removable_path = write_test_session(&host.state, &removable_metadata);
+        let mut removals = 0_usize;
+        let mut synchronizations = 0_usize;
+
+        sweep_retention_root_with(
+            &host.state.0.sessions_root,
+            Some(Duration::from_secs(1)),
+            |path| {
+                removals = removals.saturating_add(1);
+                if path == blocked_path {
+                    Err(io::Error::from_raw_os_error(libc::EACCES))
+                } else {
+                    fs::remove_dir_all(path)
+                }
+            },
+            |_| {
+                synchronizations = synchronizations.saturating_add(1);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(removals, 2);
+        assert_eq!(synchronizations, 1);
+        assert!(blocked_path.is_dir());
+        assert!(!removable_path.exists());
+    }
+
     #[tokio::test]
     async fn startup_sweeps_expired_sessions_before_recovering_the_build_queue() {
         let host = test_host(2);
@@ -4563,6 +4682,29 @@ mod tests {
         let queue = host.state.0.queue.lock().await;
         assert_eq!(queue.jobs.front(), Some(&token));
         assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn unreadable_dequeued_build_is_quarantined_without_blocking_the_queue() {
+        let host = test_host(2);
+        let unreadable = "8".repeat(64);
+        let next = "9".repeat(64);
+        let session_path = host.state.0.sessions_root.join(&unreadable);
+        fs::create_dir(&session_path).unwrap();
+        fs::write(metadata_path(&session_path), b"{malformed").unwrap();
+        host.state.0.queue.lock().await.jobs.push_back(next.clone());
+
+        assert!(
+            process_queued_build(&host.state, &unreadable)
+                .await
+                .is_err()
+        );
+        assert!(!requeue_incomplete_build(&host.state, &unreadable).await);
+
+        let mut queue = host.state.0.queue.lock().await;
+        assert_eq!(queue.jobs.pop_front(), Some(next));
+        assert!(queue.jobs.is_empty());
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 0);
     }
 
     #[test]
