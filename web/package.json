@@ -12,7 +12,7 @@
     "format": "node ../scripts/run-biome.mjs format --write src vite.config.ts vitest.config.ts playwright.config.ts playwright.benchmark.config.ts e2e",
     "pretest": "node ../scripts/generate-resource-limits.mjs --check",
     "test": "vitest run",
-    "test:e2e": "cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-browser-fixture.nettle && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-shift-register-fixture.nettle --shift-register && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-comparison-reference.nettle --comparison-reference && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-comparison-candidate.nettle --comparison-candidate && playwright test e2e/app.spec.ts --workers=1 && node ../scripts/run-netlist-e2e.mjs",
+    "test:e2e": "cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-browser-fixture.nettle && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-shift-register-fixture.nettle --shift-register && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-comparison-reference.nettle --comparison-reference && cargo run --offline --manifest-path ../Cargo.toml --bin nettle-make-fixture -- /tmp/nettle-comparison-candidate.nettle --comparison-candidate && playwright test e2e/app.spec.ts --workers=2 && node ../scripts/run-netlist-e2e.mjs",
     "bench:graph": "vitest bench --run",
     "bench:browser": "playwright test --config playwright.benchmark.config.ts"
   },

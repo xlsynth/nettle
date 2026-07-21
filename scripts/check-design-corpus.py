@@ -11,6 +11,7 @@ top-parameter override recorded in each corpus manifest.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -69,6 +70,12 @@ def parse_args() -> argparse.Namespace:
             "stage corpora in this persistent directory instead of a temporary "
             "workspace (required with --prepare-only)"
         ),
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="number of design corpora to validate concurrently (default: 1)",
     )
     return parser.parse_args()
 
@@ -646,6 +653,8 @@ def validate_nettle_render(
 
 def main() -> int:
     args = parse_args()
+    if args.jobs < 1:
+        raise RuntimeError("--jobs must be a positive integer")
     if args.prepare_only and args.workspace is None:
         raise RuntimeError("--prepare-only requires --workspace")
     require_tool("git")
@@ -684,10 +693,12 @@ def main() -> int:
         slang = require_tool("slang")
         yosys = None if args.slang_only else require_tool("yosys")
         started = time.perf_counter()
-        checks = 0
         scratch = workspace / "results"
         scratch.mkdir(exist_ok=True)
-        for corpus_name, corpus, examples in staged_corpora:
+
+        def validate_corpus(staged_corpus: Tuple[str, Path, List[Dict]]) -> int:
+            corpus_name, corpus, examples = staged_corpus
+            checks = 0
             corpus_scratch = scratch / corpus_name
             corpus_scratch.mkdir(exist_ok=True)
             if yosys is not None:
@@ -763,6 +774,27 @@ def main() -> int:
                     validate_nettle_render(
                         slang, yosys, corpus, synthesized, corpus_scratch
                     )
+            return checks
+
+        if args.jobs == 1 or len(staged_corpora) == 1:
+            checks = sum(validate_corpus(corpus) for corpus in staged_corpora)
+        else:
+            futures = []
+            with ThreadPoolExecutor(
+                max_workers=min(args.jobs, len(staged_corpora))
+            ) as executor:
+                futures = [
+                    executor.submit(validate_corpus, corpus)
+                    for corpus in staged_corpora
+                ]
+                try:
+                    checks = sum(
+                        future.result() for future in as_completed(futures)
+                    )
+                except BaseException:
+                    for future in futures:
+                        future.cancel()
+                    raise
 
         elapsed = time.perf_counter() - started
         print(f"Validated {checks} design-corpus elaborations in {elapsed:.2f} s")

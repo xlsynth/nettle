@@ -198,7 +198,7 @@ FROM test-base AS integration-tests
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
   --mount=type=cache,target=/src/target \
   scripts/check-toolchain.sh \
-  && npm run test:designs \
+  && npm run test:designs -- --jobs 2 \
   && python3 scripts/build-schematic-diff-fixtures.py \
   && npm run test:e2e:generate
 
