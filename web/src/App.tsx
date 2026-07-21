@@ -623,7 +623,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
         <HostedSessionPage key={hostedToken} token={hostedToken} onOpenBundle={openHostedBundle} />
       ) : hostedMode && hostedComparisonRoute ? (
         <HostedComparisonPage
-          key={`${hostedComparisonRoute.referenceToken}:${hostedComparisonRoute.candidateToken}`}
+          key={`${hostedComparisonRoute.referenceToken}:${hostedComparisonRoute.candidateToken}:${hostedComparisonRoute.matching}`}
           route={hostedComparisonRoute}
           onOpenComparison={openComparison}
         />

@@ -246,8 +246,8 @@ describe("App comparison installation", () => {
   });
 
   it("loads a composed comparison route and persists matching changes in its URL", async () => {
-    const referenceToken = "a".repeat(43);
-    const candidateToken = "b".repeat(43);
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
     window.history.replaceState(
       null,
       "",
@@ -266,8 +266,8 @@ describe("App comparison installation", () => {
   });
 
   it("persists a matching change made through the comparison dialog", async () => {
-    const referenceToken = "a".repeat(43);
-    const candidateToken = "b".repeat(43);
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
     window.history.replaceState(
       null,
       "",
@@ -289,6 +289,46 @@ describe("App comparison installation", () => {
     );
     expect(window.location.pathname).toBe(`/compare/${referenceToken}/${candidateToken}`);
     expect(window.location.search).toBe("?matching=conservative");
+  });
+
+  it("restarts an in-flight direct comparison after matching-only navigation", async () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    const firstSignals: AbortSignal[] = [];
+    let downloadCalls = 0;
+    harness.loadHostedBundle.mockImplementation(
+      (_token: string, _progress: (value: unknown) => void, signal: AbortSignal) => {
+        downloadCalls += 1;
+        if (downloadCalls > 2) {
+          return Promise.resolve(
+            new File(["hosted"], "design.nettle", { type: "application/octet-stream" }),
+          );
+        }
+        firstSignals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    );
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative`,
+    );
+    render(<App />);
+    await waitFor(() => expect(firstSignals).toHaveLength(2));
+
+    window.history.pushState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=aggressive`,
+    );
+    fireEvent.popState(window);
+
+    await waitFor(() => expect(firstSignals.every((signal) => signal.aborted)).toBe(true));
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:aggressive"),
+    );
   });
 
   it("reuses a ready hosted bundle as the reference while keeping the candidate local", async () => {

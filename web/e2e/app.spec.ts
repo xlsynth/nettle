@@ -28,6 +28,17 @@ const captureRuntimeErrors = (page: Page) => {
   return errors;
 };
 
+const expectShareableDownloadLinks = async (page: Page) => {
+  await expect(page.getByRole("link", { name: "Download reference" })).toHaveAttribute(
+    "href",
+    `/api/v1/sessions/${referenceSessionToken}/download`,
+  );
+  await expect(page.getByRole("link", { name: "Download candidate" })).toHaveAttribute(
+    "href",
+    `/api/v1/sessions/${candidateSessionToken}/download`,
+  );
+};
+
 const sourceLine = (page: Page, contents: string) =>
   page.locator(".monaco-editor .view-line").filter({ hasText: contents });
 
@@ -189,8 +200,8 @@ const openFixture = async (page: Page) => {
   );
 };
 
-const referenceSessionToken = "a".repeat(43);
-const candidateSessionToken = "b".repeat(43);
+const referenceSessionToken = "a".repeat(64);
+const candidateSessionToken = "b".repeat(64);
 
 const installHostedComparisonApi = async (
   page: Page,
@@ -321,6 +332,7 @@ test("uploads, reloads, and shares a bundle comparison", async ({ page }) => {
   await expect(
     page.getByText("Anyone with this link can view and download both bundles."),
   ).toBeVisible();
+  await expectShareableDownloadLinks(page);
   const comparisonUrl = page.url();
   expect(new URL(comparisonUrl).pathname).toBe(
     `/compare/${referenceSessionToken}/${candidateSessionToken}`,
@@ -329,6 +341,7 @@ test("uploads, reloads, and shares a bundle comparison", async ({ page }) => {
   await page.reload();
   await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
   await expect(page.getByText("Shareable comparison")).toBeVisible();
+  await expectShareableDownloadLinks(page);
   expect(page.url()).toBe(comparisonUrl);
   expect(runtimeErrors).toEqual([]);
 });
@@ -359,6 +372,14 @@ test("uploads and compares a bundle with a queued source build", async ({ page }
   await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
   await page.getByLabel("Schematic matching policy").selectOption("conservative");
   await expect(page).toHaveURL(/matching=conservative$/);
+  await expectShareableDownloadLinks(page);
+  const comparisonUrl = page.url();
+
+  await page.reload();
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Schematic matching policy")).toHaveValue("conservative");
+  await expectShareableDownloadLinks(page);
+  expect(page.url()).toBe(comparisonUrl);
   expect(runtimeErrors).toEqual([]);
 });
 

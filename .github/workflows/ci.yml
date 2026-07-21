@@ -288,8 +288,7 @@ jobs:
   pages-build:
     name: Build Nettle demo Pages artifact
     needs:
-      - publish-context
-    if: github.ref == 'refs/heads/main'
+      - image-build
     permissions:
       contents: read
       pages: write
@@ -303,8 +302,20 @@ jobs:
           persist-credentials: false
 
       - name: Configure GitHub Pages
-        id: pages
+        id: pages_config
+        if: github.ref == 'refs/heads/main'
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Resolve Pages base path
+        id: pages
+        env:
+          CONFIGURED_BASE_PATH: ${{ steps.pages_config.outputs.base_path }}
+        run: |
+          base_path="$CONFIGURED_BASE_PATH"
+          if [ -z "$base_path" ]; then
+            base_path="/${GITHUB_REPOSITORY#*/}"
+          fi
+          echo "base_path=${base_path}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
@@ -377,8 +388,24 @@ jobs:
             br_cdc_fifo_flops
           build_bundle web/dist/demos/schematic-reference.nettle integration_tests/schematic-diff/reference/project.f integration_tests/schematic-diff/reference top
           build_bundle web/dist/demos/schematic-candidate.nettle integration_tests/schematic-diff/candidate/project.f integration_tests/schematic-diff/candidate top
+          expected_demo_files="$(printf '%s\n' \
+            br_cdc_fifo_flops_synth.nettle \
+            schematic-candidate.nettle \
+            schematic-reference.nettle)"
+          actual_demo_files="$(find web/dist/demos -maxdepth 1 -type f -printf '%f\n' | sort)"
+          test "$actual_demo_files" = "$expected_demo_files"
+
+      - name: Install browser for Pages acceptance test
+        run: npx playwright install --with-deps chromium
+
+      - name: Open public examples beneath the Pages base path
+        env:
+          NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
+          NETTLE_PUBLIC_MODE: static
+        run: npm --workspace web exec -- playwright test --config playwright.pages.config.ts
 
       - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           path: web/dist
@@ -387,6 +414,7 @@ jobs:
     name: Deploy Nettle demo GitHub Pages
     needs:
       - pages-build
+      - publish-context
     if: github.ref == 'refs/heads/main'
     permissions:
       pages: write

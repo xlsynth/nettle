@@ -702,6 +702,12 @@ button:focus-visible {
   align-items: center;
 }
 
+.hosted-comparison-filelists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .hosted-comparison-input {
   display: grid;
   min-width: 0;
@@ -4453,8 +4459,13 @@ button:focus-visible {
   }
 
   .hosted-comparison-inputs,
+  .hosted-comparison-filelists,
   .hosted-comparison-statuses {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hosted-comparison-filelists > span:empty {
+    display: none;
   }
 
   .hosted-comparison-inputs .comparison-slot-swap {

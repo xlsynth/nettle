@@ -31,7 +31,18 @@ import type { HostedViewerSession } from "./HostedSessions";
 const COMPARISON_INPUT_ACCEPT =
   ".nettle,.zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip";
 
-const messageFor = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
+const messageFor = (reason: unknown) => {
+  if (reason instanceof Error) return reason.message;
+  if (
+    typeof reason === "object" &&
+    reason !== null &&
+    "message" in reason &&
+    typeof reason.message === "string"
+  ) {
+    return reason.message;
+  }
+  return String(reason);
+};
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes.toLocaleString()} B`;
@@ -159,6 +170,8 @@ export function HostedComparisonUploadDialog({
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [reference, setReference] = useState<File>();
   const [candidate, setCandidate] = useState<File>();
+  const [referenceFilelist, setReferenceFilelist] = useState("");
+  const [candidateFilelist, setCandidateFilelist] = useState("");
   const [matching, setMatching] = useState<MatchingPolicy>("conservative");
   const [referenceCreated, setReferenceCreated] = useState<HostedSessionCreated>();
   const [candidateCreated, setCandidateCreated] = useState<HostedSessionCreated>();
@@ -176,6 +189,8 @@ export function HostedComparisonUploadDialog({
     setLoadingConfig(false);
     setReference(undefined);
     setCandidate(undefined);
+    setReferenceFilelist("");
+    setCandidateFilelist("");
     setMatching("conservative");
     setReferenceCreated(undefined);
     setCandidateCreated(undefined);
@@ -227,15 +242,25 @@ export function HostedComparisonUploadDialog({
   };
   const referenceValidation = inputError("reference", reference);
   const candidateValidation = inputError("candidate", candidate);
+  const referenceKind =
+    reference && config
+      ? classifyHostedUploadKind(reference.name, config.sourceFormats)
+      : undefined;
+  const candidateKind =
+    candidate && config
+      ? classifyHostedUploadKind(candidate.name, config.sourceFormats)
+      : undefined;
 
   const selectReference = (file?: File) => {
     setReference(file);
+    setReferenceFilelist("");
     setReferenceCreated(undefined);
     setReferenceProgress(undefined);
     setReferenceError(undefined);
   };
   const selectCandidate = (file?: File) => {
     setCandidate(file);
+    setCandidateFilelist("");
     setCandidateCreated(undefined);
     setCandidateProgress(undefined);
     setCandidateError(undefined);
@@ -262,18 +287,25 @@ export function HostedComparisonUploadDialog({
       side: ComparisonSide,
       file: File,
       created: HostedSessionCreated | undefined,
+      sourceFilelist: string,
     ) => {
       if (created) return Promise.resolve(created);
       const kind = classifyHostedUploadKind(file.name, config.sourceFormats);
       if (!kind) return Promise.reject(new Error(`Unsupported ${side} file type.`));
       const setProgress = side === "reference" ? setReferenceProgress : setCandidateProgress;
       setProgress({ loaded: 0, total: file.size, percent: 0 });
-      return createHostedSession(kind, file, undefined, setProgress, controller.signal);
+      return createHostedSession(
+        kind,
+        file,
+        kind === "sources" ? sourceFilelist.trim() || undefined : undefined,
+        setProgress,
+        controller.signal,
+      );
     };
 
     void Promise.allSettled([
-      createSide("reference", reference, referenceCreated),
-      createSide("candidate", candidate, candidateCreated),
+      createSide("reference", reference, referenceCreated, referenceFilelist),
+      createSide("candidate", candidate, candidateCreated, candidateFilelist),
     ])
       .then(([referenceResult, candidateResult]) => {
         if (controller.signal.aborted) return;
@@ -376,6 +408,8 @@ export function HostedComparisonUploadDialog({
                   onClick={() => {
                     setReference(candidate);
                     setCandidate(reference);
+                    setReferenceFilelist(candidateFilelist);
+                    setCandidateFilelist(referenceFilelist);
                     setReferenceError(candidateError);
                     setCandidateError(referenceError);
                     setReferenceProgress(candidateProgress);
@@ -392,6 +426,48 @@ export function HostedComparisonUploadDialog({
                   onSelect={selectCandidate}
                 />
               </div>
+              {referenceKind === "sources" || candidateKind === "sources" ? (
+                <div className="hosted-comparison-filelists">
+                  {referenceKind === "sources" ? (
+                    <label className="dialog-field">
+                      Reference root filelist path <em>optional</em>
+                      <input
+                        type="text"
+                        value={referenceFilelist}
+                        placeholder="project.f"
+                        disabled={uploading || Boolean(referenceCreated)}
+                        spellCheck={false}
+                        autoCapitalize="none"
+                        aria-label="Reference root filelist path"
+                        onChange={(event) => {
+                          setReferenceFilelist(event.target.value);
+                          setReferenceError(undefined);
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <span />
+                  )}
+                  {candidateKind === "sources" ? (
+                    <label className="dialog-field">
+                      Candidate root filelist path <em>optional</em>
+                      <input
+                        type="text"
+                        value={candidateFilelist}
+                        placeholder="project.f"
+                        disabled={uploading || Boolean(candidateCreated)}
+                        spellCheck={false}
+                        autoCapitalize="none"
+                        aria-label="Candidate root filelist path"
+                        onChange={(event) => {
+                          setCandidateFilelist(event.target.value);
+                          setCandidateError(undefined);
+                        }}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
               <label className="comparison-matching-field">
                 <span>Matching policy</span>
                 <select
@@ -475,7 +551,9 @@ interface HostedComparisonPageProps {
   ) => Promise<void>;
 }
 
-const statusLabel = (status?: HostedSessionStatus) => {
+const statusLabel = (status?: HostedSessionStatus, missing = false, error?: string) => {
+  if (missing) return "Session not found or expired";
+  if (error) return `Status check failed: ${error} · retrying`;
   switch (status?.state) {
     case "queued":
       return `Waiting in build queue${status.queuePosition ? ` · position ${status.queuePosition}` : ""}`;
@@ -495,7 +573,8 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
   const [candidateStatus, setCandidateStatus] = useState<HostedSessionStatus>();
   const [referenceMissing, setReferenceMissing] = useState(false);
   const [candidateMissing, setCandidateMissing] = useState(false);
-  const [statusError, setStatusError] = useState<string>();
+  const [referenceStatusError, setReferenceStatusError] = useState<string>();
+  const [candidateStatusError, setCandidateStatusError] = useState<string>();
   const [phase, setPhase] = useState("Loading comparison sessions…");
   const [referenceProgress, setReferenceProgress] = useState<TransferProgress>();
   const [candidateProgress, setCandidateProgress] = useState<TransferProgress>();
@@ -510,7 +589,8 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
     setCandidateStatus(undefined);
     setReferenceMissing(false);
     setCandidateMissing(false);
-    setStatusError(undefined);
+    setReferenceStatusError(undefined);
+    setCandidateStatusError(undefined);
     setViewerError(undefined);
     setReferenceProgress(undefined);
     setCandidateProgress(undefined);
@@ -522,22 +602,27 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
         getHostedSessionStatus(route.candidateToken, controller.signal),
       ]);
       if (controller.signal.aborted) return;
-      setStatusError(undefined);
       let shouldRetry = false;
       const apply = (side: ComparisonSide, result: PromiseSettledResult<HostedSessionStatus>) => {
         const setStatus = side === "reference" ? setReferenceStatus : setCandidateStatus;
         const setMissing = side === "reference" ? setReferenceMissing : setCandidateMissing;
+        const setStatusError =
+          side === "reference" ? setReferenceStatusError : setCandidateStatusError;
         if (result.status === "fulfilled") {
           setMissing(false);
+          setStatusError(undefined);
           setStatus(result.value);
           shouldRetry ||= result.value.state === "queued" || result.value.state === "building";
           return;
         }
         if (result.reason instanceof HostedApiError && result.reason.status === 404) {
           setMissing(true);
+          setStatusError(undefined);
           setStatus(undefined);
           return;
         }
+        setMissing(false);
+        setStatus(undefined);
         setStatusError(messageFor(result.reason));
         shouldRetry = true;
       };
@@ -563,17 +648,67 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
     }
     opening.current = true;
     const controller = new AbortController();
+    let cancelled = false;
     setPhase("Downloading both bundles…");
-    void Promise.all([
-      loadHostedBundle(route.referenceToken, setReferenceProgress, controller.signal),
-      loadHostedBundle(route.candidateToken, setCandidateProgress, controller.signal),
-    ])
-      .then(async ([reference, candidate]) => {
-        if (controller.signal.aborted) return;
+    const loadSide = async (
+      side: ComparisonSide,
+      token: string,
+      setProgress: (progress: TransferProgress) => void,
+    ) => {
+      try {
+        return await loadHostedBundle(token, setProgress, controller.signal);
+      } catch (reason) {
+        const primary = !controller.signal.aborted;
+        if (primary) controller.abort();
+        throw { side, reason, primary };
+      }
+    };
+    const launch = async () => {
+      const [referenceResult, candidateResult] = await Promise.allSettled([
+        loadSide("reference", route.referenceToken, setReferenceProgress),
+        loadSide("candidate", route.candidateToken, setCandidateProgress),
+      ]);
+      if (cancelled) return;
+      const failures = [referenceResult, candidateResult].filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failures.length > 0) {
+        opening.current = false;
+        for (const failure of failures) {
+          const tagged = failure.reason as {
+            side?: ComparisonSide;
+            reason?: unknown;
+            primary?: boolean;
+          };
+          if (!tagged.side || !tagged.primary) continue;
+          const label = tagged.side === "reference" ? "Reference" : "Candidate";
+          if (tagged.reason instanceof HostedApiError && tagged.reason.status === 404) {
+            if (tagged.side === "reference") {
+              setReferenceMissing(true);
+              setReferenceStatus(undefined);
+              setReferenceStatusError(undefined);
+            } else {
+              setCandidateMissing(true);
+              setCandidateStatus(undefined);
+              setCandidateStatusError(undefined);
+            }
+          } else {
+            setViewerOpenEnabled(false);
+            setViewerError(`${label} bundle download failed: ${messageFor(tagged.reason)}`);
+          }
+        }
+        return;
+      }
+      if (referenceResult.status !== "fulfilled" || candidateResult.status !== "fulfilled") return;
+      try {
         setPhase("Validating both bundles in this browser…");
         await onOpenComparison(
-          new File([reference], "reference.nettle", { type: reference.type }),
-          new File([candidate], "candidate.nettle", { type: candidate.type }),
+          new File([referenceResult.value], "reference.nettle", {
+            type: referenceResult.value.type,
+          }),
+          new File([candidateResult.value], "candidate.nettle", {
+            type: candidateResult.value.type,
+          }),
           route.matching,
           {
             reference: { token: route.referenceToken, status: referenceStatus },
@@ -582,19 +717,19 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
           },
           setPhase,
         );
-      })
-      .catch((reason) => {
-        if (controller.signal.aborted) return;
+      } catch (reason) {
+        if (cancelled) return;
         opening.current = false;
-        if (reason instanceof HostedApiError && reason.status === 404) {
-          setStatusError("One of the comparison sessions expired before it could be opened.");
-          return;
-        }
         setViewerOpenEnabled(false);
         setViewerError(messageFor(reason));
         setPhase("The viewer could not open this comparison.");
-      });
-    return () => controller.abort();
+      }
+    };
+    void launch();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
   }, [
     candidateStatus,
     onOpenComparison,
@@ -605,19 +740,19 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
     viewerOpenEnabled,
   ]);
 
-  const failedSide =
-    referenceStatus?.state === "failed"
-      ? "Reference"
+  const terminalProblems = [
+    referenceMissing
+      ? "Reference session was not found or has expired."
+      : referenceStatus?.state === "failed"
+        ? `Reference build failed${referenceStatus.error ? `: ${referenceStatus.error}` : "."}`
+        : undefined,
+    candidateMissing
+      ? "Candidate session was not found or has expired."
       : candidateStatus?.state === "failed"
-        ? "Candidate"
-        : undefined;
-  const missingSide = referenceMissing ? "Reference" : candidateMissing ? "Candidate" : undefined;
-  const terminalError =
-    missingSide !== undefined
-      ? `${missingSide} session was not found or has expired.`
-      : failedSide !== undefined
-        ? `${failedSide} build failed.`
-        : statusError;
+        ? `Candidate build failed${candidateStatus.error ? `: ${candidateStatus.error}` : "."}`
+        : undefined,
+  ].filter((problem): problem is string => Boolean(problem));
+  const terminalError = terminalProblems.length > 0 ? terminalProblems.join(" ") : undefined;
 
   return (
     <>
@@ -635,11 +770,11 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
           <div className="hosted-comparison-statuses">
             <div>
               <strong>Reference</strong>
-              <span>{statusLabel(referenceStatus)}</span>
+              <span>{statusLabel(referenceStatus, referenceMissing, referenceStatusError)}</span>
             </div>
             <div>
               <strong>Candidate</strong>
-              <span>{statusLabel(candidateStatus)}</span>
+              <span>{statusLabel(candidateStatus, candidateMissing, candidateStatusError)}</span>
             </div>
           </div>
           {referenceProgress ? (

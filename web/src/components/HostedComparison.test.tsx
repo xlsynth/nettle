@@ -25,8 +25,8 @@ vi.mock("../api/hosted", async (importOriginal) => {
   };
 });
 
-const referenceToken = "a".repeat(43);
-const candidateToken = "b".repeat(43);
+const referenceToken = "a".repeat(64);
+const candidateToken = "b".repeat(64);
 const config = {
   hostingEnabled: true,
   retention: {
@@ -170,6 +170,65 @@ describe("HostedComparisonUploadDialog", () => {
     );
   });
 
+  it("keeps per-side source filelists attached when inputs are swapped", async () => {
+    render(<HostedComparisonUploadDialog open onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(
+      await screen.findByLabelText("Choose reference .nettle bundle or source archive"),
+      { target: { files: [new File(["reference"], "reference.zip")] } },
+    );
+    fireEvent.change(screen.getByLabelText("Choose candidate .nettle bundle or source archive"), {
+      target: { files: [new File(["candidate"], "candidate.tgz")] },
+    });
+    fireEvent.change(screen.getByLabelText("Reference root filelist path"), {
+      target: { value: "reference/filelist.f" },
+    });
+    fireEvent.change(screen.getByLabelText("Candidate root filelist path"), {
+      target: { value: "candidate/filelist.f" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Swap reference and candidate uploads" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upload and create comparison link" }));
+
+    await waitFor(() => expect(harness.createHostedSession).toHaveBeenCalledTimes(2));
+    expect(harness.createHostedSession).toHaveBeenNthCalledWith(
+      1,
+      "sources",
+      expect.objectContaining({ name: "candidate.tgz" }),
+      "candidate/filelist.f",
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+    expect(harness.createHostedSession).toHaveBeenNthCalledWith(
+      2,
+      "sources",
+      expect.objectContaining({ name: "reference.zip" }),
+      "reference/filelist.f",
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("clears a source filelist when its archive is replaced", async () => {
+    render(<HostedComparisonUploadDialog open onClose={vi.fn()} onCreated={vi.fn()} />);
+    const referenceInput = await screen.findByLabelText(
+      "Choose reference .nettle bundle or source archive",
+    );
+    fireEvent.change(referenceInput, {
+      target: { files: [new File(["old"], "old.zip")] },
+    });
+    fireEvent.change(screen.getByLabelText("Reference root filelist path"), {
+      target: { value: "old/filelist.f" },
+    });
+
+    fireEvent.change(referenceInput, {
+      target: { files: [new File(["new"], "new.zip")] },
+    });
+
+    expect((screen.getByLabelText("Reference root filelist path") as HTMLInputElement).value).toBe(
+      "",
+    );
+  });
+
   it("rejects unsupported extensions and over-limit files before uploading", async () => {
     render(<HostedComparisonUploadDialog open onClose={vi.fn()} onCreated={vi.fn()} />);
     const referenceInput = await screen.findByLabelText(
@@ -281,4 +340,93 @@ describe("HostedComparisonPage", () => {
     expect(await screen.findByText("Reference session was not found or has expired.")).toBeTruthy();
     expect(harness.loadHostedBundle).not.toHaveBeenCalled();
   });
+
+  it("reports both sides when both underlying sessions are missing", async () => {
+    harness.getHostedSessionStatus.mockRejectedValue(
+      new HostedApiError("Session not found or expired.", 404),
+    );
+    render(
+      <HostedComparisonPage
+        route={{ referenceToken, candidateToken, matching: "conservative" }}
+        onOpenComparison={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText(
+        "Reference session was not found or has expired. Candidate session was not found or has expired.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Session not found or expired")).toHaveLength(2);
+  });
+
+  it.each(["reference", "candidate"] as const)(
+    "identifies a %s session that expires during bundle download",
+    async (expiredSide) => {
+      harness.loadHostedBundle.mockImplementation(async (token: string) => {
+        const expiredToken = expiredSide === "reference" ? referenceToken : candidateToken;
+        if (token === expiredToken) {
+          throw new HostedApiError("Session not found or expired.", 404);
+        }
+        return new File([token], `${token}.nettle`, { type: "application/octet-stream" });
+      });
+      render(
+        <HostedComparisonPage
+          route={{ referenceToken, candidateToken, matching: "conservative" }}
+          onOpenComparison={vi.fn()}
+        />,
+      );
+
+      const label = expiredSide === "reference" ? "Reference" : "Candidate";
+      expect(
+        await screen.findByText(`${label} session was not found or has expired.`),
+      ).toBeTruthy();
+    },
+  );
+
+  it("surfaces a primary DOMException download failure", async () => {
+    harness.loadHostedBundle.mockImplementation(async (token: string) => {
+      if (token === referenceToken) throw new DOMException("network unavailable", "NetworkError");
+      return new File([token], `${token}.nettle`, { type: "application/octet-stream" });
+    });
+    render(
+      <HostedComparisonPage
+        route={{ referenceToken, candidateToken, matching: "conservative" }}
+        onOpenComparison={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Reference bundle download failed: network unavailable"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry viewer launch" })).toBeTruthy();
+  });
+
+  it.each(["reference", "candidate"] as const)(
+    "reports a %s build failure without downloading bundles",
+    async (failedSide) => {
+      harness.getHostedSessionStatus.mockImplementation(async (token: string) =>
+        token === (failedSide === "reference" ? referenceToken : candidateToken)
+          ? {
+              state: "failed" as const,
+              admittedAtMs: 1_000,
+              completedAtMs: 2_000,
+              serverTimeMs: 3_000,
+              error: "synthesis failed",
+            }
+          : readyStatus,
+      );
+      render(
+        <HostedComparisonPage
+          route={{ referenceToken, candidateToken, matching: "conservative" }}
+          onOpenComparison={vi.fn()}
+        />,
+      );
+
+      const label = failedSide === "reference" ? "Reference" : "Candidate";
+      expect(await screen.findByText(`${label} build failed: synthesis failed`)).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Comparison unavailable" })).toBeTruthy();
+      expect(harness.loadHostedBundle).not.toHaveBeenCalled();
+    },
+  );
 });
