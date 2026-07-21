@@ -88,6 +88,10 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
   };
 });
 
+vi.mock("./graph/SchematicCanvas", () => ({
+  SchematicCanvas: () => <div data-testid="schematic-canvas" />,
+}));
+
 const project = {
   name: "fixture",
   projectRoot: "",
@@ -189,14 +193,20 @@ describe("App comparison installation", () => {
     expect(screen.getByRole("heading", { name: "Open a design" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Bedrock CDC FIFO/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Schematic diff/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Upload and view a \.nettle bundle/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: /Upload and view a \.nettle bundle/,
+      }),
+    ).toBeNull();
     expect(
       screen.queryByRole("button", {
         name: /Upload, build, and view a \.nettle bundle from RTL sources/,
       }),
     ).toBeNull();
     expect(
-      screen.queryByRole("button", { name: /Open and compare two \.nettle bundles/ }),
+      screen.queryByRole("button", {
+        name: /Open and compare two \.nettle bundles/,
+      }),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: /Upload and compare two designs/ })).toBeNull();
     expect(fetch.mock.calls.some(([request]) => String(request).startsWith("/api/v1/"))).toBe(
@@ -209,9 +219,15 @@ describe("App comparison installation", () => {
   it("keeps two-local-file comparison available without hosted API requests or uploads", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open and compare two .nettle bundles",
+      }),
+    );
 
-    const dialog = screen.getByRole("dialog", { name: "Compare Nettle bundles" });
+    const dialog = screen.getByRole("dialog", {
+      name: "Compare Nettle bundles",
+    });
     expect(within(dialog).getByText("Bundles stay in this browser.")).toBeTruthy();
     fireEvent.change(within(dialog).getByLabelText("Choose reference .nettle bundle file"), {
       target: { files: [new File(["reference"], "reference.nettle")] },
@@ -238,7 +254,9 @@ describe("App comparison installation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Upload and compare two designs" }));
 
     expect(
-      await screen.findByRole("dialog", { name: "Upload and compare two designs" }),
+      await screen.findByRole("dialog", {
+        name: "Upload and compare two designs",
+      }),
     ).toBeTruthy();
     expect(
       screen.getByText(/Anyone with the comparison URL can view and download both bundles/),
@@ -301,12 +319,16 @@ describe("App comparison installation", () => {
         downloadCalls += 1;
         if (downloadCalls > 2) {
           return Promise.resolve(
-            new File(["hosted"], "design.nettle", { type: "application/octet-stream" }),
+            new File(["hosted"], "design.nettle", {
+              type: "application/octet-stream",
+            }),
           );
         }
         firstSignals.push(signal);
         return new Promise((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
         });
       },
     );
@@ -331,6 +353,99 @@ describe("App comparison installation", () => {
     );
   });
 
+  it("cancels an in-flight hosted comparison when a local drop starts", async () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    const downloadSignals: AbortSignal[] = [];
+    let localSignal: AbortSignal | undefined;
+    harness.loadHostedBundle.mockImplementation(
+      (_token: string, _progress: (value: unknown) => void, signal: AbortSignal) => {
+        downloadSignals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    harness.open.mockImplementation(
+      (_file: File, _limits: unknown, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          localSignal = signal;
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative`,
+    );
+    render(<App />);
+    await waitFor(() => expect(downloadSignals).toHaveLength(2));
+
+    fireEvent.drop(screen.getByRole("application"), {
+      dataTransfer: {
+        files: [new File(["local"], "local.nettle", { type: "application/zip" })],
+      },
+    });
+
+    await waitFor(() => expect(downloadSignals.every((signal) => signal.aborted)).toBe(true));
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+    expect(window.location.pathname).toBe("/");
+    expect(harness.loadHostedBundle).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("comparison-workspace")).toBeNull();
+    expect(localSignal?.aborted).toBe(false);
+  });
+
+  it("keeps hosted session retry UI mounted after browser validation fails", async () => {
+    const token = "a".repeat(64);
+    harness.open.mockRejectedValue(new Error("invalid hosted bundle"));
+    window.history.replaceState(null, "", `/s/${token}`);
+    render(<App />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("invalid hosted bundle");
+    expect(screen.getByRole("button", { name: "Retry viewer launch" })).toBeTruthy();
+    expect(harness.loadHostedBundle).toHaveBeenCalledOnce();
+    expect(window.location.pathname).toBe(`/s/${token}`);
+  });
+
+  it("keeps hosted comparison retry UI mounted after browser validation fails", async () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    harness.open.mockRejectedValue(new Error("invalid hosted comparison"));
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative`,
+    );
+    render(<App />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("invalid hosted comparison");
+    expect(screen.getByRole("button", { name: "Retry viewer launch" })).toBeTruthy();
+    expect(harness.loadHostedBundle).toHaveBeenCalledTimes(2);
+    expect(window.location.pathname).toBe(`/compare/${referenceToken}/${candidateToken}`);
+  });
+
+  it("keeps a loaded shareable route when a local replacement fails", async () => {
+    const token = "a".repeat(64);
+    window.history.replaceState(null, "", `/s/${token}`);
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("SHAREABLE")).toBeTruthy());
+    harness.open.mockRejectedValueOnce(new Error("invalid local replacement"));
+
+    fireEvent.drop(screen.getByRole("application"), {
+      dataTransfer: {
+        files: [new File(["invalid"], "invalid.nettle", { type: "application/zip" })],
+      },
+    });
+
+    await waitFor(() => expect(harness.open).toHaveBeenCalledTimes(2));
+    expect(window.location.pathname).toBe(`/s/${token}`);
+    expect(screen.getByText("SHAREABLE")).toBeTruthy();
+  });
+
   it("reuses a ready hosted bundle as the reference while keeping the candidate local", async () => {
     const token = "a".repeat(64);
     window.history.replaceState(null, "", `/s/${token}`);
@@ -341,7 +456,9 @@ describe("App comparison installation", () => {
     expect(harness.loadHostedBundle).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Compare Nettle bundles" });
+    const dialog = screen.getByRole("dialog", {
+      name: "Compare Nettle bundles",
+    });
     expect(within(dialog).getByText("design.nettle")).toBeTruthy();
     expect(within(dialog).getByText(/Reference already has a shareable URL/)).toBeTruthy();
     expect(within(dialog).getByText(/Any local bundle stays in this browser/)).toBeTruthy();
@@ -527,7 +644,11 @@ describe("App comparison installation", () => {
 
   it("does not reinterpret a drop on comparison dialog chrome as a single-bundle open", () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open and compare two .nettle bundles",
+      }),
+    );
 
     fireEvent.drop(screen.getByRole("dialog", { name: "Compare Nettle bundles" }), {
       dataTransfer: {
@@ -545,7 +666,11 @@ describe("App comparison installation", () => {
 
   it("remounts a replacement with the same filenames and snapshot IDs", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open and compare two .nettle bundles",
+      }),
+    );
     const reference = new File(["reference"], "reference.nettle", {
       type: "application/zip",
     });
@@ -588,7 +713,11 @@ describe("App comparison installation", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fetch).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open and compare two .nettle bundles",
+      }),
+    );
     fireEvent.change(screen.getByLabelText("Choose reference .nettle bundle file"), {
       target: { files: [new File(["reference"], "user-reference.nettle")] },
     });

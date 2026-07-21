@@ -201,6 +201,10 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [statusDetail, setStatusDetail] = useState("No bundle is open");
+  const openedRef = useRef(opened);
+  const comparisonRef = useRef(comparison);
+  openedRef.current = opened;
+  comparisonRef.current = comparison;
   const generation = useRef(0);
   const openOwner = useRef(new OpenRequestOwner());
   const startupRequested = useRef(false);
@@ -216,6 +220,19 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     ) => {
       const request = ++generation.current;
       const controller = openOwner.current.begin();
+      if (
+        !hostedSession &&
+        hostedMode &&
+        !openedRef.current &&
+        !comparisonRef.current &&
+        (isHostedSessionPath(window.location.pathname) ||
+          isHostedComparisonPath(window.location.pathname))
+      ) {
+        window.history.replaceState(null, "", staticAssetRoute("/"));
+        setHostedToken(undefined);
+        setHostedComparisonRoute(undefined);
+        setInvalidHostedRoute(false);
+      }
       const phase = (detail: string) => {
         setStatusDetail(detail);
         reportPhase?.(detail);
@@ -234,7 +251,13 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
         phase("Launching viewer…");
         const workspace = await loadWorkspace(provider, controller.signal);
         if (request !== generation.current || controller.signal.aborted) return;
-        setOpened({ installationId: request, file, provider, workspace, hostedSession });
+        setOpened({
+          installationId: request,
+          file,
+          provider,
+          workspace,
+          hostedSession,
+        });
         setComparison(undefined);
         setDialogOpen(false);
         setCompareDialogOpen(false);
@@ -267,7 +290,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
         if (request === generation.current) setLoading(false);
       }
     },
-    [],
+    [hostedMode],
   );
 
   const openHostedBundle = useCallback(
