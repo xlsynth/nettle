@@ -104,6 +104,7 @@ RUN --mount=type=cache,target=/root/.npm \
   npm ci
 COPY resource-limits.yaml ./
 COPY scripts/generate-resource-limits.mjs scripts/generate-resource-limits.mjs
+COPY assets/nettle_logo_light.png assets/nettle_logo_light.png
 COPY web web
 RUN NETTLE_PUBLIC_MODE="$NETTLE_PUBLIC_MODE" npm run build
 
