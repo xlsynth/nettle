@@ -163,17 +163,27 @@ describe("hosted API contracts", () => {
       referenceToken,
       candidateToken,
       matching: "aggressive",
+      modulePair: {
+        referenceModule: "reference_top",
+        candidateModule: "candidate_top",
+      },
     });
-    expect(route).toBe(`/compare/${referenceToken}/${candidateToken}?matching=aggressive`);
+    expect(route).toBe(
+      `/compare/${referenceToken}/${candidateToken}?matching=aggressive&referenceModule=reference_top&candidateModule=candidate_top`,
+    );
     expect(
       hostedComparisonRouteFromLocation(
         `/compare/${referenceToken}/${candidateToken}`,
-        "?matching=aggressive",
+        "?matching=aggressive&referenceModule=reference_top&candidateModule=candidate_top",
       ),
     ).toEqual({
       referenceToken,
       candidateToken,
       matching: "aggressive",
+      modulePair: {
+        referenceModule: "reference_top",
+        candidateModule: "candidate_top",
+      },
     });
     expect(
       hostedComparisonRouteFromLocation(
@@ -183,6 +193,12 @@ describe("hosted API contracts", () => {
     ).toBe("conservative");
     expect(isHostedComparisonPath(`/compare/${referenceToken}/${candidateToken}`)).toBe(true);
     expect(isHostedComparisonPath("/unrelated")).toBe(false);
+    expect(
+      hostedComparisonRouteFromLocation(
+        `/compare/${referenceToken}/${candidateToken}`,
+        "?referenceModule=reference_top",
+      )?.modulePair,
+    ).toBeUndefined();
   });
 
   it("rejects malformed comparison capability routes", () => {
@@ -196,5 +212,16 @@ describe("hosted API contracts", () => {
         matching: "conservative",
       }),
     ).toThrow("comparison session token");
+    expect(() =>
+      hostedComparisonPath({
+        referenceToken: token,
+        candidateToken: token,
+        matching: "conservative",
+        modulePair: {
+          referenceModule: "",
+          candidateModule: "candidate_top",
+        },
+      }),
+    ).toThrow("comparison module pair");
   });
 });

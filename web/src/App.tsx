@@ -13,6 +13,7 @@ import {
 } from "react";
 import type { SourceInventoryEntry } from "./api/contracts";
 import {
+  type HostedComparisonModulePair,
   type HostedComparisonRoute,
   type HostedSessionCreated,
   type HostedUploadKind,
@@ -95,6 +96,7 @@ interface OpenedComparison {
   reference: OpenedComparisonBundle;
   candidate: OpenedComparisonBundle;
   initialPolicy: MatchingPolicy;
+  explicitModulePair?: HostedComparisonModulePair;
   shareableComparison: boolean;
 }
 
@@ -308,6 +310,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
         reference?: HostedViewerSession;
         candidate?: HostedViewerSession;
         shareable?: boolean;
+        modulePair?: HostedComparisonModulePair;
       },
       reportPhase?: (phase: string) => void,
     ) => {
@@ -368,6 +371,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
             hostedSession: hostedSessions?.candidate,
           },
           initialPolicy: matching,
+          explicitModulePair: hostedSessions?.modulePair,
           shareableComparison: hostedSessions?.shareable ?? false,
         });
         setOpened(undefined);
@@ -379,6 +383,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
             referenceToken: hostedSessions.reference.token,
             candidateToken: hostedSessions.candidate.token,
             matching,
+            modulePair: hostedSessions.modulePair,
           };
           setHostedComparisonRoute(nextRoute);
           window.history.replaceState(null, "", hostedComparisonPath(nextRoute));
@@ -622,6 +627,17 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
           hostedReference={comparison.reference.hostedSession}
           hostedCandidate={comparison.candidate.hostedSession}
           shareableComparison={comparison.shareableComparison}
+          initialModulePair={comparison.explicitModulePair}
+          onModulePairChange={(modulePair) => {
+            setComparison((current) =>
+              current ? { ...current, explicitModulePair: modulePair } : current,
+            );
+            if (comparison.shareableComparison && hostedComparisonRoute) {
+              const nextRoute = { ...hostedComparisonRoute, modulePair };
+              setHostedComparisonRoute(nextRoute);
+              window.history.replaceState(null, "", hostedComparisonPath(nextRoute));
+            }
+          }}
           onPolicyChange={(policy) => {
             setComparison((current) => (current ? { ...current, initialPolicy: policy } : current));
             if (comparison.shareableComparison && hostedComparisonRoute) {
@@ -646,7 +662,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
         <HostedSessionPage key={hostedToken} token={hostedToken} onOpenBundle={openHostedBundle} />
       ) : hostedMode && hostedComparisonRoute ? (
         <HostedComparisonPage
-          key={`${hostedComparisonRoute.referenceToken}:${hostedComparisonRoute.candidateToken}:${hostedComparisonRoute.matching}`}
+          key={hostedComparisonPath(hostedComparisonRoute)}
           route={hostedComparisonRoute}
           onOpenComparison={openComparison}
         />
@@ -714,13 +730,24 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
             if (comparison?.candidate.file === file) return comparison.candidate.hostedSession;
             return undefined;
           };
+          const sameOrientation =
+            reference === comparison?.reference.file && candidate === comparison?.candidate.file;
+          const reversedOrientation =
+            reference === comparison?.candidate.file && candidate === comparison?.reference.file;
+          const modulePair = sameOrientation
+            ? comparison?.explicitModulePair
+            : reversedOrientation && comparison?.explicitModulePair
+              ? {
+                  referenceModule: comparison.explicitModulePair.candidateModule,
+                  candidateModule: comparison.explicitModulePair.referenceModule,
+                }
+              : undefined;
           void openComparison(reference, candidate, matching, {
             reference: hostedSessionFor(reference),
             candidate: hostedSessionFor(candidate),
             shareable:
-              Boolean(comparison?.shareableComparison) &&
-              reference === comparison?.reference.file &&
-              candidate === comparison?.candidate.file,
+              Boolean(comparison?.shareableComparison) && (sameOrientation || reversedOrientation),
+            modulePair,
           });
         }}
       />

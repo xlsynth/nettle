@@ -47,6 +47,8 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       hostedReference,
       hostedCandidate,
       shareableComparison,
+      initialModulePair,
+      onModulePairChange,
       onPolicyChange,
     }: {
       reference: { provider: { marker: number } };
@@ -56,6 +58,11 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       hostedReference?: unknown;
       hostedCandidate?: unknown;
       shareableComparison?: boolean;
+      initialModulePair?: { referenceModule: string; candidateModule: string };
+      onModulePairChange?: (modulePair: {
+        referenceModule: string;
+        candidateModule: string;
+      }) => void;
       onPolicyChange?: (policy: "conservative" | "aggressive") => void;
     }) => {
       const [mountedIdentity] = React.useState(
@@ -70,6 +77,22 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
           {shareableComparison ? (
             <>
               <output data-testid="shareable-comparison">shareable</output>
+              {initialModulePair ? (
+                <output data-testid="explicit-module-pair">
+                  {initialModulePair.referenceModule}:{initialModulePair.candidateModule}
+                </output>
+              ) : null}
+              <button
+                type="button"
+                onClick={() =>
+                  onModulePairChange?.({
+                    referenceModule: "reference_selected",
+                    candidateModule: "candidate_selected",
+                  })
+                }
+              >
+                Confirm explicit module pair
+              </button>
               <button type="button" onClick={() => onPolicyChange?.("aggressive")}>
                 Use aggressive matching
               </button>
@@ -283,6 +306,40 @@ describe("App comparison installation", () => {
     expect(window.location.search).toBe("?matching=aggressive");
   });
 
+  it("restores and persists an explicit module pair in a shareable comparison URL", async () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative&referenceModule=reference_top&candidateModule=candidate_top`,
+    );
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("explicit-module-pair").textContent).toBe(
+        "reference_top:candidate_top",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm explicit module pair" }));
+    expect(new URLSearchParams(window.location.search).get("referenceModule")).toBe(
+      "reference_selected",
+    );
+    expect(new URLSearchParams(window.location.search).get("candidateModule")).toBe(
+      "candidate_selected",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use aggressive matching" }));
+    expect(new URLSearchParams(window.location.search).get("matching")).toBe("aggressive");
+    expect(new URLSearchParams(window.location.search).get("referenceModule")).toBe(
+      "reference_selected",
+    );
+    expect(new URLSearchParams(window.location.search).get("candidateModule")).toBe(
+      "candidate_selected",
+    );
+  });
+
   it("persists a matching change made through the comparison dialog", async () => {
     const referenceToken = "a".repeat(64);
     const candidateToken = "b".repeat(64);
@@ -307,6 +364,36 @@ describe("App comparison installation", () => {
     );
     expect(window.location.pathname).toBe(`/compare/${referenceToken}/${candidateToken}`);
     expect(window.location.search).toBe("?matching=conservative");
+  });
+
+  it("keeps a hosted comparison shareable when its sides are swapped", async () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative&referenceModule=reference_top&candidateModule=candidate_top`,
+    );
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:conservative"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Swap reference and candidate bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Compare bundles" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("3:4:conservative"),
+    );
+    expect(screen.getByTestId("shareable-comparison").textContent).toBe("shareable");
+    expect(window.location.pathname).toBe(`/compare/${candidateToken}/${referenceToken}`);
+    expect(new URLSearchParams(window.location.search).get("referenceModule")).toBe(
+      "candidate_top",
+    );
+    expect(new URLSearchParams(window.location.search).get("candidateModule")).toBe(
+      "reference_top",
+    );
   });
 
   it("restarts an in-flight direct comparison after matching-only navigation", async () => {
@@ -350,6 +437,52 @@ describe("App comparison installation", () => {
     await waitFor(() => expect(firstSignals.every((signal) => signal.aborted)).toBe(true));
     await waitFor(() =>
       expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:aggressive"),
+    );
+  });
+
+  it("restarts an in-flight direct comparison after module-pair-only navigation", async () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    const firstSignals: AbortSignal[] = [];
+    let downloadCalls = 0;
+    harness.loadHostedBundle.mockImplementation(
+      (_token: string, _progress: (value: unknown) => void, signal: AbortSignal) => {
+        downloadCalls += 1;
+        if (downloadCalls > 2) {
+          return Promise.resolve(
+            new File(["hosted"], "design.nettle", {
+              type: "application/octet-stream",
+            }),
+          );
+        }
+        firstSignals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative&referenceModule=reference_old&candidateModule=candidate_old`,
+    );
+    render(<App />);
+    await waitFor(() => expect(firstSignals).toHaveLength(2));
+
+    window.history.pushState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative&referenceModule=reference_new&candidateModule=candidate_new`,
+    );
+    fireEvent.popState(window);
+
+    await waitFor(() => expect(firstSignals.every((signal) => signal.aborted)).toBe(true));
+    await waitFor(() =>
+      expect(screen.getByTestId("explicit-module-pair").textContent).toBe(
+        "reference_new:candidate_new",
+      ),
     );
   });
 

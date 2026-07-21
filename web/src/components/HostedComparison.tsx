@@ -550,6 +550,7 @@ interface HostedComparisonPageProps {
       reference: HostedViewerSession;
       candidate: HostedViewerSession;
       shareable: true;
+      modulePair?: HostedComparisonRoute["modulePair"];
     },
     setPhase: (phase: string) => void,
   ) => Promise<void>;
@@ -718,6 +719,7 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
             reference: { token: route.referenceToken, status: referenceStatus },
             candidate: { token: route.candidateToken, status: candidateStatus },
             shareable: true,
+            modulePair: route.modulePair,
           },
           setPhase,
         );
@@ -740,6 +742,7 @@ export function HostedComparisonPage({ route, onOpenComparison }: HostedComparis
     referenceStatus,
     route.candidateToken,
     route.matching,
+    route.modulePair,
     route.referenceToken,
     viewerOpenEnabled,
   ]);

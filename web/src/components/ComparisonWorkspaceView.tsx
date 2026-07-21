@@ -13,6 +13,7 @@ import {
   useTransition,
 } from "react";
 import type { SourceInventoryEntry } from "../api/contracts";
+import type { HostedComparisonModulePair } from "../api/hosted";
 import {
   findUniquePathMatch,
   type LoadedWorkspace,
@@ -116,6 +117,8 @@ export interface ComparisonWorkspaceViewProps {
   hostedReference?: HostedViewerSession;
   hostedCandidate?: HostedViewerSession;
   shareableComparison?: boolean;
+  initialModulePair?: HostedComparisonModulePair;
+  onModulePairChange?: (modulePair: HostedComparisonModulePair) => void;
   onPolicyChange?: (policy: MatchingPolicy) => void;
 }
 
@@ -682,25 +685,51 @@ export const compatibilityWarnings = (
 export function ComparisonWorkspaceView({
   reference,
   candidate,
+  initialModulePair,
+  onModulePairChange,
   ...props
 }: ComparisonWorkspaceViewProps) {
   const initialMismatch = modulesRequireExplicitPair(
     reference.workspace.slice.module,
     candidate.workspace.slice.module,
   );
+  const defaultReferenceModule =
+    reference.modules.find(
+      (module) => module.definitionName === reference.workspace.slice.module.definitionName,
+    )?.name ?? reference.workspace.slice.module.name;
+  const defaultCandidateModule =
+    candidate.modules.find(
+      (module) => module.definitionName === candidate.workspace.slice.module.definitionName,
+    )?.name ?? candidate.workspace.slice.module.name;
+  const validInitialReferenceModule =
+    initialModulePair &&
+    reference.modules.some((module) => module.name === initialModulePair.referenceModule)
+      ? initialModulePair.referenceModule
+      : undefined;
+  const validInitialCandidateModule =
+    initialModulePair &&
+    candidate.modules.some((module) => module.name === initialModulePair.candidateModule)
+      ? initialModulePair.candidateModule
+      : undefined;
+  const validInitialModulePair =
+    validInitialReferenceModule && validInitialCandidateModule ? initialModulePair : undefined;
+  const initialPairRestorationRequired =
+    validInitialModulePair !== undefined &&
+    (validInitialModulePair.referenceModule !== defaultReferenceModule ||
+      validInitialModulePair.candidateModule !== defaultCandidateModule);
+  const invalidInitialModulePair =
+    initialModulePair !== undefined && validInitialModulePair === undefined;
+  const pairingRequired =
+    initialMismatch || initialPairRestorationRequired || invalidInitialModulePair;
   const [confirmedPair, setConfirmedPair] = useState<{
     reference: ComparisonBundleInput;
     candidate: ComparisonBundleInput;
   }>();
   const [referenceModule, setReferenceModule] = useState(
-    reference.modules.find(
-      (module) => module.definitionName === reference.workspace.slice.module.definitionName,
-    )?.name ?? reference.workspace.slice.module.name,
+    validInitialReferenceModule ?? defaultReferenceModule,
   );
   const [candidateModule, setCandidateModule] = useState(
-    candidate.modules.find(
-      (module) => module.definitionName === candidate.workspace.slice.module.definitionName,
-    )?.name ?? candidate.workspace.slice.module.name,
+    validInitialCandidateModule ?? defaultCandidateModule,
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -716,17 +745,7 @@ export function ComparisonWorkspaceView({
 
   useEffect(() => abortPairingRequest, [abortPairingRequest]);
 
-  if (!initialMismatch || confirmedPair) {
-    return (
-      <ConfirmedComparisonWorkspaceView
-        {...props}
-        reference={confirmedPair?.reference ?? reference}
-        candidate={confirmedPair?.candidate ?? candidate}
-      />
-    );
-  }
-
-  const confirm = async () => {
+  const confirm = useCallback(async () => {
     const generation = ++pairingGeneration.current;
     pairingAbort.current?.abort();
     const controller = new AbortController();
@@ -765,6 +784,10 @@ export function ComparisonWorkspaceView({
           workspace: { ...candidate.workspace, slice: candidateSlice },
         },
       });
+      onModulePairChange?.({
+        referenceModule,
+        candidateModule,
+      });
       props.setStatusDetail(
         `Explicit module pair: ${referenceSlice.module.definitionName} → ${candidateSlice.module.definitionName}`,
       );
@@ -777,7 +800,44 @@ export function ComparisonWorkspaceView({
         setLoading(false);
       }
     }
-  };
+  }, [
+    candidate,
+    candidateModule,
+    onModulePairChange,
+    props.setStatusDetail,
+    reference,
+    referenceModule,
+  ]);
+
+  useEffect(() => {
+    if (
+      !pairingRequired ||
+      confirmedPair ||
+      !validInitialModulePair ||
+      referenceModule !== validInitialModulePair.referenceModule ||
+      candidateModule !== validInitialModulePair.candidateModule
+    ) {
+      return;
+    }
+    void confirm();
+  }, [
+    candidateModule,
+    confirm,
+    confirmedPair,
+    pairingRequired,
+    referenceModule,
+    validInitialModulePair,
+  ]);
+
+  if (!pairingRequired || confirmedPair) {
+    return (
+      <ConfirmedComparisonWorkspaceView
+        {...props}
+        reference={confirmedPair?.reference ?? reference}
+        candidate={confirmedPair?.candidate ?? candidate}
+      />
+    );
+  }
 
   return (
     <>
@@ -811,8 +871,7 @@ export function ComparisonWorkspaceView({
         <section className="bundle-welcome-card" aria-labelledby={titleId}>
           <h1 id={titleId}>Choose modules to compare</h1>
           <p>
-            The bundle tops differ. Confirm an explicit module pair before Nettle runs structural or
-            heuristic matching.
+            Confirm an explicit module pair before Nettle runs structural or heuristic matching.
           </p>
           <div className="module-pair-fields">
             <label>

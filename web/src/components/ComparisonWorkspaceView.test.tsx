@@ -2,8 +2,9 @@
 
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ApiGraphSlice } from "../api/contracts";
 import type { LoadedWorkspace } from "../api/normalize";
 import type { WorkspaceProvider } from "../bundle/provider";
 import type { GraphSlice, ProjectSnapshot } from "../model/graph";
@@ -16,6 +17,19 @@ import {
 afterEach(cleanup);
 
 const slice = (snapshotId: string, name: string): GraphSlice => ({
+  snapshotId,
+  module: {
+    id: `${snapshotId}-${name}`,
+    name,
+    instancePath: name,
+    definitionName: name,
+    parameters: {},
+  },
+  nodes: [],
+  edges: [],
+});
+
+const apiSlice = (snapshotId: string, name: string): ApiGraphSlice => ({
   snapshotId,
   module: {
     id: `${snapshotId}-${name}`,
@@ -161,6 +175,197 @@ describe("comparison workspace module pairing", () => {
         .disabled,
     ).toBe(false);
     expect(document.querySelector(".schematic-canvas")).toBeNull();
+  });
+
+  it("restores a valid explicit module pair from a shareable route", async () => {
+    const reference = bundle("reference", "reference_top");
+    const candidate = bundle("candidate", "candidate_top");
+    reference.modules.push({
+      id: "reference-selected",
+      name: "reference_selected",
+      definitionName: "reference_selected",
+    });
+    candidate.modules.push({
+      id: "candidate-selected",
+      name: "candidate_selected",
+      definitionName: "candidate_selected",
+    });
+    vi.mocked(reference.provider.getGraphSlice).mockResolvedValue(
+      apiSlice("reference", "reference_selected"),
+    );
+    vi.mocked(candidate.provider.getGraphSlice).mockResolvedValue(
+      apiSlice("candidate", "candidate_selected"),
+    );
+    const onModulePairChange = vi.fn();
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference}
+        candidate={candidate}
+        initialPolicy="conservative"
+        initialModulePair={{
+          referenceModule: "reference_selected",
+          candidateModule: "candidate_selected",
+        }}
+        onModulePairChange={onModulePairChange}
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onModulePairChange).toHaveBeenCalledWith({
+        referenceModule: "reference_selected",
+        candidateModule: "candidate_selected",
+      }),
+    );
+    expect(reference.provider.getGraphSlice).toHaveBeenCalledWith(
+      {
+        snapshotId: "reference",
+        moduleName: "reference_selected",
+      },
+      expect.any(AbortSignal),
+    );
+    expect(candidate.provider.getGraphSlice).toHaveBeenCalledWith(
+      {
+        snapshotId: "candidate",
+        moduleName: "candidate_selected",
+      },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("restores non-default modules even when the bundle tops already match", async () => {
+    const reference = bundle("reference", "top");
+    const candidate = bundle("candidate", "top");
+    reference.modules.push({
+      id: "reference-selected",
+      name: "reference_selected",
+      definitionName: "reference_selected",
+    });
+    candidate.modules.push({
+      id: "candidate-selected",
+      name: "candidate_selected",
+      definitionName: "candidate_selected",
+    });
+    vi.mocked(reference.provider.getGraphSlice).mockResolvedValue(
+      apiSlice("reference", "reference_selected"),
+    );
+    vi.mocked(candidate.provider.getGraphSlice).mockResolvedValue(
+      apiSlice("candidate", "candidate_selected"),
+    );
+    const onModulePairChange = vi.fn();
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference}
+        candidate={candidate}
+        initialPolicy="conservative"
+        initialModulePair={{
+          referenceModule: "reference_selected",
+          candidateModule: "candidate_selected",
+        }}
+        onModulePairChange={onModulePairChange}
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onModulePairChange).toHaveBeenCalledWith({
+        referenceModule: "reference_selected",
+        candidateModule: "candidate_selected",
+      }),
+    );
+    expect(reference.provider.getGraphSlice).toHaveBeenCalledOnce();
+    expect(candidate.provider.getGraphSlice).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the chooser when a shared module pair is stale", async () => {
+    const reference = bundle("reference", "top");
+    const candidate = bundle("candidate", "top");
+    vi.mocked(reference.provider.getGraphSlice).mockImplementation(async ({ moduleName }) => {
+      if (!moduleName) throw new Error("reference module name is required");
+      return apiSlice("reference", moduleName);
+    });
+    vi.mocked(candidate.provider.getGraphSlice).mockImplementation(async ({ moduleName }) => {
+      if (!moduleName) throw new Error("candidate module name is required");
+      return apiSlice("candidate", moduleName);
+    });
+    const onModulePairChange = vi.fn();
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference}
+        candidate={candidate}
+        initialPolicy="conservative"
+        initialModulePair={{
+          referenceModule: "removed_reference_module",
+          candidateModule: "removed_candidate_module",
+        }}
+        onModulePairChange={onModulePairChange}
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Choose modules to compare" })).toBeTruthy();
+    expect(screen.queryByText(/bundle tops differ/i)).toBeNull();
+    expect(screen.getByText(/Confirm an explicit module pair/)).toBeTruthy();
+    expect((screen.getByLabelText("Reference module") as HTMLSelectElement).value).toBe("top");
+    expect((screen.getByLabelText("Candidate module") as HTMLSelectElement).value).toBe("top");
+    expect(reference.provider.getGraphSlice).not.toHaveBeenCalled();
+    expect(candidate.provider.getGraphSlice).not.toHaveBeenCalled();
+    expect(onModulePairChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare selected modules" }));
+    await waitFor(() =>
+      expect(onModulePairChange).toHaveBeenCalledWith({
+        referenceModule: "top",
+        candidateModule: "top",
+      }),
+    );
+  });
+
+  it("preserves the valid side when only one shared module selection is stale", () => {
+    const reference = bundle("reference", "top");
+    const candidate = bundle("candidate", "top");
+    reference.modules.push({
+      id: "reference-selected",
+      name: "reference_selected",
+      definitionName: "reference_selected",
+    });
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference}
+        candidate={candidate}
+        initialPolicy="conservative"
+        initialModulePair={{
+          referenceModule: "reference_selected",
+          candidateModule: "removed_candidate_module",
+        }}
+        onModulePairChange={vi.fn()}
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onOpenBundle={vi.fn()}
+        onCompareBundles={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Choose modules to compare" })).toBeTruthy();
+    expect((screen.getByLabelText("Reference module") as HTMLSelectElement).value).toBe(
+      "reference_selected",
+    );
+    expect((screen.getByLabelText("Candidate module") as HTMLSelectElement).value).toBe("top");
+    expect(reference.provider.getGraphSlice).not.toHaveBeenCalled();
+    expect(candidate.provider.getGraphSlice).not.toHaveBeenCalled();
   });
 
   it("makes clear that header schematic counts describe the visible slice", async () => {

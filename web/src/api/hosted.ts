@@ -4,10 +4,16 @@ export type HostedUploadKind = "bundle" | "sources";
 export type HostedSessionState = "queued" | "building" | "ready" | "failed";
 export type HostedComparisonMatching = "conservative" | "aggressive";
 
+export interface HostedComparisonModulePair {
+  referenceModule: string;
+  candidateModule: string;
+}
+
 export interface HostedComparisonRoute {
   referenceToken: string;
   candidateToken: string;
   matching: HostedComparisonMatching;
+  modulePair?: HostedComparisonModulePair;
 }
 
 export interface HostedRetentionPolicy {
@@ -370,11 +376,19 @@ export const hostedComparisonPath = ({
   referenceToken,
   candidateToken,
   matching,
+  modulePair,
 }: HostedComparisonRoute) => {
   if (!HOSTED_TOKEN_PATTERN.test(referenceToken) || !HOSTED_TOKEN_PATTERN.test(candidateToken)) {
     throw new HostedApiError("comparison session token is invalid");
   }
   const query = new URLSearchParams({ matching });
+  if (modulePair) {
+    if (!modulePair.referenceModule || !modulePair.candidateModule) {
+      throw new HostedApiError("comparison module pair is invalid");
+    }
+    query.set("referenceModule", modulePair.referenceModule);
+    query.set("candidateModule", modulePair.candidateModule);
+  }
   return `/compare/${referenceToken}/${candidateToken}?${query.toString()}`;
 };
 
@@ -384,11 +398,17 @@ export const hostedComparisonRouteFromLocation = (
 ): HostedComparisonRoute | undefined => {
   const match = pathname.match(/\/compare\/([A-Za-z0-9_-]{32,128})\/([A-Za-z0-9_-]{32,128})\/?$/);
   if (!match) return undefined;
-  const matching = new URLSearchParams(search).get("matching");
+  const query = new URLSearchParams(search);
+  const matching = query.get("matching");
+  const referenceModule = query.get("referenceModule");
+  const candidateModule = query.get("candidateModule");
   return {
     referenceToken: match[1],
     candidateToken: match[2],
     matching: matching === "aggressive" ? "aggressive" : "conservative",
+    ...(referenceModule && candidateModule
+      ? { modulePair: { referenceModule, candidateModule } }
+      : {}),
   };
 };
 
