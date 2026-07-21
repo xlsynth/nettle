@@ -31,6 +31,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use zip::ZipArchive;
 
 use crate::bundle::BundleReader;
+use crate::compiler::validate_yosys_slang_filelist_name;
 use crate::ir::{NormalizedArgumentKind, normalize_filelist_within_root_cancellable};
 use crate::resource_limits::bundle::archive::ENTRY_COUNT as MAX_BUNDLE_ENTRY_COUNT;
 
@@ -929,6 +930,11 @@ async fn create_session(
                 }
                 let path = safe_archive_path(Path::new(value)).map_err(|_| {
                     ApiError::bad_request("Source filelist must be a safe relative archive path.")
+                })?;
+                validate_yosys_slang_filelist_name(&path).map_err(|_| {
+                    ApiError::bad_request(
+                        "Source filelist name must contain only ASCII letters, digits, '.', '_', '-', '+', or ':'.",
+                    )
                 })?;
                 source_filelist = Some(path.to_string_lossy().into_owned());
             }
@@ -3658,6 +3664,8 @@ mod tests {
             "../project.f",
             "/project.f",
             r"folder\project.f",
+            "folder/file list.f",
+            "folder/文件.f",
             deep.as_str(),
             oversized.as_str(),
         ] {

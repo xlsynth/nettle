@@ -781,12 +781,9 @@ fn command_file_token(value: &str) -> Result<String> {
 }
 
 fn yosys_script(filelist: &Path, top: &str, output: &Path) -> Result<String> {
-    let filelist_name = filelist
-        .file_name()
-        .ok_or_else(|| anyhow!("root filelist has no filename"))?;
     Ok(format!(
         "read_slang --best-effort-hierarchy --no-synthesis-define -F {} --top {}\nhierarchy -top {}\nproc -noopt\nwrite_json {}\n",
-        yosys_slang_token(Path::new(filelist_name))?,
+        yosys_slang_filelist_name(filelist)?,
         yosys_identifier_token(top)?,
         yosys_identifier_token(top)?,
         yosys_quote(output.as_os_str())?
@@ -828,6 +825,17 @@ fn yosys_slang_token(path: &Path) -> Result<&str> {
         );
     }
     Ok(path)
+}
+
+fn yosys_slang_filelist_name(filelist: &Path) -> Result<&str> {
+    let filelist_name = filelist
+        .file_name()
+        .ok_or_else(|| anyhow!("root filelist has no filename"))?;
+    yosys_slang_token(Path::new(filelist_name))
+}
+
+pub(crate) fn validate_yosys_slang_filelist_name(filelist: &Path) -> Result<()> {
+    yosys_slang_filelist_name(filelist).map(|_| ())
 }
 
 fn yosys_quote(value: &OsStr) -> Result<String> {
