@@ -229,6 +229,26 @@ describe("HostedComparisonUploadDialog", () => {
     );
   });
 
+  it("clears the native picker after capturing a file", async () => {
+    render(<HostedComparisonUploadDialog open onClose={vi.fn()} onCreated={vi.fn()} />);
+    const referenceInput = (await screen.findByLabelText(
+      "Choose reference .nettle bundle or source archive",
+    )) as HTMLInputElement;
+    Object.defineProperty(referenceInput, "value", {
+      configurable: true,
+      value: "C:\\fakepath\\reference.nettle",
+      writable: true,
+    });
+    const rebuilt = new File(["rebuilt"], "reference.nettle");
+
+    fireEvent.change(referenceInput, {
+      target: { files: [rebuilt] },
+    });
+
+    expect(referenceInput.value).toBe("");
+    expect(screen.getByText("reference.nettle")).toBeTruthy();
+  });
+
   it("rejects unsupported extensions and over-limit files before uploading", async () => {
     render(<HostedComparisonUploadDialog open onClose={vi.fn()} onCreated={vi.fn()} />);
     const referenceInput = await screen.findByLabelText(

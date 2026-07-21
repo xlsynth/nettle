@@ -402,6 +402,7 @@ jobs:
         run: |
           playwright_image="mcr.microsoft.com/playwright:v1.61.0-noble@sha256:111dde95859f2c659291cb60e698f9048a8fc30b35b4ddb7c90f9cb5b73062d9"
           docker run --rm --ipc=host \
+            --user "$(id -u):$(id -g)" \
             --env NETTLE_PUBLIC_BASE \
             --env NETTLE_PUBLIC_MODE \
             --volume "$PWD:/work" \

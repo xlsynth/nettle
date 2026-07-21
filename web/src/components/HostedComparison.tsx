@@ -141,7 +141,11 @@ function ComparisonInput({ side, file, disabled, error, onSelect }: ComparisonIn
         accept={COMPARISON_INPUT_ACCEPT}
         aria-label={`Choose ${side} .nettle bundle or source archive`}
         disabled={disabled}
-        onChange={(event: ChangeEvent<HTMLInputElement>) => onSelect(event.target.files?.[0])}
+        onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          const selected = event.target.files?.[0];
+          event.target.value = "";
+          onSelect(selected);
+        }}
       />
       {error ? (
         <div className="bundle-open-error compact" role="alert">
