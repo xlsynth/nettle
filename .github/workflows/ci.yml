@@ -395,14 +395,19 @@ jobs:
           actual_demo_files="$(find web/dist/demos -maxdepth 1 -type f -printf '%f\n' | sort)"
           test "$actual_demo_files" = "$expected_demo_files"
 
-      - name: Install browser for Pages acceptance test
-        run: npx playwright install --with-deps chromium
-
       - name: Open public examples beneath the Pages base path
         env:
           NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
           NETTLE_PUBLIC_MODE: static
-        run: npm --workspace web exec -- playwright test --config playwright.pages.config.ts
+        run: |
+          playwright_image="mcr.microsoft.com/playwright:v1.61.0-noble@sha256:111dde95859f2c659291cb60e698f9048a8fc30b35b4ddb7c90f9cb5b73062d9"
+          docker run --rm --ipc=host \
+            --env NETTLE_PUBLIC_BASE \
+            --env NETTLE_PUBLIC_MODE \
+            --volume "$PWD:/work" \
+            --workdir /work/web \
+            "$playwright_image" \
+            ../node_modules/.bin/playwright test --config playwright.pages.config.ts
 
       - name: Upload GitHub Pages artifact
         if: github.ref == 'refs/heads/main'
