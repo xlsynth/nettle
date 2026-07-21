@@ -2894,7 +2894,16 @@ fn extract_tar(
         }
         let relative = match metadata.path {
             Some(path) => path,
-            None => safe_archive_path(&entry.path().context("reading TAR entry path")?)?,
+            None => {
+                let path = entry.path().context("reading TAR entry path")?;
+                if is_archive_root_marker(&path) {
+                    if entry_type.is_dir() && size == 0 {
+                        continue;
+                    }
+                    bail!("source archive root marker must be an empty directory");
+                }
+                safe_archive_path(&path)?
+            }
         };
         if !paths.insert(relative.clone()) {
             bail!(
@@ -2970,8 +2979,12 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf> {
     let mut safe = PathBuf::new();
     let mut components = 0_usize;
     for component in path.components() {
-        let Component::Normal(part) = component else {
-            bail!("source archive contains path traversal");
+        let part = match component {
+            // POSIX tar writers conventionally prefix entries with `./`. It
+            // denotes the archive root and is not a parent-directory escape.
+            Component::CurDir if components == 0 => continue,
+            Component::Normal(part) => part,
+            _ => bail!("source archive contains path traversal"),
         };
         if part.is_empty() {
             bail!("source archive contains an empty path component");
@@ -2986,6 +2999,13 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf> {
         bail!("source archive contains an empty path");
     }
     Ok(safe)
+}
+
+fn is_archive_root_marker(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::CurDir))
 }
 
 fn mode_bits<T: Into<u32>>(bits: T) -> u32 {
@@ -3366,6 +3386,16 @@ mod tests {
         header.set_size(u64::try_from(contents.len()).unwrap());
         header.set_cksum();
         archive.append(&header, Cursor::new(contents)).unwrap();
+    }
+
+    fn append_tar_directory<W: Write>(archive: &mut tar::Builder<W>, path: &str) {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).unwrap();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_mode(0o755);
+        header.set_size(0);
+        header.set_cksum();
+        archive.append(&header, io::empty()).unwrap();
     }
 
     fn pax_record(key: &str, value: &[u8]) -> Vec<u8> {
@@ -4051,6 +4081,28 @@ mod tests {
                 "{name}: expected {expected:?}, got {error:#}"
             );
         }
+    }
+
+    #[test]
+    fn tar_extraction_accepts_posix_root_markers() {
+        let mut archive = tar::Builder::new(Vec::new());
+        append_tar_directory(&mut archive, "./");
+        append_tar_file(&mut archive, "./project.f", b"--top top\nrtl/top.sv\n");
+        append_tar_directory(&mut archive, "./rtl/");
+        append_tar_file(&mut archive, "./rtl/top.sv", b"module top; endmodule\n");
+
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("posix.tar");
+        fs::write(&archive_path, archive.into_inner().unwrap()).unwrap();
+        let output = directory.path().join("output");
+        fs::create_dir(&output).unwrap();
+
+        extract_source_archive(&archive_path, &output, SourceFormat::Tar).unwrap();
+        validate_project_paths(&output, &output.join("project.f")).unwrap();
+        assert_eq!(
+            fs::read_to_string(output.join("rtl/top.sv")).unwrap(),
+            "module top; endmodule\n"
+        );
     }
 
     #[test]
