@@ -46,6 +46,8 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       onCompareBundles,
       hostedReference,
       hostedCandidate,
+      shareableComparison,
+      onPolicyChange,
     }: {
       reference: { provider: { marker: number } };
       candidate: { provider: { marker: number } };
@@ -53,6 +55,8 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       onCompareBundles: () => void;
       hostedReference?: unknown;
       hostedCandidate?: unknown;
+      shareableComparison?: boolean;
+      onPolicyChange?: (policy: "conservative" | "aggressive") => void;
     }) => {
       const [mountedIdentity] = React.useState(
         `${reference.provider.marker}:${candidate.provider.marker}:${initialPolicy}`,
@@ -63,6 +67,14 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
             Compare Nettle bundles
           </button>
           <output data-testid="comparison-workspace">{mountedIdentity}</output>
+          {shareableComparison ? (
+            <>
+              <output data-testid="shareable-comparison">shareable</output>
+              <button type="button" onClick={() => onPolicyChange?.("aggressive")}>
+                Use aggressive matching
+              </button>
+            </>
+          ) : null}
           {hostedReference || hostedCandidate ? (
             <output data-testid="hosted-comparison-origin">
               {hostedReference ? "reference" : ""}
@@ -174,12 +186,19 @@ describe("App comparison installation", () => {
     render(<App mode="static" />);
 
     expect(screen.getByRole("img", { name: "Nettle logo" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Explore an elaborated design" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Open a design" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Bedrock CDC FIFO/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Schematic diff/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Upload a bundle/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Build from RTL sources/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Compare two bundles/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Upload and view a \.nettle bundle/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: /Upload, build, and view a \.nettle bundle from RTL sources/,
+      }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Open and compare two \.nettle bundles/ }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /Upload and compare two designs/ })).toBeNull();
     expect(fetch.mock.calls.some(([request]) => String(request).startsWith("/api/v1/"))).toBe(
       false,
     );
@@ -190,7 +209,7 @@ describe("App comparison installation", () => {
   it("keeps two-local-file comparison available without hosted API requests or uploads", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Compare two bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
 
     const dialog = screen.getByRole("dialog", { name: "Compare Nettle bundles" });
     expect(within(dialog).getByText("Bundles stay in this browser.")).toBeTruthy();
@@ -211,6 +230,39 @@ describe("App comparison installation", () => {
     expect(harness.createHostedSession).not.toHaveBeenCalled();
     expect(harness.getHostedSessionStatus).not.toHaveBeenCalled();
     expect(harness.loadHostedBundle).not.toHaveBeenCalled();
+  });
+
+  it("opens the hosted comparison upload dialog from the fifth landing action", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload and compare two designs" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Upload and compare two designs" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Anyone with the comparison URL can view and download both bundles/),
+    ).toBeTruthy();
+  });
+
+  it("loads a composed comparison route and persists matching changes in its URL", async () => {
+    const referenceToken = "a".repeat(43);
+    const candidateToken = "b".repeat(43);
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=conservative`,
+    );
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:conservative"),
+    );
+    expect(screen.getByTestId("shareable-comparison").textContent).toBe("shareable");
+    expect(window.location.pathname).toBe(`/compare/${referenceToken}/${candidateToken}`);
+
+    fireEvent.click(screen.getByRole("button", { name: "Use aggressive matching" }));
+    expect(window.location.search).toBe("?matching=aggressive");
   });
 
   it("reuses a ready hosted bundle as the reference while keeping the candidate local", async () => {
@@ -291,7 +343,9 @@ describe("App comparison installation", () => {
     });
 
     expect(
-      screen.getByRole("button", { name: "Open a .nettle bundle" }).hasAttribute("disabled"),
+      screen
+        .getByRole("button", { name: "Open and view a .nettle bundle" })
+        .hasAttribute("disabled"),
     ).toBe(true);
     provider.resolve({
       fileName: "local.nettle",
@@ -367,7 +421,7 @@ describe("App comparison installation", () => {
     );
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^Upload a bundle/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Upload and view a .nettle bundle" }));
     fireEvent.change(await screen.findByLabelText("Choose bundle to upload"), {
       target: { files: [new File(["bundle"], "design.nettle")] },
     });
@@ -407,7 +461,7 @@ describe("App comparison installation", () => {
 
   it("does not reinterpret a drop on comparison dialog chrome as a single-bundle open", () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Compare two bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
 
     fireEvent.drop(screen.getByRole("dialog", { name: "Compare Nettle bundles" }), {
       dataTransfer: {
@@ -425,7 +479,7 @@ describe("App comparison installation", () => {
 
   it("remounts a replacement with the same filenames and snapshot IDs", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Compare two bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
     const reference = new File(["reference"], "reference.nettle", {
       type: "application/zip",
     });
@@ -468,7 +522,7 @@ describe("App comparison installation", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fetch).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Compare two bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open and compare two .nettle bundles" }));
     fireEvent.change(screen.getByLabelText("Choose reference .nettle bundle file"), {
       target: { files: [new File(["reference"], "user-reference.nettle")] },
     });

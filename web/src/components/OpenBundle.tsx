@@ -90,6 +90,7 @@ interface BundleWelcomeProps extends BundlePickerProps {
   onOpenDemo?: (demo: Demo) => void;
   onUploadBundle?: () => void;
   onUploadSources?: () => void;
+  onUploadComparison?: () => void;
 }
 
 export function BundleWelcome({
@@ -99,6 +100,7 @@ export function BundleWelcome({
   onOpenDemo,
   onUploadBundle,
   onUploadSources,
+  onUploadComparison,
   loading,
   error,
   onSelect,
@@ -113,96 +115,150 @@ export function BundleWelcome({
         <div className={`bundle-mode-badge ${mode}`}>
           {staticMode ? "Static mode" : "Hosted mode"}
         </div>
-        <h1>{staticMode ? "Explore an elaborated design" : "Open a design"}</h1>
+        <h1>Open a design</h1>
         <p>
           {staticMode
             ? "Open a .nettle bundle in your browser or try an example."
-            : "Open locally, create a shareable session, or build from RTL sources."}
+            : "Choose a local workflow or create a shareable session."}
         </p>
-        <div className={`bundle-workflows ${mode}`}>
-          <button
-            className={`bundle-workflow local${dragging ? " dragging" : ""}`}
-            type="button"
-            aria-label="Open a .nettle bundle"
-            disabled={loading}
-            onClick={() => input.current?.click()}
-            onDragEnter={(event) => {
-              event.preventDefault();
-              setDragging(true);
-            }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(event) => {
-              setDragging(false);
-              drop(event);
-            }}
-          >
-            {staticMode ? (
+        {staticMode ? (
+          <div className="bundle-workflows static">
+            <button
+              className={`bundle-workflow local${dragging ? " dragging" : ""}`}
+              type="button"
+              aria-label="Open and view a .nettle bundle"
+              disabled={loading}
+              onClick={() => input.current?.click()}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDragging(true);
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(event) => {
+                setDragging(false);
+                drop(event);
+              }}
+            >
               <FileArchive size={24} strokeWidth={1.5} />
-            ) : (
-              <FolderOpen size={24} strokeWidth={1.5} />
-            )}
-            <span>
-              <strong>{loading ? "Opening bundle…" : "Open a .nettle bundle"}</strong>
-              <small>{staticMode ? "Choose or drop a file" : "Keep it in this browser"}</small>
-            </span>
-          </button>
-          <input
-            ref={input}
-            className="visually-hidden"
-            type="file"
-            accept=".nettle,application/zip"
-            aria-label="Open a .nettle bundle locally"
-            disabled={loading}
-            tabIndex={-1}
-            onChange={selectInput}
-          />
-          {!staticMode && onUploadBundle ? (
-            <button
-              className="bundle-workflow hosted"
-              type="button"
-              aria-label="Upload a bundle"
-              disabled={loading}
-              onClick={onUploadBundle}
-            >
-              <UploadCloud size={24} strokeWidth={1.5} />
               <span>
-                <strong>Upload a bundle</strong>
-                <small>Create a shareable session</small>
+                <strong>{loading ? "Opening bundle…" : "Open and view a .nettle bundle"}</strong>
+                <small>Choose or drop a file</small>
               </span>
             </button>
-          ) : null}
-          {!staticMode && onUploadSources ? (
-            <button
-              className="bundle-workflow hosted"
-              type="button"
-              aria-label="Build from RTL sources"
-              disabled={loading}
-              onClick={onUploadSources}
-            >
-              <Hammer size={24} strokeWidth={1.5} />
-              <span>
-                <strong>Build from RTL sources</strong>
-                <small>Compile and create a shareable session</small>
-              </span>
-            </button>
-          ) : null}
-          {!staticMode && onCompare ? (
-            <button
-              className="bundle-workflow compare"
-              type="button"
-              aria-label="Compare two bundles"
-              disabled={loading}
-              onClick={onCompare}
-            >
-              <GitCompareArrows size={24} strokeWidth={1.5} />
-              <span>
-                <strong>Compare two bundles</strong>
-                <small>Keep both files in this browser</small>
-              </span>
-            </button>
-          ) : null}
-        </div>
+          </div>
+        ) : (
+          <div className="hosted-workflow-groups">
+            <section className="hosted-workflow-group local">
+              <div className="hosted-workflow-heading">
+                <strong>Local only</strong>
+                <span>Files stay local to this browser; nothing is uploaded.</span>
+              </div>
+              <div className="bundle-workflows local-row">
+                <button
+                  className={`bundle-workflow local${dragging ? " dragging" : ""}`}
+                  type="button"
+                  aria-label="Open and view a .nettle bundle"
+                  disabled={loading}
+                  onClick={() => input.current?.click()}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(event) => {
+                    setDragging(false);
+                    drop(event);
+                  }}
+                >
+                  <FolderOpen size={22} strokeWidth={1.5} />
+                  <span>
+                    <strong>
+                      {loading ? "Opening bundle…" : "Open and view a .nettle bundle"}
+                    </strong>
+                  </span>
+                </button>
+                {onCompare ? (
+                  <button
+                    className="bundle-workflow local compare"
+                    type="button"
+                    aria-label="Open and compare two .nettle bundles"
+                    disabled={loading}
+                    onClick={onCompare}
+                  >
+                    <GitCompareArrows size={22} strokeWidth={1.5} />
+                    <span>
+                      <strong>Open and compare two .nettle bundles</strong>
+                    </span>
+                  </button>
+                ) : null}
+              </div>
+            </section>
+            <section className="hosted-workflow-group uploads">
+              <div className="hosted-workflow-heading">
+                <strong>Upload to this server</strong>
+                <span>
+                  Files are uploaded to this server; sessions are viewable by anyone with the link.
+                </span>
+              </div>
+              <div className="bundle-workflows upload-row">
+                {onUploadSources ? (
+                  <button
+                    className="bundle-workflow hosted"
+                    type="button"
+                    aria-label="Upload, build, and view a .nettle bundle from RTL sources"
+                    disabled={loading}
+                    onClick={onUploadSources}
+                  >
+                    <Hammer size={22} strokeWidth={1.5} />
+                    <span>
+                      <strong>Upload, build, and view a .nettle bundle from RTL sources</strong>
+                    </span>
+                  </button>
+                ) : null}
+                {onUploadBundle ? (
+                  <button
+                    className="bundle-workflow hosted"
+                    type="button"
+                    aria-label="Upload and view a .nettle bundle"
+                    disabled={loading}
+                    onClick={onUploadBundle}
+                  >
+                    <UploadCloud size={22} strokeWidth={1.5} />
+                    <span>
+                      <strong>Upload and view a .nettle bundle</strong>
+                    </span>
+                  </button>
+                ) : null}
+                {onUploadComparison ? (
+                  <button
+                    className="bundle-workflow hosted compare"
+                    type="button"
+                    aria-label="Upload and compare two designs"
+                    disabled={loading}
+                    onClick={onUploadComparison}
+                  >
+                    <GitCompareArrows size={22} strokeWidth={1.5} />
+                    <span>
+                      <strong>Upload and compare two designs</strong>
+                    </span>
+                  </button>
+                ) : null}
+              </div>
+            </section>
+          </div>
+        )}
+        <input
+          ref={input}
+          className="visually-hidden"
+          type="file"
+          accept=".nettle,application/zip"
+          aria-label="Open a .nettle bundle locally"
+          disabled={loading}
+          tabIndex={-1}
+          onChange={selectInput}
+        />
         {error ? (
           <div className="bundle-open-error" role="alert">
             <AlertCircle size={15} />
@@ -228,14 +284,12 @@ export function BundleWelcome({
             </div>
           </section>
         ) : null}
-        <div className="bundle-privacy-note">
-          <ShieldCheck size={15} />
-          <span>
-            {staticMode
-              ? "Files stay in your browser."
-              : "Local files stay in your browser unless you choose an upload action."}
-          </span>
-        </div>
+        {staticMode ? (
+          <div className="bundle-privacy-note">
+            <ShieldCheck size={15} />
+            <span>Files stay in your browser.</span>
+          </div>
+        ) : null}
       </div>
     </main>
   );

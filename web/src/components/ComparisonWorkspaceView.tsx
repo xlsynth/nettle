@@ -115,6 +115,7 @@ export interface ComparisonWorkspaceViewProps {
   onCompareBundles: () => void;
   hostedReference?: HostedViewerSession;
   hostedCandidate?: HostedViewerSession;
+  shareableComparison?: boolean;
   onPolicyChange?: (policy: MatchingPolicy) => void;
 }
 
@@ -799,6 +800,7 @@ export function ComparisonWorkspaceView({
         <HostedComparisonBanner
           reference={props.hostedReference}
           candidate={props.hostedCandidate}
+          shareable={props.shareableComparison}
         />
       ) : null}
       <main
@@ -881,6 +883,7 @@ function ConfirmedComparisonWorkspaceView({
   onCompareBundles,
   hostedReference,
   hostedCandidate,
+  shareableComparison,
   onPolicyChange,
 }: ComparisonWorkspaceViewProps) {
   const hasBundledSources = reference.inventory.length > 0 || candidate.inventory.length > 0;
@@ -2421,7 +2424,11 @@ function ConfirmedComparisonWorkspaceView({
         onHelp={() => setUtilityDialog("help")}
       />
       {hostedReference || hostedCandidate ? (
-        <HostedComparisonBanner reference={hostedReference} candidate={hostedCandidate} />
+        <HostedComparisonBanner
+          reference={hostedReference}
+          candidate={hostedCandidate}
+          shareable={shareableComparison}
+        />
       ) : null}
       <ProjectSearchDialog
         open={utilityDialog === "search"}

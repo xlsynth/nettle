@@ -2,6 +2,13 @@
 
 export type HostedUploadKind = "bundle" | "sources";
 export type HostedSessionState = "queued" | "building" | "ready" | "failed";
+export type HostedComparisonMatching = "conservative" | "aggressive";
+
+export interface HostedComparisonRoute {
+  referenceToken: string;
+  candidateToken: string;
+  matching: HostedComparisonMatching;
+}
 
 export interface HostedRetentionPolicy {
   mode: "expires" | "forever";
@@ -51,6 +58,8 @@ export class HostedApiError extends Error {
     this.name = "HostedApiError";
   }
 }
+
+const HOSTED_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 
 const record = (value: unknown, name: string): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -131,7 +140,7 @@ export const decodeHostedSessionCreated = (value: unknown): HostedSessionCreated
   const token = requiredString(candidate.token, "session token");
   const url = requiredString(candidate.url, "session URL");
   const statusUrl = requiredString(candidate.statusUrl, "session status URL");
-  if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+  if (!HOSTED_TOKEN_PATTERN.test(token)) {
     throw new HostedApiError("session token is invalid");
   }
   if (url !== `/s/${token}` || statusUrl !== `/api/v1/sessions/${token}/status`) {
@@ -343,3 +352,45 @@ export const hostedSessionTokenFromPath = (pathname: string) => {
 };
 
 export const isHostedSessionPath = (pathname: string) => /\/s\/[^/]*\/?$/.test(pathname);
+
+export const classifyHostedUploadKind = (
+  filename: string,
+  sourceFormats: readonly string[],
+): HostedUploadKind | undefined => {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".nettle")) return "bundle";
+  const normalized = sourceFormats
+    .map((format) => format.toLowerCase())
+    .map((format) => (format.startsWith(".") ? format : `.${format}`))
+    .sort((left, right) => right.length - left.length);
+  return normalized.some((format) => lower.endsWith(format)) ? "sources" : undefined;
+};
+
+export const hostedComparisonPath = ({
+  referenceToken,
+  candidateToken,
+  matching,
+}: HostedComparisonRoute) => {
+  if (!HOSTED_TOKEN_PATTERN.test(referenceToken) || !HOSTED_TOKEN_PATTERN.test(candidateToken)) {
+    throw new HostedApiError("comparison session token is invalid");
+  }
+  const query = new URLSearchParams({ matching });
+  return `/compare/${referenceToken}/${candidateToken}?${query.toString()}`;
+};
+
+export const hostedComparisonRouteFromLocation = (
+  pathname: string,
+  search = "",
+): HostedComparisonRoute | undefined => {
+  const match = pathname.match(/\/compare\/([A-Za-z0-9_-]{32,128})\/([A-Za-z0-9_-]{32,128})\/?$/);
+  if (!match) return undefined;
+  const matching = new URLSearchParams(search).get("matching");
+  return {
+    referenceToken: match[1],
+    candidateToken: match[2],
+    matching: matching === "aggressive" ? "aggressive" : "conservative",
+  };
+};
+
+export const isHostedComparisonPath = (pathname: string) =>
+  /\/compare\/[^/]*\/[^/]*\/?$/.test(pathname);

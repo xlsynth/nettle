@@ -360,6 +360,10 @@ button:focus-visible {
   width: min(680px, 100%);
 }
 
+.bundle-welcome-card.hosted {
+  width: min(980px, 100%);
+}
+
 .bundle-mode-badge {
   width: fit-content;
   margin: 0 auto 10px;
@@ -413,9 +417,54 @@ button:focus-visible {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.hosted-workflow-groups {
+  display: grid;
+  gap: 18px;
+  text-align: left;
+}
+
+.hosted-workflow-group {
+  display: grid;
+  gap: 9px;
+}
+
+.hosted-workflow-group.uploads {
+  padding-top: 17px;
+  border-top: 1px solid var(--border);
+}
+
+.hosted-workflow-heading {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+}
+
+.hosted-workflow-heading strong {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.hosted-workflow-heading span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.bundle-workflows.local-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.bundle-workflows.upload-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .bundle-workflow {
   display: flex;
-  min-height: 92px;
+  min-height: 84px;
   gap: 13px;
   align-items: center;
   padding: 16px 18px;
@@ -442,7 +491,7 @@ button:focus-visible {
 
 .bundle-workflow strong {
   color: #303638;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 680;
   line-height: 18px;
 }
@@ -636,10 +685,31 @@ button:focus-visible {
   box-shadow: 0 18px 55px rgb(33 43 37 / 20%);
 }
 
+.hosted-comparison-upload-dialog {
+  width: min(820px, calc(100vw - 32px));
+}
+
 .hosted-upload-form {
   display: grid;
   gap: 14px;
   padding: 18px;
+}
+
+.hosted-comparison-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.hosted-comparison-input {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.bundle-open-error.compact {
+  margin-top: 0;
 }
 
 .hosted-config-loading {
@@ -698,6 +768,10 @@ button:focus-visible {
   background: #fbfdff;
   cursor: pointer;
   text-align: left;
+}
+
+.hosted-comparison-input .hosted-file-picker {
+  min-height: 84px;
 }
 
 .hosted-file-picker:hover:not(:disabled) {
@@ -833,6 +907,46 @@ button:focus-visible {
   background: #fff;
   box-shadow: 0 16px 45px rgb(43 60 50 / 10%);
   text-align: center;
+}
+
+.hosted-comparison-session-card {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.hosted-comparison-statuses {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.hosted-comparison-statuses > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fafcfb;
+  text-align: left;
+}
+
+.hosted-comparison-statuses strong {
+  color: var(--ink);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.hosted-comparison-statuses span,
+.hosted-comparison-expiration {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.hosted-comparison-downloads {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
 }
 
 .hosted-session-icon {
@@ -4268,6 +4382,16 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .bundle-workflows.local-row,
+  .bundle-workflows.upload-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hosted-workflow-heading {
+    display: grid;
+    gap: 2px;
+  }
+
   .bundle-workflow {
     min-height: auto;
   }
@@ -4326,6 +4450,20 @@ button:focus-visible {
 
   .hosted-timings {
     grid-template-columns: 1fr;
+  }
+
+  .hosted-comparison-inputs,
+  .hosted-comparison-statuses {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hosted-comparison-inputs .comparison-slot-swap {
+    justify-self: center;
+    transform: rotate(90deg);
+  }
+
+  .hosted-comparison-downloads {
+    flex-direction: column;
   }
 
   .workspace,

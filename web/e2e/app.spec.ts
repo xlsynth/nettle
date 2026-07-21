@@ -189,6 +189,93 @@ const openFixture = async (page: Page) => {
   );
 };
 
+const referenceSessionToken = "a".repeat(43);
+const candidateSessionToken = "b".repeat(43);
+
+const installHostedComparisonApi = async (
+  page: Page,
+  options: { queueSourceOnce?: boolean } = {},
+) => {
+  const uploadKinds: string[] = [];
+  const sourceTokens = new Set<string>();
+  const statusCalls = new Map<string, number>();
+  await page.route("**/api/v1/config", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        hostingEnabled: true,
+        retention: {
+          mode: "expires",
+          seconds: 2_592_000,
+          display: "Retained for 30 days after completion",
+        },
+        limits: { maxUploadBytes: 16 * 1024 * 1024, maxQueuedBuilds: 32 },
+        sourceFormats: [".zip", ".tar", ".tar.gz", ".tgz"],
+      }),
+    }),
+  );
+  await page.route("**/api/v1/sessions", (route) => {
+    const body = route.request().postDataBuffer()?.toString("latin1") ?? "";
+    const kind = body.match(/name="kind"\r\n\r\n(bundle|sources)/)?.[1];
+    expect(kind).toBeTruthy();
+    uploadKinds.push(kind ?? "");
+    const reference = body.includes("reference.nettle");
+    const token = reference ? referenceSessionToken : candidateSessionToken;
+    if (kind === "sources") sourceTokens.add(token);
+    return route.fulfill({
+      status: kind === "sources" ? 202 : 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        token,
+        url: `/s/${token}`,
+        statusUrl: `/api/v1/sessions/${token}/status`,
+      }),
+    });
+  });
+  await page.route("**/api/v1/sessions/*/status", (route) => {
+    const token = new URL(route.request().url()).pathname.split("/").at(-2) ?? "";
+    const calls = statusCalls.get(token) ?? 0;
+    statusCalls.set(token, calls + 1);
+    // React's development StrictMode may issue and abort the first poll, so
+    // keep the mocked source build queued through both initial requests.
+    const queued = options.queueSourceOnce && sourceTokens.has(token) && calls < 2;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        queued
+          ? {
+              state: "queued",
+              admittedAtMs: 1_000,
+              serverTimeMs: 2_000,
+              queuePosition: 1,
+            }
+          : {
+              state: "ready",
+              admittedAtMs: 1_000,
+              completedAtMs: 2_000,
+              expiresAtMs: Date.now() + 2_592_000_000,
+              serverTimeMs: 3_000,
+            },
+      ),
+    });
+  });
+  await page.route("**/api/v1/sessions/*/bundle", (route) => {
+    const token = new URL(route.request().url()).pathname.split("/").at(-2);
+    return route.fulfill({
+      status: 200,
+      path:
+        token === referenceSessionToken
+          ? comparisonReferenceFixture
+          : comparisonCandidateFixture,
+      contentType: "application/octet-stream",
+      headers: { "cache-control": "no-store" },
+    });
+  });
+  return uploadKinds;
+};
+
 test("opens a Rust-produced bundle entirely in the browser", async ({ page }) => {
   const runtimeErrors = captureRuntimeErrors(page);
   const apiRequests: string[] = [];
@@ -199,7 +286,9 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
   await page.goto("/");
   await expect(page).toHaveTitle(/Nettle/);
   await expect(page.getByRole("heading", { name: "Open a design" })).toBeVisible();
-  await expect(page.getByText(/Local files stay in your browser/)).toBeVisible();
+  await expect(
+    page.getByText("Files stay local to this browser; nothing is uploaded."),
+  ).toBeVisible();
   await page.getByLabel("Open a .nettle bundle locally").setInputFiles(fixture);
 
   await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");
@@ -209,6 +298,67 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
   await expect(page.locator(".top-level-boundary")).toHaveCount(1);
   await expect(page.locator(".tree-row").filter({ hasText: "top.sv" })).toHaveCount(1);
   expect(apiRequests).toEqual([]);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("uploads, reloads, and shares a bundle comparison", async ({ page }) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  const uploadKinds = await installHostedComparisonApi(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Upload and compare two designs" }).click();
+  const dialog = page.getByRole("dialog", { name: "Upload and compare two designs" });
+  await dialog
+    .getByLabel("Choose reference .nettle bundle or source archive")
+    .setInputFiles(comparisonReferenceFixture);
+  await dialog
+    .getByLabel("Choose candidate .nettle bundle or source archive")
+    .setInputFiles(comparisonCandidateFixture);
+  await dialog.getByRole("button", { name: "Upload and create comparison link" }).click();
+
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
+  expect(uploadKinds).toEqual(["bundle", "bundle"]);
+  await expect(page.getByText("Shareable comparison")).toBeVisible();
+  await expect(
+    page.getByText("Anyone with this link can view and download both bundles."),
+  ).toBeVisible();
+  const comparisonUrl = page.url();
+  expect(new URL(comparisonUrl).pathname).toBe(
+    `/compare/${referenceSessionToken}/${candidateSessionToken}`,
+  );
+
+  await page.reload();
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
+  await expect(page.getByText("Shareable comparison")).toBeVisible();
+  expect(page.url()).toBe(comparisonUrl);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("uploads and compares a bundle with a queued source build", async ({ page }) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  const uploadKinds = await installHostedComparisonApi(page, { queueSourceOnce: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Upload and compare two designs" }).click();
+  const dialog = page.getByRole("dialog", { name: "Upload and compare two designs" });
+  await dialog
+    .getByLabel("Choose reference .nettle bundle or source archive")
+    .setInputFiles(comparisonReferenceFixture);
+  await dialog.getByLabel("Choose candidate .nettle bundle or source archive").setInputFiles({
+    name: "candidate.TAR.GZ",
+    mimeType: "application/gzip",
+    buffer: Buffer.from("mock source archive"),
+  });
+  await dialog.getByLabel("Matching policy").selectOption("aggressive");
+  await dialog.getByRole("button", { name: "Upload and create comparison link" }).click();
+
+  await expect(page.getByText("Waiting in build queue · position 1")).toBeVisible();
+  await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  expect(uploadKinds).toEqual(["bundle", "sources"]);
+  await expect(page.getByLabel("Schematic matching policy")).toHaveValue("aggressive");
+  await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
+  await page.getByLabel("Schematic matching policy").selectOption("conservative");
+  await expect(page).toHaveURL(/matching=conservative$/);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -398,7 +548,9 @@ test("automatically opens a comparison supplied by the viewer host", async ({ pa
 test("compares two bundles with source and schematic diff controls", async ({ page }) => {
   const runtimeErrors = captureRuntimeErrors(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Compare two bundles" }).click();
+  await page
+    .getByRole("button", { name: "Open and compare two .nettle bundles" })
+    .click();
   const dialog = page.getByRole("dialog", { name: "Compare Nettle bundles" });
   await dialog.getByLabel("Choose reference .nettle bundle file").setInputFiles(
     comparisonReferenceFixture,
@@ -548,7 +700,9 @@ test("lays out a real elaborated schematic diff with coherent geometry", async (
   );
   const runtimeErrors = captureRuntimeErrors(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Compare two bundles" }).click();
+  await page
+    .getByRole("button", { name: "Open and compare two .nettle bundles" })
+    .click();
   const dialog = page.getByRole("dialog", { name: "Compare Nettle bundles" });
   await dialog
     .getByLabel("Choose reference .nettle bundle file")
@@ -587,7 +741,9 @@ test("renders compiled RTL interface, instance, connectivity, and structure muta
   );
   const runtimeErrors = captureRuntimeErrors(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Compare two bundles" }).click();
+  await page
+    .getByRole("button", { name: "Open and compare two .nettle bundles" })
+    .click();
   const dialog = page.getByRole("dialog", { name: "Compare Nettle bundles" });
   await dialog
     .getByLabel("Choose reference .nettle bundle file")

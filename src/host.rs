@@ -615,7 +615,11 @@ fn host_router(state: HostState) -> Result<Router> {
             "/api/v1/sessions/{token}/download",
             get(download_bundle),
         )
-        .route_service("/s/{token}", ServeFile::new(index))
+        .route_service("/s/{token}", ServeFile::new(index.clone()))
+        .route_service(
+            "/compare/{reference}/{candidate}",
+            ServeFile::new(index),
+        )
         .fallback_service(static_service)
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))
@@ -3449,6 +3453,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(session_page.status(), StatusCode::OK);
+
+        let comparison_page = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/compare/{}/{}?matching=aggressive",
+                    "a".repeat(64),
+                    "b".repeat(64)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(comparison_page.status(), StatusCode::OK);
+        assert_eq!(
+            comparison_page.headers()[header::REFERRER_POLICY],
+            "no-referrer"
+        );
+        assert_eq!(
+            comparison_page.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
 
         let (content_type, body) = multipart("sources", "project.zip", &source_zip());
         let cross_origin_style_upload = router
