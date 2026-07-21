@@ -14,7 +14,7 @@ describe("BundleWelcome", () => {
     const onOpenDemo = vi.fn();
     render(
       <BundleWelcome
-        mode="demo"
+        mode="static"
         loading={false}
         onSelect={vi.fn()}
         demos={DEMOS}
@@ -22,6 +22,7 @@ describe("BundleWelcome", () => {
       />,
     );
 
+    expect(screen.getByText("Static mode")).toBeTruthy();
     expect(screen.getAllByRole("button")).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: /Bedrock CDC FIFO/ }));
     expect(onOpenDemo).toHaveBeenCalledWith(DEMOS[0]);
@@ -47,6 +48,7 @@ describe("BundleWelcome", () => {
       />,
     );
 
+    expect(screen.getByText("Hosted mode")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Upload a bundle/ }));
     fireEvent.click(screen.getByRole("button", { name: /Build from RTL sources/ }));
     fireEvent.click(screen.getByRole("button", { name: /Compare two bundles/ }));

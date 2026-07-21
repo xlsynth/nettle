@@ -106,13 +106,16 @@ export function BundleWelcome({
   const demoTitleId = useId();
   const { input, selectInput, drop } = useBundlePicker(onSelect);
   const [dragging, setDragging] = useState(false);
-  const demoMode = mode === "demo";
+  const staticMode = mode === "static";
   return (
     <main className={`bundle-welcome ${mode}`}>
       <div className={`bundle-welcome-card ${mode}`}>
-        <h1>{demoMode ? "Explore an elaborated design" : "Open a design"}</h1>
+        <div className={`bundle-mode-badge ${mode}`}>
+          {staticMode ? "Static mode" : "Hosted mode"}
+        </div>
+        <h1>{staticMode ? "Explore an elaborated design" : "Open a design"}</h1>
         <p>
-          {demoMode
+          {staticMode
             ? "Open a .nettle bundle in your browser or try an example."
             : "Open locally, create a shareable session, or build from RTL sources."}
         </p>
@@ -134,14 +137,14 @@ export function BundleWelcome({
               drop(event);
             }}
           >
-            {demoMode ? (
+            {staticMode ? (
               <FileArchive size={24} strokeWidth={1.5} />
             ) : (
               <FolderOpen size={24} strokeWidth={1.5} />
             )}
             <span>
               <strong>{loading ? "Opening bundle…" : "Open a .nettle bundle"}</strong>
-              <small>{demoMode ? "Choose or drop a file" : "Keep it in this browser"}</small>
+              <small>{staticMode ? "Choose or drop a file" : "Keep it in this browser"}</small>
             </span>
           </button>
           <input
@@ -154,7 +157,7 @@ export function BundleWelcome({
             tabIndex={-1}
             onChange={selectInput}
           />
-          {!demoMode && onUploadBundle ? (
+          {!staticMode && onUploadBundle ? (
             <button
               className="bundle-workflow hosted"
               type="button"
@@ -169,7 +172,7 @@ export function BundleWelcome({
               </span>
             </button>
           ) : null}
-          {!demoMode && onUploadSources ? (
+          {!staticMode && onUploadSources ? (
             <button
               className="bundle-workflow hosted"
               type="button"
@@ -184,7 +187,7 @@ export function BundleWelcome({
               </span>
             </button>
           ) : null}
-          {!demoMode && onCompare ? (
+          {!staticMode && onCompare ? (
             <button
               className="bundle-workflow compare"
               type="button"
@@ -228,7 +231,7 @@ export function BundleWelcome({
         <div className="bundle-privacy-note">
           <ShieldCheck size={15} />
           <span>
-            {demoMode
+            {staticMode
               ? "Files stay in your browser."
               : "Local files stay in your browser unless you choose an upload action."}
           </span>

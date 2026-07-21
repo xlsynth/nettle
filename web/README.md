@@ -4,7 +4,7 @@
 
 `web/` is Nettle's shared browser viewer. It validates and decodes one or two
 user-selected `.nettle` bundles in browser memory, then renders source and
-schematic views or a presentation-only comparison. Its `demo` build is
+schematic views or a presentation-only comparison. Its `static` build is
 browser-local and exposes no hosted actions. Its `hosted` build additionally
 offers explicit bundle sharing and queued source compilation through the native
 service. The native host can also expose one command-line-selected bundle at
@@ -35,14 +35,14 @@ npm run dev
 ```
 
 Local development defaults to the full `hosted` landing page. Set
-`NETTLE_PUBLIC_MODE=demo` to exercise the GitHub Pages landing page; other
+`NETTLE_PUBLIC_MODE=static` to exercise the GitHub Pages landing page; other
 values fail the build. Vite listens on `127.0.0.1:8090` by default. To exercise
 a production build:
 
 ```sh
 NETTLE_PUBLIC_MODE=hosted npm run build
 # Or build the static public demo:
-NETTLE_PUBLIC_MODE=demo npm run build
+NETTLE_PUBLIC_MODE=static npm run build
 cargo run --locked -- view --web-root web/dist --port 8090
 # Or open one validated bundle immediately:
 cargo run --locked -- view design.nettle --web-root web/dist --port 8090

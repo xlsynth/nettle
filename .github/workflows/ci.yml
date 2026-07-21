@@ -334,7 +334,7 @@ jobs:
           NETTLE_BUILD_GIT_SHA: ${{ github.sha }}
           NETTLE_BUILD_STATE: ${{ steps.build-info.outputs.state }}
           NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
-          NETTLE_PUBLIC_MODE: demo
+          NETTLE_PUBLIC_MODE: static
         run: npm run build
 
       - name: Download tested Nettle image

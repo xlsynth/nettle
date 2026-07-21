@@ -57,8 +57,8 @@ const buildSuffix = () => {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "NETTLE_PUBLIC_");
   const viewerMode = env.NETTLE_PUBLIC_MODE || "hosted";
-  if (viewerMode !== "demo" && viewerMode !== "hosted") {
-    throw new Error(`NETTLE_PUBLIC_MODE must be demo or hosted; got ${viewerMode}`);
+  if (viewerMode !== "static" && viewerMode !== "hosted") {
+    throw new Error(`NETTLE_PUBLIC_MODE must be static or hosted; got ${viewerMode}`);
   }
   return {
     base: env.NETTLE_PUBLIC_BASE || "/",

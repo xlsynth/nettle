@@ -544,7 +544,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
             onCompare={hostedMode ? openCompareDialog : undefined}
             onUploadBundle={hostedMode ? () => openHostedUpload("bundle") : undefined}
             onUploadSources={hostedMode ? () => openHostedUpload("sources") : undefined}
-            demos={mode === "demo" ? DEMOS : undefined}
+            demos={mode === "static" ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
           />
         </>

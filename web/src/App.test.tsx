@@ -168,10 +168,10 @@ describe("App comparison installation", () => {
     expect(screen.getByText(/Git SHA/).textContent).toContain(`${BUILD_GIT_SHA}${BUILD_SUFFIX}`);
   });
 
-  it("keeps demo mode local-only with exactly two examples", () => {
+  it("keeps static mode local-only with exactly two examples", () => {
     const fetch = vi.mocked(globalThis.fetch);
     window.history.replaceState(null, "", `/s/${"a".repeat(64)}`);
-    render(<App mode="demo" />);
+    render(<App mode="static" />);
 
     expect(screen.getByRole("img", { name: "Nettle logo" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Explore an elaborated design" })).toBeTruthy();
