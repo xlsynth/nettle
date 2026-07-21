@@ -36,6 +36,7 @@ use crate::ir::{NormalizedArgumentKind, normalize_filelist_within_root_cancellab
 use crate::resource_limits::bundle::archive::ENTRY_COUNT as MAX_BUNDLE_ENTRY_COUNT;
 
 const HOST_SCHEMA_VERSION: u32 = 1;
+const SOURCE_FILELIST_SCHEMA_VERSION: u32 = 2;
 const DEFAULT_SOURCE_FILELIST: &str = "project.f";
 const MULTIPART_OVERHEAD_BYTES: u64 = 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
@@ -986,7 +987,7 @@ async fn create_session(
         .flatten();
     let completed_at_ms = (kind == SessionKind::Bundle).then_some(admitted_at_ms);
     let metadata = SessionMetadata {
-        schema_version: HOST_SCHEMA_VERSION,
+        schema_version: metadata_schema_version(source_filelist.as_deref()),
         token: token.clone(),
         kind,
         state: if kind == SessionKind::Bundle {
@@ -1254,7 +1255,7 @@ fn load_visible_metadata(
 ) -> std::result::Result<SessionMetadata, ApiError> {
     let path = session_path(state, token)?;
     let metadata = read_metadata(&path).map_err(|_| not_found())?;
-    if metadata.token != token || metadata.schema_version != HOST_SCHEMA_VERSION {
+    if metadata.token != token {
         return Err(not_found());
     }
     if expiration_ms(state, &metadata).is_some_and(|expires| expires <= now_ms()) {
@@ -1287,19 +1288,36 @@ fn metadata_path(session_path: &Path) -> PathBuf {
     session_path.join("metadata.json")
 }
 
+fn metadata_schema_version(source_filelist: Option<&str>) -> u32 {
+    if source_filelist.is_some() {
+        SOURCE_FILELIST_SCHEMA_VERSION
+    } else {
+        HOST_SCHEMA_VERSION
+    }
+}
+
+fn validate_metadata_schema(metadata: &SessionMetadata) -> Result<()> {
+    match (metadata.schema_version, metadata.source_filelist.is_some()) {
+        (HOST_SCHEMA_VERSION, false) | (SOURCE_FILELIST_SCHEMA_VERSION, true) => Ok(()),
+        (HOST_SCHEMA_VERSION, true) => {
+            bail!("hosted session metadata schema 1 must not select a source filelist")
+        }
+        (SOURCE_FILELIST_SCHEMA_VERSION, false) => {
+            bail!("hosted session metadata schema 2 must select a source filelist")
+        }
+        (version, _) => bail!("unsupported hosted session metadata schema {version}"),
+    }
+}
+
 fn read_metadata(session_path: &Path) -> Result<SessionMetadata> {
     let bytes = fs::read(metadata_path(session_path))?;
     let metadata: SessionMetadata = serde_json::from_slice(&bytes)?;
-    if metadata.schema_version != HOST_SCHEMA_VERSION {
-        bail!(
-            "unsupported hosted session metadata schema {}",
-            metadata.schema_version
-        );
-    }
+    validate_metadata_schema(&metadata)?;
     Ok(metadata)
 }
 
 fn write_metadata(session_path: &Path, metadata: &SessionMetadata) -> io::Result<()> {
+    validate_metadata_schema(metadata).map_err(io::Error::other)?;
     let temporary = session_path.join(".metadata.json.tmp");
     let bytes = serde_json::to_vec(metadata).map_err(io::Error::other)?;
     let result = (|| {
@@ -3619,6 +3637,10 @@ mod tests {
         let selected_metadata =
             read_metadata(&host.state.0.sessions_root.join(selected_token)).unwrap();
         assert_eq!(
+            selected_metadata.schema_version,
+            SOURCE_FILELIST_SCHEMA_VERSION
+        );
+        assert_eq!(
             selected_metadata.source_filelist.as_deref(),
             Some("br_counter/filelist.f")
         );
@@ -3644,10 +3666,52 @@ mod tests {
         let defaulted_token = defaulted_json["token"].as_str().unwrap();
         let defaulted_metadata =
             read_metadata(&host.state.0.sessions_root.join(defaulted_token)).unwrap();
+        assert_eq!(defaulted_metadata.schema_version, HOST_SCHEMA_VERSION);
         assert_eq!(defaulted_metadata.source_filelist, None);
         assert_eq!(
             defaulted_metadata.selected_source_filelist(),
             DEFAULT_SOURCE_FILELIST
+        );
+    }
+
+    #[test]
+    fn metadata_schema_versions_fail_closed_for_selected_filelists() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let legacy_path = directory.path().join("legacy");
+        fs::create_dir(&legacy_path).unwrap();
+        let legacy = test_source_metadata(&"a".repeat(64), SessionState::Queued, 1);
+        write_metadata(&legacy_path, &legacy).unwrap();
+        let legacy = read_metadata(&legacy_path).unwrap();
+        assert_eq!(legacy.schema_version, HOST_SCHEMA_VERSION);
+        assert_eq!(legacy.selected_source_filelist(), DEFAULT_SOURCE_FILELIST);
+
+        let selected_path = directory.path().join("selected");
+        fs::create_dir(&selected_path).unwrap();
+        let mut selected = test_source_metadata(&"b".repeat(64), SessionState::Queued, 2);
+        selected.schema_version = SOURCE_FILELIST_SCHEMA_VERSION;
+        selected.source_filelist = Some("rtl/files.f".to_owned());
+        write_metadata(&selected_path, &selected).unwrap();
+        let selected = read_metadata(&selected_path).unwrap();
+        assert_eq!(selected.schema_version, SOURCE_FILELIST_SCHEMA_VERSION);
+        assert_eq!(selected.selected_source_filelist(), "rtl/files.f");
+
+        let mut ambiguous_legacy = selected.clone();
+        ambiguous_legacy.schema_version = HOST_SCHEMA_VERSION;
+        assert!(
+            write_metadata(&selected_path, &ambiguous_legacy)
+                .unwrap_err()
+                .to_string()
+                .contains("schema 1 must not select")
+        );
+
+        let mut incomplete_selected = legacy;
+        incomplete_selected.schema_version = SOURCE_FILELIST_SCHEMA_VERSION;
+        assert!(
+            write_metadata(&legacy_path, &incomplete_selected)
+                .unwrap_err()
+                .to_string()
+                .contains("schema 2 must select")
         );
     }
 
@@ -4830,6 +4894,7 @@ mod tests {
         let mut interrupted_metadata =
             test_source_metadata(&interrupted, SessionState::Building, 20);
         interrupted_metadata.source_filelist = Some("br_counter/filelist.f".to_owned());
+        interrupted_metadata.schema_version = SOURCE_FILELIST_SCHEMA_VERSION;
         let interrupted_path = write_test_session(&host.state, &interrupted_metadata);
         fs::write(
             interrupted_path.join(SourceFormat::Zip.stored_filename()),
