@@ -330,7 +330,13 @@ describe("App comparison installation", () => {
   it("aborts an active hosted upload when history navigation changes routes", async () => {
     let uploadSignal: AbortSignal | undefined;
     harness.createHostedSession.mockImplementation(
-      (_kind: string, _file: File, _progress: (value: unknown) => void, signal: AbortSignal) => {
+      (
+        _kind: string,
+        _file: File,
+        _filelist: string | undefined,
+        _progress: (value: unknown) => void,
+        signal: AbortSignal,
+      ) => {
         uploadSignal = signal;
         return new Promise((_resolve, reject) => {
           signal.addEventListener(

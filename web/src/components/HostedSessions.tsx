@@ -329,8 +329,8 @@ export function HostedUploadDialog({ kind, onClose, onCreated }: HostedUploadDia
                     }}
                   />
                   <small>
-                    Relative to the archive root, for example{" "}
-                    <code>br_counter/filelist.f</code>. Defaults to <code>project.f</code>.
+                    Relative to the archive root, for example <code>br_counter/filelist.f</code>.
+                    Defaults to <code>project.f</code>.
                   </small>
                 </label>
               ) : null}

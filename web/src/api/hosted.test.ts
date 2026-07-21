@@ -132,12 +132,7 @@ describe("hosted API contracts", () => {
     vi.stubGlobal("XMLHttpRequest", MockXmlHttpRequest);
     const file = new File(["sources"], "project.zip", { type: "application/zip" });
 
-    await createHostedSession(
-      "sources",
-      file,
-      "br_counter/filelist.f",
-      vi.fn(),
-    );
+    await createHostedSession("sources", file, "br_counter/filelist.f", vi.fn());
     const selected = Array.from(MockXmlHttpRequest.sent[0].entries());
     expect(selected.map(([name]) => name)).toEqual(["kind", "filelist", "file"]);
     expect(selected[1][1]).toBe("br_counter/filelist.f");
