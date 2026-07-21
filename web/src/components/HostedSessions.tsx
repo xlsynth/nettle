@@ -680,11 +680,23 @@ export function HostedSessionBanner({ session }: HostedSessionBannerProps) {
 interface HostedComparisonBannerProps {
   reference?: HostedViewerSession;
   candidate?: HostedViewerSession;
+  shareable?: boolean;
 }
 
-export function HostedComparisonBanner({ reference, candidate }: HostedComparisonBannerProps) {
+export function HostedComparisonBanner({
+  reference,
+  candidate,
+  shareable = false,
+}: HostedComparisonBannerProps) {
   const bothHosted = Boolean(reference && candidate);
   const single = reference ?? candidate;
+  const comparisonExpiresAt =
+    reference?.status.expiresAtMs || candidate?.status.expiresAtMs
+      ? Math.min(
+          reference?.status.expiresAtMs ?? Number.MAX_SAFE_INTEGER,
+          candidate?.status.expiresAtMs ?? Number.MAX_SAFE_INTEGER,
+        )
+      : undefined;
   return (
     <aside
       className="hosted-viewer-banner hosted-comparison-banner"
@@ -692,16 +704,27 @@ export function HostedComparisonBanner({ reference, candidate }: HostedCompariso
     >
       <Server size={14} />
       <strong>
-        {bothHosted
-          ? "Both inputs are shareable sessions"
-          : `${reference ? "Reference" : "Candidate"} is from a shareable session`}
+        {shareable
+          ? "Shareable comparison"
+          : bothHosted
+            ? "Both inputs are shareable sessions"
+            : `${reference ? "Reference" : "Candidate"} is from a shareable session`}
       </strong>
       <span>
-        {bothHosted
-          ? "Comparison runs in this browser and creates no new shareable URL."
-          : `${reference ? "Candidate" : "Reference"} stays in this browser and is not uploaded. The comparison creates no new shareable URL.`}
+        {shareable
+          ? "Anyone with this link can view and download both bundles."
+          : bothHosted
+            ? "Comparison runs in this browser and creates no new shareable URL."
+            : `${reference ? "Candidate" : "Reference"} stays in this browser and is not uploaded. The comparison creates no new shareable URL.`}
       </span>
-      {single && !bothHosted ? (
+      {shareable ? (
+        <span className="hosted-viewer-retention">
+          <Clock3 size={13} />
+          {comparisonExpiresAt
+            ? `Comparison expires ${formatTime(comparisonExpiresAt)}`
+            : "Retained until an admin removes both sessions"}
+        </span>
+      ) : single && !bothHosted ? (
         <span className="hosted-viewer-retention">
           <Clock3 size={13} />
           {single.status.expiresAtMs

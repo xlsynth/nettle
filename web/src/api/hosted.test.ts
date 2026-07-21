@@ -4,11 +4,15 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  classifyHostedUploadKind,
   createHostedSession,
   decodeHostedConfig,
   decodeHostedSessionCreated,
   decodeHostedSessionStatus,
+  hostedComparisonPath,
+  hostedComparisonRouteFromLocation,
   hostedSessionTokenFromPath,
+  isHostedComparisonPath,
   isHostedSessionPath,
 } from "./hosted";
 
@@ -141,5 +145,83 @@ describe("hosted API contracts", () => {
     await createHostedSession("sources", file, undefined, vi.fn());
     const defaulted = Array.from(MockXmlHttpRequest.sent[1].entries());
     expect(defaulted.map(([name]) => name)).toEqual(["kind", "file"]);
+  });
+
+  it("classifies comparison inputs from case-insensitive server-advertised suffixes", () => {
+    const sourceFormats = [".zip", "tar", ".tar.gz", ".tgz"];
+    expect(classifyHostedUploadKind("reference.NETTLE", sourceFormats)).toBe("bundle");
+    expect(classifyHostedUploadKind("candidate.ZIP", sourceFormats)).toBe("sources");
+    expect(classifyHostedUploadKind("candidate.TAR.GZ", sourceFormats)).toBe("sources");
+    expect(classifyHostedUploadKind("candidate.tgz", sourceFormats)).toBe("sources");
+    expect(classifyHostedUploadKind("candidate.sv", sourceFormats)).toBeUndefined();
+  });
+
+  it("round-trips composed comparison capability routes and defaults matching", () => {
+    const referenceToken = "a".repeat(64);
+    const candidateToken = "b".repeat(64);
+    const route = hostedComparisonPath({
+      referenceToken,
+      candidateToken,
+      matching: "aggressive",
+      modulePair: {
+        referenceModule: "reference_top",
+        candidateModule: "candidate_top",
+      },
+    });
+    expect(route).toBe(
+      `/compare/${referenceToken}/${candidateToken}?matching=aggressive&referenceModule=reference_top&candidateModule=candidate_top`,
+    );
+    expect(
+      hostedComparisonRouteFromLocation(
+        `/compare/${referenceToken}/${candidateToken}`,
+        "?matching=aggressive&referenceModule=reference_top&candidateModule=candidate_top",
+      ),
+    ).toEqual({
+      referenceToken,
+      candidateToken,
+      matching: "aggressive",
+      modulePair: {
+        referenceModule: "reference_top",
+        candidateModule: "candidate_top",
+      },
+    });
+    expect(
+      hostedComparisonRouteFromLocation(
+        `/compare/${referenceToken}/${candidateToken}`,
+        "?matching=unknown",
+      )?.matching,
+    ).toBe("conservative");
+    expect(isHostedComparisonPath(`/compare/${referenceToken}/${candidateToken}`)).toBe(true);
+    expect(isHostedComparisonPath("/unrelated")).toBe(false);
+    expect(
+      hostedComparisonRouteFromLocation(
+        `/compare/${referenceToken}/${candidateToken}`,
+        "?referenceModule=reference_top",
+      )?.modulePair,
+    ).toBeUndefined();
+  });
+
+  it("rejects malformed comparison capability routes", () => {
+    const token = "a".repeat(64);
+    expect(hostedComparisonRouteFromLocation(`/compare/short/${token}`)).toBeUndefined();
+    expect(hostedComparisonRouteFromLocation(`/compare/${token}/${token}/extra`)).toBeUndefined();
+    expect(() =>
+      hostedComparisonPath({
+        referenceToken: "short",
+        candidateToken: token,
+        matching: "conservative",
+      }),
+    ).toThrow("comparison session token");
+    expect(() =>
+      hostedComparisonPath({
+        referenceToken: token,
+        candidateToken: token,
+        matching: "conservative",
+        modulePair: {
+          referenceModule: "",
+          candidateModule: "candidate_top",
+        },
+      }),
+    ).toThrow("comparison module pair");
   });
 });

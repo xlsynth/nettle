@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ChevronDown, CircleHelp, FolderOpen, GitCompareArrows, Search } from "lucide-react";
+import nettleLogo from "../../../assets/nettle_logo_light.png";
 import type { HeaderComparisonPresentation } from "./comparison-types";
 
 interface AppHeaderProps {
@@ -16,6 +17,15 @@ interface AppHeaderProps {
 }
 
 export type DataMode = "empty" | "loading" | "bundle" | "hosted" | "comparison";
+
+export function LandingHeader() {
+  return (
+    <header className="landing-header">
+      <img src={nettleLogo} alt="Nettle logo" width={28} height={28} />
+      <span>NETTLE</span>
+    </header>
+  );
+}
 
 export function AppHeader({
   projectName,

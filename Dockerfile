@@ -93,6 +93,7 @@ FROM node:24-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
 ARG NETTLE_BUILD_STATE
+ARG NETTLE_PUBLIC_MODE=hosted
 WORKDIR /src
 RUN test -n "$NETTLE_BUILD_DATE_UTC" \
   && test -n "$NETTLE_BUILD_GIT_SHA" \
@@ -103,8 +104,9 @@ RUN --mount=type=cache,target=/root/.npm \
   npm ci
 COPY resource-limits.yaml ./
 COPY scripts/generate-resource-limits.mjs scripts/generate-resource-limits.mjs
+COPY assets/nettle_logo_light.png assets/nettle_logo_light.png
 COPY web web
-RUN npm run build
+RUN NETTLE_PUBLIC_MODE="$NETTLE_PUBLIC_MODE" npm run build
 
 # Shared compiler runtime used by the final image and test stages.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder

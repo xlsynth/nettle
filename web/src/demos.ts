@@ -7,7 +7,7 @@ export interface DemoBundle {
 
 export type Demo =
   | {
-      id: "smoke" | "generate";
+      id: "bedrock-cdc-fifo";
       title: string;
       description: string;
       kind: "bundle";
@@ -22,22 +22,17 @@ export type Demo =
       candidate: DemoBundle;
     };
 
-/** Public, deterministic bundles generated from Nettle-owned integration fixtures. */
+/** Public, deterministic bundles generated from manifest-pinned integration fixtures. */
 export const DEMOS: readonly Demo[] = [
   {
-    id: "smoke",
-    title: "Hierarchy smoke test",
-    description: "Open a small elaborated design with a child module and source cross-probing.",
+    id: "bedrock-cdc-fifo",
+    title: "Bedrock CDC FIFO",
+    description: "Explore the synthesized CDC FIFO used by Nettle's browser regression.",
     kind: "bundle",
-    bundle: { name: "smoke.nettle", route: "/demos/smoke.nettle" },
-  },
-  {
-    id: "generate",
-    title: "Generate-aware datapath",
-    description:
-      "Explore parameterized XOR/OR branches, loop and case generates, and child instances.",
-    kind: "bundle",
-    bundle: { name: "generate.nettle", route: "/demos/generate.nettle" },
+    bundle: {
+      name: "br_cdc_fifo_flops_synth.nettle",
+      route: "/demos/br_cdc_fifo_flops_synth.nettle",
+    },
   },
   {
     id: "schematic-diff",

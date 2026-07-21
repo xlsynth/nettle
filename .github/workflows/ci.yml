@@ -134,6 +134,7 @@ jobs:
             NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
             NETTLE_BUILD_GIT_SHA=${{ github.sha }}
             NETTLE_BUILD_STATE=${{ steps.build-info.outputs.state }}
+            NETTLE_PUBLIC_MODE=hosted
           push: false
           cache-from: type=gha,scope=nettle-integration-tests
           cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=nettle-integration-tests' || '' }}
@@ -177,6 +178,7 @@ jobs:
             NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
             NETTLE_BUILD_GIT_SHA=${{ github.sha }}
             NETTLE_BUILD_STATE=${{ steps.build-info.outputs.state }}
+            NETTLE_PUBLIC_MODE=hosted
           # Publish only the tested image manifests. BuildKit provenance
           # attestations appear as unknown/unknown entries in GHCR's platform
           # view and are not part of the runnable multi-platform image.
@@ -286,8 +288,7 @@ jobs:
   pages-build:
     name: Build Nettle demo Pages artifact
     needs:
-      - publish-context
-    if: github.ref == 'refs/heads/main'
+      - image-build
     permissions:
       contents: read
       pages: write
@@ -301,8 +302,20 @@ jobs:
           persist-credentials: false
 
       - name: Configure GitHub Pages
-        id: pages
+        id: pages_config
+        if: github.ref == 'refs/heads/main'
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Resolve Pages base path
+        id: pages
+        env:
+          CONFIGURED_BASE_PATH: ${{ steps.pages_config.outputs.base_path }}
+        run: |
+          base_path="$CONFIGURED_BASE_PATH"
+          if [ -z "$base_path" ]; then
+            base_path="/${GITHUB_REPOSITORY#*/}"
+          fi
+          echo "base_path=${base_path}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
@@ -332,7 +345,7 @@ jobs:
           NETTLE_BUILD_GIT_SHA: ${{ github.sha }}
           NETTLE_BUILD_STATE: ${{ steps.build-info.outputs.state }}
           NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
-          NETTLE_PUBLIC_DEMOS: "true"
+          NETTLE_PUBLIC_MODE: static
         run: npm run build
 
       - name: Download tested Nettle image
@@ -344,6 +357,11 @@ jobs:
       - name: Build and validate public integration demos
         run: |
           set -euo pipefail
+          python3 scripts/check-design-corpus.py \
+            --prepare-only \
+            --corpus bedrock-rtl \
+            --example cdc-fifo-synth-netlist \
+            --workspace target/design-corpora
           docker load --input /tmp/nettle-image/nettle-amd64.tar
           image="nettle-nettle:${{ github.sha }}"
           mkdir -p web/dist/demos
@@ -359,12 +377,41 @@ jobs:
             docker run --rm --user "$(id -u):$(id -g)" \
               -v "$PWD:/work" -w /work "$image" validate "$output"
           }
-          build_bundle web/dist/demos/smoke.nettle integration_tests/smoke/project.f integration_tests/smoke top
-          build_bundle web/dist/demos/generate.nettle integration_tests/generate/project.f integration_tests/generate top
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --entrypoint yosys \
+            -v "$PWD:/work" -w /work/target/design-corpora/bedrock-rtl "$image" \
+            -Q -m slang -s scripts/synth_br_cdc_fifo_flops.ys
+          build_bundle \
+            web/dist/demos/br_cdc_fifo_flops_synth.nettle \
+            target/design-corpora/bedrock-rtl/br_cdc_fifo_flops_synth.f \
+            target/design-corpora/bedrock-rtl \
+            br_cdc_fifo_flops
           build_bundle web/dist/demos/schematic-reference.nettle integration_tests/schematic-diff/reference/project.f integration_tests/schematic-diff/reference top
           build_bundle web/dist/demos/schematic-candidate.nettle integration_tests/schematic-diff/candidate/project.f integration_tests/schematic-diff/candidate top
+          expected_demo_files="$(printf '%s\n' \
+            br_cdc_fifo_flops_synth.nettle \
+            schematic-candidate.nettle \
+            schematic-reference.nettle)"
+          actual_demo_files="$(find web/dist/demos -maxdepth 1 -type f -printf '%f\n' | sort)"
+          test "$actual_demo_files" = "$expected_demo_files"
+
+      - name: Open public examples beneath the Pages base path
+        env:
+          NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
+          NETTLE_PUBLIC_MODE: static
+        run: |
+          playwright_image="mcr.microsoft.com/playwright:v1.61.0-noble@sha256:111dde95859f2c659291cb60e698f9048a8fc30b35b4ddb7c90f9cb5b73062d9"
+          docker run --rm --ipc=host \
+            --user "$(id -u):$(id -g)" \
+            --env NETTLE_PUBLIC_BASE \
+            --env NETTLE_PUBLIC_MODE \
+            --volume "$PWD:/work" \
+            --workdir /work/web \
+            "$playwright_image" \
+            ../node_modules/.bin/playwright test --config playwright.pages.config.ts
 
       - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           path: web/dist
@@ -373,6 +420,7 @@ jobs:
     name: Deploy Nettle demo GitHub Pages
     needs:
       - pages-build
+      - publish-context
     if: github.ref == 'refs/heads/main'
     permissions:
       pages: write

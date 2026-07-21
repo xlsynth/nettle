@@ -13,9 +13,14 @@ import {
 } from "react";
 import type { SourceInventoryEntry } from "./api/contracts";
 import {
+  type HostedComparisonModulePair,
+  type HostedComparisonRoute,
   type HostedSessionCreated,
   type HostedUploadKind,
+  hostedComparisonPath,
+  hostedComparisonRouteFromLocation,
   hostedSessionTokenFromPath,
+  isHostedComparisonPath,
   isHostedSessionPath,
 } from "./api/hosted";
 import {
@@ -34,11 +39,12 @@ import {
   LocalBundleProvider,
 } from "./bundle/provider";
 import type { MatchingPolicy } from "./comparison/types";
-import { AppHeader } from "./components/AppHeader";
+import { AppHeader, LandingHeader } from "./components/AppHeader";
 import { BuildInfo } from "./components/BuildInfo";
 import { ComparisonWorkspaceView } from "./components/ComparisonWorkspaceView";
 import { FileTree } from "./components/FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
+import { HostedComparisonPage, HostedComparisonUploadDialog } from "./components/HostedComparison";
 import {
   HostedSessionBanner,
   HostedSessionNotFound,
@@ -58,6 +64,7 @@ import type { LabelSettings } from "./graph/SchematicCanvas";
 import type { GraphNode, GraphSlice, SourceElaborationRange, SourceFileRef } from "./model/graph";
 import { entityForSourceSelection } from "./source/cross-probe";
 import { elaborationRangesForSource } from "./source/elaboration-ranges";
+import { type ViewerMode, viewerMode } from "./viewer-mode";
 
 interface SourceView {
   path: string;
@@ -89,6 +96,8 @@ interface OpenedComparison {
   reference: OpenedComparisonBundle;
   candidate: OpenedComparisonBundle;
   initialPolicy: MatchingPolicy;
+  explicitModulePair?: HostedComparisonModulePair;
+  shareableComparison: boolean;
 }
 
 type UtilityDialog = "search" | "help";
@@ -103,8 +112,6 @@ const SchematicCanvas = lazy(() =>
     default: module.SchematicCanvas,
   })),
 );
-const publicDemosEnabled = import.meta.env.NETTLE_PUBLIC_DEMOS ?? false;
-
 const contextualizeChild = (
   parent: GraphSlice,
   child: GraphSlice,
@@ -160,27 +167,52 @@ export class OpenRequestOwner {
   }
 }
 
-export default function App() {
+interface AppProps {
+  mode?: ViewerMode;
+}
+
+export default function App({ mode = viewerMode }: AppProps = {}) {
+  const hostedMode = mode === "hosted";
   const [opened, setOpened] = useState<OpenedBundle>();
   const [comparison, setComparison] = useState<OpenedComparison>();
   const [hostedToken, setHostedToken] = useState(() =>
-    hostedSessionTokenFromPath(window.location.pathname),
+    hostedMode ? hostedSessionTokenFromPath(window.location.pathname) : undefined,
   );
-  const [invalidHostedRoute, setInvalidHostedRoute] = useState(
-    () =>
-      isHostedSessionPath(window.location.pathname) &&
-      !hostedSessionTokenFromPath(window.location.pathname),
+  const [hostedComparisonRoute, setHostedComparisonRoute] = useState<
+    HostedComparisonRoute | undefined
+  >(() =>
+    hostedMode
+      ? hostedComparisonRouteFromLocation(window.location.pathname, window.location.search)
+      : undefined,
   );
+  const [invalidHostedRoute, setInvalidHostedRoute] = useState(() => {
+    if (!hostedMode) return false;
+    const hostedPath =
+      isHostedSessionPath(window.location.pathname) ||
+      isHostedComparisonPath(window.location.pathname);
+    return (
+      hostedPath &&
+      !hostedSessionTokenFromPath(window.location.pathname) &&
+      !hostedComparisonRouteFromLocation(window.location.pathname, window.location.search)
+    );
+  });
   const [hostedUploadKind, setHostedUploadKind] = useState<HostedUploadKind>();
+  const [hostedComparisonUploadOpen, setHostedComparisonUploadOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [statusDetail, setStatusDetail] = useState("No bundle is open");
+  const openedRef = useRef(opened);
+  const comparisonRef = useRef(comparison);
+  openedRef.current = opened;
+  comparisonRef.current = comparison;
   const generation = useRef(0);
   const openOwner = useRef(new OpenRequestOwner());
   const startupRequested = useRef(false);
-  const initialHostedRoute = useRef(Boolean(hostedToken) || invalidHostedRoute);
+  const initialHostedRoute = useRef(
+    hostedMode && (Boolean(hostedToken) || Boolean(hostedComparisonRoute) || invalidHostedRoute),
+  );
 
   const openBundle = useCallback(
     async (
@@ -190,6 +222,19 @@ export default function App() {
     ) => {
       const request = ++generation.current;
       const controller = openOwner.current.begin();
+      if (
+        !hostedSession &&
+        hostedMode &&
+        !openedRef.current &&
+        !comparisonRef.current &&
+        (isHostedSessionPath(window.location.pathname) ||
+          isHostedComparisonPath(window.location.pathname))
+      ) {
+        window.history.replaceState(null, "", staticAssetRoute("/"));
+        setHostedToken(undefined);
+        setHostedComparisonRoute(undefined);
+        setInvalidHostedRoute(false);
+      }
       const phase = (detail: string) => {
         setStatusDetail(detail);
         reportPhase?.(detail);
@@ -208,14 +253,26 @@ export default function App() {
         phase("Launching viewer…");
         const workspace = await loadWorkspace(provider, controller.signal);
         if (request !== generation.current || controller.signal.aborted) return;
-        setOpened({ installationId: request, file, provider, workspace, hostedSession });
+        setOpened({
+          installationId: request,
+          file,
+          provider,
+          workspace,
+          hostedSession,
+        });
         setComparison(undefined);
         setDialogOpen(false);
         setCompareDialogOpen(false);
         setHostedUploadKind(undefined);
+        setHostedComparisonUploadOpen(false);
         setHostedToken(hostedSession?.token);
+        setHostedComparisonRoute(undefined);
         setInvalidHostedRoute(false);
-        if (!hostedSession && isHostedSessionPath(window.location.pathname)) {
+        if (
+          !hostedSession &&
+          (isHostedSessionPath(window.location.pathname) ||
+            isHostedComparisonPath(window.location.pathname))
+        ) {
           window.history.replaceState(null, "", staticAssetRoute("/"));
         }
         setStatusDetail(
@@ -235,7 +292,7 @@ export default function App() {
         if (request === generation.current) setLoading(false);
       }
     },
-    [],
+    [hostedMode],
   );
 
   const openHostedBundle = useCallback(
@@ -252,13 +309,20 @@ export default function App() {
       hostedSessions?: {
         reference?: HostedViewerSession;
         candidate?: HostedViewerSession;
+        shareable?: boolean;
+        modulePair?: HostedComparisonModulePair;
       },
+      reportPhase?: (phase: string) => void,
     ) => {
       const request = ++generation.current;
       const controller = openOwner.current.begin();
+      const phase = (detail: string) => {
+        setStatusDetail(detail);
+        reportPhase?.(detail);
+      };
       setLoading(true);
       setError(undefined);
-      setStatusDetail(`Validating ${referenceFile.name} and ${candidateFile.name} in this browser`);
+      phase(`Validating ${referenceFile.name} and ${candidateFile.name} in this browser`);
       try {
         const [referenceProvider, candidateProvider] = await Promise.all([
           LocalBundleProvider.open(
@@ -307,22 +371,41 @@ export default function App() {
             hostedSession: hostedSessions?.candidate,
           },
           initialPolicy: matching,
+          explicitModulePair: hostedSessions?.modulePair,
+          shareableComparison: hostedSessions?.shareable ?? false,
         });
         setOpened(undefined);
         setHostedToken(undefined);
         setInvalidHostedRoute(false);
-        if (isHostedSessionPath(window.location.pathname)) {
+        setHostedComparisonUploadOpen(false);
+        if (hostedSessions?.shareable && hostedSessions.reference && hostedSessions.candidate) {
+          const nextRoute: HostedComparisonRoute = {
+            referenceToken: hostedSessions.reference.token,
+            candidateToken: hostedSessions.candidate.token,
+            matching,
+            modulePair: hostedSessions.modulePair,
+          };
+          setHostedComparisonRoute(nextRoute);
+          window.history.replaceState(null, "", hostedComparisonPath(nextRoute));
+        }
+        if (
+          !hostedSessions?.shareable &&
+          (isHostedSessionPath(window.location.pathname) ||
+            isHostedComparisonPath(window.location.pathname))
+        ) {
           window.history.replaceState(null, "", staticAssetRoute("/"));
+          setHostedComparisonRoute(undefined);
         }
         setDialogOpen(false);
         setCompareDialogOpen(false);
-        setStatusDetail(`${referenceFile.name} → ${candidateFile.name}`);
+        phase(`${referenceFile.name} → ${candidateFile.name}`);
       } catch (reason) {
         if (request !== generation.current || controller.signal.aborted) return;
         controller.abort();
         const message = reason instanceof Error ? reason.message : String(reason);
         setError(message);
-        setStatusDetail(`Could not compare bundles: ${message}`);
+        phase(`Could not compare bundles: ${message}`);
+        if (reportPhase) throw reason;
       } finally {
         openOwner.current.finish(controller);
         if (request === generation.current) setLoading(false);
@@ -333,11 +416,13 @@ export default function App() {
 
   const openDialog = useCallback(() => {
     setError(undefined);
+    setHostedComparisonUploadOpen(false);
     setDialogOpen(true);
   }, []);
 
   const openCompareDialog = useCallback(() => {
     setError(undefined);
+    setHostedComparisonUploadOpen(false);
     setCompareDialogOpen(true);
   }, []);
 
@@ -345,18 +430,42 @@ export default function App() {
     generation.current += 1;
     openOwner.current.abort();
     setError(undefined);
+    setHostedComparisonUploadOpen(false);
     setHostedUploadKind(kind);
+  }, []);
+
+  const openHostedComparisonUpload = useCallback(() => {
+    generation.current += 1;
+    openOwner.current.abort();
+    setError(undefined);
+    setHostedUploadKind(undefined);
+    setHostedComparisonUploadOpen(true);
   }, []);
 
   const acceptHostedSession = useCallback((session: HostedSessionCreated) => {
     generation.current += 1;
     openOwner.current.abort();
     setHostedUploadKind(undefined);
+    setHostedComparisonUploadOpen(false);
     setOpened(undefined);
     setComparison(undefined);
+    setHostedComparisonRoute(undefined);
     setInvalidHostedRoute(false);
     window.history.pushState(null, "", session.url);
     setHostedToken(session.token);
+  }, []);
+
+  const acceptHostedComparison = useCallback((route: HostedComparisonRoute) => {
+    generation.current += 1;
+    openOwner.current.abort();
+    setHostedUploadKind(undefined);
+    setHostedComparisonUploadOpen(false);
+    setOpened(undefined);
+    setComparison(undefined);
+    setHostedToken(undefined);
+    setHostedComparisonRoute(route);
+    setInvalidHostedRoute(false);
+    window.history.pushState(null, "", hostedComparisonPath(route));
   }, []);
 
   const openDemo = useCallback(
@@ -410,15 +519,23 @@ export default function App() {
       setDialogOpen(false);
       setCompareDialogOpen(false);
       setHostedUploadKind(undefined);
+      setHostedComparisonUploadOpen(false);
       setOpened(undefined);
       setComparison(undefined);
-      const token = hostedSessionTokenFromPath(window.location.pathname);
+      const token = hostedMode ? hostedSessionTokenFromPath(window.location.pathname) : undefined;
+      const comparisonRoute = hostedMode
+        ? hostedComparisonRouteFromLocation(window.location.pathname, window.location.search)
+        : undefined;
       setHostedToken(token);
-      setInvalidHostedRoute(isHostedSessionPath(window.location.pathname) && !token);
+      setHostedComparisonRoute(comparisonRoute);
+      const hostedPath =
+        isHostedSessionPath(window.location.pathname) ||
+        isHostedComparisonPath(window.location.pathname);
+      setInvalidHostedRoute(hostedMode && hostedPath && !token && !comparisonRoute);
     };
     window.addEventListener("popstate", navigate);
     return () => window.removeEventListener("popstate", navigate);
-  }, []);
+  }, [hostedMode]);
 
   useEffect(() => {
     if (startupRequested.current) return;
@@ -487,7 +604,7 @@ export default function App() {
       }}
       onDrop={(event) => {
         if (event.defaultPrevented) return;
-        if (dialogOpen || compareDialogOpen || hostedUploadKind) {
+        if (dialogOpen || compareDialogOpen || hostedUploadKind || hostedComparisonUploadOpen) {
           event.preventDefault();
           return;
         }
@@ -509,9 +626,26 @@ export default function App() {
           onCompareBundles={openCompareDialog}
           hostedReference={comparison.reference.hostedSession}
           hostedCandidate={comparison.candidate.hostedSession}
-          onPolicyChange={(policy) =>
-            setComparison((current) => (current ? { ...current, initialPolicy: policy } : current))
-          }
+          shareableComparison={comparison.shareableComparison}
+          initialModulePair={comparison.explicitModulePair}
+          onModulePairChange={(modulePair) => {
+            setComparison((current) =>
+              current ? { ...current, explicitModulePair: modulePair } : current,
+            );
+            if (comparison.shareableComparison && hostedComparisonRoute) {
+              const nextRoute = { ...hostedComparisonRoute, modulePair };
+              setHostedComparisonRoute(nextRoute);
+              window.history.replaceState(null, "", hostedComparisonPath(nextRoute));
+            }
+          }}
+          onPolicyChange={(policy) => {
+            setComparison((current) => (current ? { ...current, initialPolicy: policy } : current));
+            if (comparison.shareableComparison && hostedComparisonRoute) {
+              const nextRoute = { ...hostedComparisonRoute, matching: policy };
+              setHostedComparisonRoute(nextRoute);
+              window.history.replaceState(null, "", hostedComparisonPath(nextRoute));
+            }
+          }}
         />
       ) : opened ? (
         <WorkspaceView
@@ -524,30 +658,29 @@ export default function App() {
           onCompareBundles={openCompareDialog}
           hostedSession={opened.hostedSession}
         />
-      ) : hostedToken ? (
+      ) : hostedMode && hostedToken ? (
         <HostedSessionPage key={hostedToken} token={hostedToken} onOpenBundle={openHostedBundle} />
-      ) : invalidHostedRoute ? (
+      ) : hostedMode && hostedComparisonRoute ? (
+        <HostedComparisonPage
+          key={hostedComparisonPath(hostedComparisonRoute)}
+          route={hostedComparisonRoute}
+          onOpenComparison={openComparison}
+        />
+      ) : hostedMode && invalidHostedRoute ? (
         <HostedSessionNotFound />
       ) : (
         <>
-          <AppHeader
-            projectName="Open .nettle bundle"
-            statusText={loading ? statusDetail : "No bundle open"}
-            dataMode={loading ? "loading" : "empty"}
-            statusDetail={statusDetail}
-            onOpenProject={openDialog}
-            onCompareBundles={openCompareDialog}
-            onSearch={() => undefined}
-            onHelp={() => undefined}
-          />
+          <LandingHeader />
           <BundleWelcome
+            mode={mode}
             loading={loading}
             error={error}
             onSelect={(file) => void openBundle(file)}
-            onCompare={openCompareDialog}
-            onUploadBundle={() => openHostedUpload("bundle")}
-            onUploadSources={() => openHostedUpload("sources")}
-            demos={publicDemosEnabled ? DEMOS : undefined}
+            onCompare={hostedMode ? openCompareDialog : undefined}
+            onUploadBundle={hostedMode ? () => openHostedUpload("bundle") : undefined}
+            onUploadSources={hostedMode ? () => openHostedUpload("sources") : undefined}
+            onUploadComparison={hostedMode ? openHostedComparisonUpload : undefined}
+            demos={mode === "static" ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
           />
         </>
@@ -561,11 +694,20 @@ export default function App() {
         }}
         onSelect={(file) => void openBundle(file)}
       />
-      <HostedUploadDialog
-        kind={hostedUploadKind}
-        onClose={() => setHostedUploadKind(undefined)}
-        onCreated={acceptHostedSession}
-      />
+      {hostedMode ? (
+        <>
+          <HostedUploadDialog
+            kind={hostedUploadKind}
+            onClose={() => setHostedUploadKind(undefined)}
+            onCreated={acceptHostedSession}
+          />
+          <HostedComparisonUploadDialog
+            open={hostedComparisonUploadOpen}
+            onClose={() => setHostedComparisonUploadOpen(false)}
+            onCreated={acceptHostedComparison}
+          />
+        </>
+      ) : null}
       <CompareBundlesDialog
         open={compareDialogOpen}
         loading={loading}
@@ -588,9 +730,24 @@ export default function App() {
             if (comparison?.candidate.file === file) return comparison.candidate.hostedSession;
             return undefined;
           };
+          const sameOrientation =
+            reference === comparison?.reference.file && candidate === comparison?.candidate.file;
+          const reversedOrientation =
+            reference === comparison?.candidate.file && candidate === comparison?.reference.file;
+          const modulePair = sameOrientation
+            ? comparison?.explicitModulePair
+            : reversedOrientation && comparison?.explicitModulePair
+              ? {
+                  referenceModule: comparison.explicitModulePair.candidateModule,
+                  candidateModule: comparison.explicitModulePair.referenceModule,
+                }
+              : undefined;
           void openComparison(reference, candidate, matching, {
             reference: hostedSessionFor(reference),
             candidate: hostedSessionFor(candidate),
+            shareable:
+              Boolean(comparison?.shareableComparison) && (sameOrientation || reversedOrientation),
+            modulePair,
           });
         }}
       />

@@ -4,11 +4,19 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AppHeader } from "./AppHeader";
+import { AppHeader, LandingHeader } from "./AppHeader";
 
 afterEach(cleanup);
 
 describe("AppHeader", () => {
+  it("renders a brand-only landing header", () => {
+    render(<LandingHeader />);
+
+    expect(screen.getByRole("img", { name: "Nettle logo" })).toBeTruthy();
+    expect(screen.getByText("NETTLE")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
   it("dispatches each header action", () => {
     const onOpenProject = vi.fn();
     const onSearch = vi.fn();
