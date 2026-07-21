@@ -116,6 +116,7 @@ export function HostedUploadDialog({ kind, onClose, onCreated }: HostedUploadDia
   const upload = useRef<AbortController | undefined>(undefined);
   const [config, setConfig] = useState<HostedConfig>();
   const [file, setFile] = useState<File>();
+  const [sourceFilelist, setSourceFilelist] = useState("");
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadTransferred, setUploadTransferred] = useState(false);
@@ -125,6 +126,7 @@ export function HostedUploadDialog({ kind, onClose, onCreated }: HostedUploadDia
   useEffect(() => {
     setConfig(undefined);
     setFile(undefined);
+    setSourceFilelist("");
     setProgress(undefined);
     setUploadTransferred(false);
     setError(undefined);
@@ -185,6 +187,7 @@ export function HostedUploadDialog({ kind, onClose, onCreated }: HostedUploadDia
     void createHostedSession(
       kind,
       file,
+      bundle ? undefined : sourceFilelist || undefined,
       (next) => {
         setProgress(next);
         if (next.percent === 100) setUploadTransferred(true);
@@ -309,6 +312,28 @@ export function HostedUploadDialog({ kind, onClose, onCreated }: HostedUploadDia
                 disabled={uploading}
                 onChange={selectFile}
               />
+              {!bundle ? (
+                <label className="dialog-field">
+                  Root filelist path <em>optional</em>
+                  <input
+                    type="text"
+                    value={sourceFilelist}
+                    placeholder="project.f"
+                    disabled={uploading}
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    aria-label="Root filelist path"
+                    onChange={(event) => {
+                      setSourceFilelist(event.target.value);
+                      setError(undefined);
+                    }}
+                  />
+                  <small>
+                    Relative to the archive root, for example{" "}
+                    <code>br_counter/filelist.f</code>. Defaults to <code>project.f</code>.
+                  </small>
+                </label>
+              ) : null}
               {tooLarge ? (
                 <div className="bundle-open-error" role="alert">
                   <AlertCircle size={15} />

@@ -218,6 +218,7 @@ const xhrErrorMessage = (xhr: XMLHttpRequest) => {
 export const createHostedSession = (
   kind: HostedUploadKind,
   file: File,
+  sourceFilelist: string | undefined,
   onProgress: (progress: TransferProgress) => void,
   signal?: AbortSignal,
 ) =>
@@ -225,6 +226,7 @@ export const createHostedSession = (
     const xhr = new XMLHttpRequest();
     const form = new FormData();
     form.append("kind", kind);
+    if (kind === "sources" && sourceFilelist) form.append("filelist", sourceFilelist);
     form.append("file", file, file.name);
     xhr.open("POST", "/api/v1/sessions");
     xhr.setRequestHeader("X-Nettle-Upload", "1");

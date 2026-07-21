@@ -275,6 +275,11 @@ cargo run --locked -- render \
 3. upload a source archive, wait in the FIFO build queue, and persist, view, or
    download the resulting `.nettle`.
 
+Source uploads default to `project.f` at the archive root. The upload dialog can
+instead select any root filelist by its relative archive path, such as
+`br_counter/filelist.f`; nested filelists and every declared project path are
+validated beneath the extracted archive root before compilation.
+
 The hosted service runs Slang and Yosys as child processes in the same
 container. It does not launch nested containers or create Kubernetes workloads.
 The v1 deployment is exactly one Pod and one container.
