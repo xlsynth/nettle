@@ -168,6 +168,25 @@ describe("App comparison installation", () => {
     expect(screen.getByText(/Git SHA/).textContent).toContain(`${BUILD_GIT_SHA}${BUILD_SUFFIX}`);
   });
 
+  it("keeps demo mode local-only with exactly two examples", () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    window.history.replaceState(null, "", `/s/${"a".repeat(64)}`);
+    render(<App mode="demo" />);
+
+    expect(screen.getByRole("img", { name: "Nettle logo" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Explore an elaborated design" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Bedrock CDC FIFO/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Schematic diff/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Upload a bundle/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Build from RTL sources/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Compare two bundles/ })).toBeNull();
+    expect(fetch.mock.calls.some(([request]) => String(request).startsWith("/api/v1/"))).toBe(
+      false,
+    );
+    expect(harness.getHostedSessionStatus).not.toHaveBeenCalled();
+    expect(harness.loadHostedBundle).not.toHaveBeenCalled();
+  });
+
   it("keeps two-local-file comparison available without hosted API requests or uploads", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     render(<App />);
@@ -239,7 +258,7 @@ describe("App comparison installation", () => {
     expect(harness.open).toHaveBeenCalledOnce();
   });
 
-  it("shows browser reading, validation, and viewer-launch phases for a local bundle", async () => {
+  it("keeps the landing action loading while launching a local bundle", async () => {
     const provider = deferred<{
       fileName: string;
       marker: number;
@@ -271,14 +290,15 @@ describe("App comparison installation", () => {
       },
     });
 
-    expect(await screen.findByText("Validating local.nettle in this browser…")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Open a .nettle bundle" }).hasAttribute("disabled"),
+    ).toBe(true);
     provider.resolve({
       fileName: "local.nettle",
       marker: 1,
       getSourceInventory: vi.fn(async () => []),
       getProject: vi.fn(async () => ({ modules: [] })),
     });
-    expect(await screen.findByText("Launching viewer…")).toBeTruthy();
     workspace.resolve({
       project,
       slice: {
@@ -307,9 +327,7 @@ describe("App comparison installation", () => {
     harness.open.mockReturnValueOnce(provider.promise);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open bundle" }));
-    const dialog = screen.getByRole("dialog", { name: "Open Nettle bundle" });
-    fireEvent.change(within(dialog).getByLabelText("Choose a .nettle bundle"), {
+    fireEvent.change(screen.getByLabelText("Open a .nettle bundle locally"), {
       target: {
         files: [new File(["bundle"], "local.nettle", { type: "application/zip" })],
       },
@@ -349,9 +367,7 @@ describe("App comparison installation", () => {
     );
     render(<App />);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /^Upload bundle and create shareable session/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /^Upload a bundle/ }));
     fireEvent.change(await screen.findByLabelText("Choose bundle to upload"), {
       target: { files: [new File(["bundle"], "design.nettle")] },
     });

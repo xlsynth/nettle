@@ -2,13 +2,15 @@
 
 # Nettle web viewer
 
-`web/` is Nettle's static, browser-local viewer. It validates and decodes one or
-two user-selected `.nettle` bundles in browser memory, then renders source and
-schematic views or a presentation-only comparison. It does not upload design
-data or call a project API. The optional native host can expose one
-command-line-selected bundle at `/startup.nettle`, or a comparison descriptor
-plus separate reference and candidate routes. The viewer applies the same
-browser validation path as the file picker.
+`web/` is Nettle's shared browser viewer. It validates and decodes one or two
+user-selected `.nettle` bundles in browser memory, then renders source and
+schematic views or a presentation-only comparison. Its `demo` build is
+browser-local and exposes no hosted actions. Its `hosted` build additionally
+offers explicit bundle sharing and queued source compilation through the native
+service. The native host can also expose one command-line-selected bundle at
+`/startup.nettle`, or a comparison descriptor plus separate reference and
+candidate routes. Every bundle uses the same browser validation path as the
+file picker.
 
 The production build is ordinary static content. `nettle view` in the unified
 `nettle` image normally serves only those static files. `nettle view` may
@@ -32,10 +34,15 @@ npm ci
 npm run dev
 ```
 
-Vite listens on `127.0.0.1:5173` by default. To exercise a production build:
+Local development defaults to the full `hosted` landing page. Set
+`NETTLE_PUBLIC_MODE=demo` to exercise the GitHub Pages landing page; other
+values fail the build. Vite listens on `127.0.0.1:8090` by default. To exercise
+a production build:
 
 ```sh
-npm run build
+NETTLE_PUBLIC_MODE=hosted npm run build
+# Or build the static public demo:
+NETTLE_PUBLIC_MODE=demo npm run build
 cargo run --locked -- view --web-root web/dist --port 8090
 # Or open one validated bundle immediately:
 cargo run --locked -- view design.nettle --web-root web/dist --port 8090

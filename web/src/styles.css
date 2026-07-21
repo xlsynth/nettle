@@ -77,6 +77,28 @@ button:focus-visible {
   user-select: none;
 }
 
+.landing-header {
+  display: flex;
+  grid-row: 1;
+  gap: 8px;
+  align-items: center;
+  height: var(--header-height);
+  padding: 0 15px;
+  border-bottom: 1px solid var(--border);
+  color: var(--green-dark);
+  background: #fff;
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: 0.065em;
+  user-select: none;
+}
+
+.landing-header img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
 .build-info {
   z-index: 30;
   display: flex;
@@ -324,9 +346,9 @@ button:focus-visible {
 }
 
 .bundle-welcome-card {
-  width: min(980px, 100%);
+  width: min(760px, 100%);
   margin-block: auto;
-  padding: 38px 42px 34px;
+  padding: 32px 36px 28px;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: rgb(255 255 255 / 96%);
@@ -334,26 +356,20 @@ button:focus-visible {
   text-align: center;
 }
 
-.bundle-welcome-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  color: var(--green-dark);
-  background: var(--green-faint);
+.bundle-welcome-card.demo {
+  width: min(680px, 100%);
 }
 
 .bundle-welcome h1 {
-  margin: 17px 0 8px;
+  margin: 0 0 7px;
   color: var(--ink);
-  font-size: 22px;
+  font-size: 21px;
   font-weight: 650;
 }
 
 .bundle-welcome p {
   max-width: 620px;
-  margin: 0 auto 24px;
+  margin: 0 auto 20px;
   color: var(--muted);
   font-size: 13px;
   line-height: 20px;
@@ -361,17 +377,21 @@ button:focus-visible {
 
 .bundle-workflows {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   text-align: left;
+}
+
+.bundle-workflows.demo {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .bundle-workflow {
   display: flex;
-  min-height: 164px;
-  flex-direction: column;
-  gap: 14px;
-  padding: 20px;
+  min-height: 92px;
+  gap: 13px;
+  align-items: center;
+  padding: 16px 18px;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--ink);
@@ -390,7 +410,7 @@ button:focus-visible {
 
 .bundle-workflow > span {
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 
 .bundle-workflow strong {
@@ -411,9 +431,21 @@ button:focus-visible {
   background: var(--green-faint);
 }
 
+.bundle-workflows.demo .bundle-workflow.local {
+  min-height: 112px;
+  justify-content: center;
+  border-style: dashed;
+  text-align: center;
+}
+
 .bundle-workflow.hosted {
   border-color: #becad9;
   background: #fafcff;
+}
+
+.bundle-workflow.compare {
+  border-color: #c9c5d7;
+  background: #fcfbff;
 }
 
 .bundle-workflow:hover:not(:disabled),
@@ -471,7 +503,7 @@ button:focus-visible {
 }
 
 .demo-examples {
-  margin-top: 20px;
+  margin-top: 18px;
   text-align: left;
 }
 
@@ -486,14 +518,17 @@ button:focus-visible {
 
 .demo-example-list {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .demo-example {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   width: 100%;
-  padding: 10px 12px;
+  min-height: 78px;
+  align-content: center;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #fff;
@@ -548,28 +583,13 @@ button:focus-visible {
   gap: 6px;
   align-items: center;
   justify-content: center;
-  margin-top: 16px;
+  margin-top: 15px;
   color: #68766c;
   font-size: 10.5px;
 }
 
 .bundle-privacy-note svg {
   color: var(--green);
-}
-
-.bundle-welcome code {
-  display: block;
-  margin-top: 18px;
-  padding: 9px 11px;
-  overflow: hidden;
-  border: 1px solid #e5e9e7;
-  border-radius: 3px;
-  color: #56605a;
-  background: #fafbfa;
-  font-size: 10px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .open-project-dialog form {
@@ -4263,6 +4283,10 @@ button:focus-visible {
 
   .bundle-welcome-card {
     padding: 25px 18px 22px;
+  }
+
+  .demo-example-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .hosted-viewer-retention {

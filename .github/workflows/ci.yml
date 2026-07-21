@@ -134,6 +134,7 @@ jobs:
             NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
             NETTLE_BUILD_GIT_SHA=${{ github.sha }}
             NETTLE_BUILD_STATE=${{ steps.build-info.outputs.state }}
+            NETTLE_PUBLIC_MODE=hosted
           push: false
           cache-from: type=gha,scope=nettle-integration-tests
           cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=nettle-integration-tests' || '' }}
@@ -177,6 +178,7 @@ jobs:
             NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
             NETTLE_BUILD_GIT_SHA=${{ github.sha }}
             NETTLE_BUILD_STATE=${{ steps.build-info.outputs.state }}
+            NETTLE_PUBLIC_MODE=hosted
           # Publish only the tested image manifests. BuildKit provenance
           # attestations appear as unknown/unknown entries in GHCR's platform
           # view and are not part of the runnable multi-platform image.
@@ -332,7 +334,7 @@ jobs:
           NETTLE_BUILD_GIT_SHA: ${{ github.sha }}
           NETTLE_BUILD_STATE: ${{ steps.build-info.outputs.state }}
           NETTLE_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
-          NETTLE_PUBLIC_DEMOS: "true"
+          NETTLE_PUBLIC_MODE: demo
         run: npm run build
 
       - name: Download tested Nettle image
@@ -344,6 +346,11 @@ jobs:
       - name: Build and validate public integration demos
         run: |
           set -euo pipefail
+          python3 scripts/check-design-corpus.py \
+            --prepare-only \
+            --corpus bedrock-rtl \
+            --example cdc-fifo-synth-netlist \
+            --workspace target/design-corpora
           docker load --input /tmp/nettle-image/nettle-amd64.tar
           image="nettle-nettle:${{ github.sha }}"
           mkdir -p web/dist/demos
@@ -359,8 +366,15 @@ jobs:
             docker run --rm --user "$(id -u):$(id -g)" \
               -v "$PWD:/work" -w /work "$image" validate "$output"
           }
-          build_bundle web/dist/demos/smoke.nettle integration_tests/smoke/project.f integration_tests/smoke top
-          build_bundle web/dist/demos/generate.nettle integration_tests/generate/project.f integration_tests/generate top
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --entrypoint yosys \
+            -v "$PWD:/work" -w /work/target/design-corpora/bedrock-rtl "$image" \
+            -Q -m slang -s scripts/synth_br_cdc_fifo_flops.ys
+          build_bundle \
+            web/dist/demos/br_cdc_fifo_flops_synth.nettle \
+            target/design-corpora/bedrock-rtl/br_cdc_fifo_flops_synth.f \
+            target/design-corpora/bedrock-rtl \
+            br_cdc_fifo_flops
           build_bundle web/dist/demos/schematic-reference.nettle integration_tests/schematic-diff/reference/project.f integration_tests/schematic-diff/reference top
           build_bundle web/dist/demos/schematic-candidate.nettle integration_tests/schematic-diff/candidate/project.f integration_tests/schematic-diff/candidate top
 

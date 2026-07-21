@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useEffect, useId, useRef, useState } from "react";
 import type { Demo } from "../demos";
+import type { ViewerMode } from "../viewer-mode";
 import type { MatchingPolicy } from "./comparison-types";
 
 interface BundlePickerProps {
@@ -83,6 +84,7 @@ function BundleDropTarget({ loading, error, onSelect }: BundlePickerProps) {
 }
 
 interface BundleWelcomeProps extends BundlePickerProps {
+  mode: ViewerMode;
   onCompare?: () => void;
   demos?: readonly Demo[];
   onOpenDemo?: (demo: Demo) => void;
@@ -91,6 +93,7 @@ interface BundleWelcomeProps extends BundlePickerProps {
 }
 
 export function BundleWelcome({
+  mode,
   onCompare,
   demos,
   onOpenDemo,
@@ -103,21 +106,21 @@ export function BundleWelcome({
   const demoTitleId = useId();
   const { input, selectInput, drop } = useBundlePicker(onSelect);
   const [dragging, setDragging] = useState(false);
+  const demoMode = mode === "demo";
   return (
-    <main className="bundle-welcome">
-      <div className="bundle-welcome-card">
-        <span className="bundle-welcome-icon">
-          <FolderOpen size={24} strokeWidth={1.5} />
-        </span>
-        <h1>Open or share an elaborated design</h1>
+    <main className={`bundle-welcome ${mode}`}>
+      <div className={`bundle-welcome-card ${mode}`}>
+        <h1>{demoMode ? "Explore an elaborated design" : "Open a design"}</h1>
         <p>
-          Choose where your design is processed and stored. Nettle will not upload anything until
-          you explicitly confirm a hosted action.
+          {demoMode
+            ? "Open a .nettle bundle in your browser or try an example."
+            : "Open locally, create a shareable session, or build from RTL sources."}
         </p>
-        <div className="bundle-workflows">
+        <div className={`bundle-workflows ${mode}`}>
           <button
             className={`bundle-workflow local${dragging ? " dragging" : ""}`}
             type="button"
+            aria-label="Open a .nettle bundle"
             disabled={loading}
             onClick={() => input.current?.click()}
             onDragEnter={(event) => {
@@ -131,13 +134,14 @@ export function BundleWelcome({
               drop(event);
             }}
           >
-            <FolderOpen size={24} strokeWidth={1.5} />
+            {demoMode ? (
+              <FileArchive size={24} strokeWidth={1.5} />
+            ) : (
+              <FolderOpen size={24} strokeWidth={1.5} />
+            )}
             <span>
-              <strong>Open locally — no upload</strong>
-              <small>
-                This file stays in your browser. No shareable URL is created, and closing or
-                reloading discards the session.
-              </small>
+              <strong>{loading ? "Opening bundle…" : "Open a .nettle bundle"}</strong>
+              <small>{demoMode ? "Choose or drop a file" : "Keep it in this browser"}</small>
             </span>
           </button>
           <input
@@ -150,36 +154,51 @@ export function BundleWelcome({
             tabIndex={-1}
             onChange={selectInput}
           />
-          <button
-            className="bundle-workflow hosted"
-            type="button"
-            disabled={loading}
-            onClick={onUploadBundle}
-          >
-            <UploadCloud size={24} strokeWidth={1.5} />
-            <span>
-              <strong>Upload bundle and create shareable session</strong>
-              <small>
-                Store a prebuilt .nettle on this server. Anyone with the resulting URL can view and
-                download it.
-              </small>
-            </span>
-          </button>
-          <button
-            className="bundle-workflow hosted"
-            type="button"
-            disabled={loading}
-            onClick={onUploadSources}
-          >
-            <Hammer size={24} strokeWidth={1.5} />
-            <span>
-              <strong>Upload sources, build, and create shareable session</strong>
-              <small>
-                Upload an archive for Slang and Yosys to compile. The generated bundle persists on
-                this server.
-              </small>
-            </span>
-          </button>
+          {!demoMode && onUploadBundle ? (
+            <button
+              className="bundle-workflow hosted"
+              type="button"
+              aria-label="Upload a bundle"
+              disabled={loading}
+              onClick={onUploadBundle}
+            >
+              <UploadCloud size={24} strokeWidth={1.5} />
+              <span>
+                <strong>Upload a bundle</strong>
+                <small>Create a shareable session</small>
+              </span>
+            </button>
+          ) : null}
+          {!demoMode && onUploadSources ? (
+            <button
+              className="bundle-workflow hosted"
+              type="button"
+              aria-label="Build from RTL sources"
+              disabled={loading}
+              onClick={onUploadSources}
+            >
+              <Hammer size={24} strokeWidth={1.5} />
+              <span>
+                <strong>Build from RTL sources</strong>
+                <small>Compile and create a shareable session</small>
+              </span>
+            </button>
+          ) : null}
+          {!demoMode && onCompare ? (
+            <button
+              className="bundle-workflow compare"
+              type="button"
+              aria-label="Compare two bundles"
+              disabled={loading}
+              onClick={onCompare}
+            >
+              <GitCompareArrows size={24} strokeWidth={1.5} />
+              <span>
+                <strong>Compare two bundles</strong>
+                <small>Keep both files in this browser</small>
+              </span>
+            </button>
+          ) : null}
         </div>
         {error ? (
           <div className="bundle-open-error" role="alert">
@@ -206,16 +225,14 @@ export function BundleWelcome({
             </div>
           </section>
         ) : null}
-        {onCompare ? (
-          <button className="compare-welcome-action" type="button" onClick={onCompare}>
-            <GitCompareArrows size={15} /> Compare two bundles
-          </button>
-        ) : null}
         <div className="bundle-privacy-note">
           <ShieldCheck size={15} />
-          <span>Local bundles are validated and rendered in memory on this device</span>
+          <span>
+            {demoMode
+              ? "Files stay in your browser."
+              : "Local files stay in your browser unless you choose an upload action."}
+          </span>
         </div>
-        <code>nettle build --filelist design.f --top top --output design.nettle</code>
       </div>
     </main>
   );

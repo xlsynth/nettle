@@ -198,10 +198,8 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
 
   await page.goto("/");
   await expect(page).toHaveTitle(/Nettle/);
-  await expect(
-    page.getByRole("heading", { name: "Open or share an elaborated design" }),
-  ).toBeVisible();
-  await expect(page.getByText(/This file stays in your browser/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Open a design" })).toBeVisible();
+  await expect(page.getByText(/Local files stay in your browser/)).toBeVisible();
   await page.getByLabel("Open a .nettle bundle locally").setInputFiles(fixture);
 
   await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");

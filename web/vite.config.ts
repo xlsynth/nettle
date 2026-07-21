@@ -56,13 +56,17 @@ const buildSuffix = () => {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "NETTLE_PUBLIC_");
+  const viewerMode = env.NETTLE_PUBLIC_MODE || "hosted";
+  if (viewerMode !== "demo" && viewerMode !== "hosted") {
+    throw new Error(`NETTLE_PUBLIC_MODE must be demo or hosted; got ${viewerMode}`);
+  }
   return {
     base: env.NETTLE_PUBLIC_BASE || "/",
     define: {
       "import.meta.env.NETTLE_BUILD_DATE_UTC": JSON.stringify(buildDateUtc()),
       "import.meta.env.NETTLE_BUILD_GIT_SHA": JSON.stringify(gitSha()),
       "import.meta.env.NETTLE_BUILD_SUFFIX": JSON.stringify(buildSuffix()),
-      "import.meta.env.NETTLE_PUBLIC_DEMOS": JSON.stringify(env.NETTLE_PUBLIC_DEMOS === "true"),
+      "import.meta.env.NETTLE_PUBLIC_MODE": JSON.stringify(viewerMode),
     },
     plugins: [react()],
     server: {

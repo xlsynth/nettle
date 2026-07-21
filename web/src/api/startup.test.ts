@@ -5,7 +5,9 @@ import { decodeComparisonStartup, staticAssetRoute } from "./startup";
 
 describe("comparison startup descriptor", () => {
   it("keeps static assets under the configured deployment base path", () => {
-    expect(staticAssetRoute("/demos/smoke.nettle")).toBe("/demos/smoke.nettle");
+    expect(staticAssetRoute("/demos/br_cdc_fifo_flops_synth.nettle")).toBe(
+      "/demos/br_cdc_fifo_flops_synth.nettle",
+    );
   });
 
   it("accepts a bounded same-origin route contract", () => {

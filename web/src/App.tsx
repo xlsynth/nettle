@@ -34,7 +34,7 @@ import {
   LocalBundleProvider,
 } from "./bundle/provider";
 import type { MatchingPolicy } from "./comparison/types";
-import { AppHeader } from "./components/AppHeader";
+import { AppHeader, LandingHeader } from "./components/AppHeader";
 import { BuildInfo } from "./components/BuildInfo";
 import { ComparisonWorkspaceView } from "./components/ComparisonWorkspaceView";
 import { FileTree } from "./components/FileTree";
@@ -58,6 +58,7 @@ import type { LabelSettings } from "./graph/SchematicCanvas";
 import type { GraphNode, GraphSlice, SourceElaborationRange, SourceFileRef } from "./model/graph";
 import { entityForSourceSelection } from "./source/cross-probe";
 import { elaborationRangesForSource } from "./source/elaboration-ranges";
+import { type ViewerMode, viewerMode } from "./viewer-mode";
 
 interface SourceView {
   path: string;
@@ -103,8 +104,6 @@ const SchematicCanvas = lazy(() =>
     default: module.SchematicCanvas,
   })),
 );
-const publicDemosEnabled = import.meta.env.NETTLE_PUBLIC_DEMOS ?? false;
-
 const contextualizeChild = (
   parent: GraphSlice,
   child: GraphSlice,
@@ -160,14 +159,20 @@ export class OpenRequestOwner {
   }
 }
 
-export default function App() {
+interface AppProps {
+  mode?: ViewerMode;
+}
+
+export default function App({ mode = viewerMode }: AppProps = {}) {
+  const hostedMode = mode === "hosted";
   const [opened, setOpened] = useState<OpenedBundle>();
   const [comparison, setComparison] = useState<OpenedComparison>();
   const [hostedToken, setHostedToken] = useState(() =>
-    hostedSessionTokenFromPath(window.location.pathname),
+    hostedMode ? hostedSessionTokenFromPath(window.location.pathname) : undefined,
   );
   const [invalidHostedRoute, setInvalidHostedRoute] = useState(
     () =>
+      hostedMode &&
       isHostedSessionPath(window.location.pathname) &&
       !hostedSessionTokenFromPath(window.location.pathname),
   );
@@ -180,7 +185,7 @@ export default function App() {
   const generation = useRef(0);
   const openOwner = useRef(new OpenRequestOwner());
   const startupRequested = useRef(false);
-  const initialHostedRoute = useRef(Boolean(hostedToken) || invalidHostedRoute);
+  const initialHostedRoute = useRef(hostedMode && (Boolean(hostedToken) || invalidHostedRoute));
 
   const openBundle = useCallback(
     async (
@@ -412,13 +417,13 @@ export default function App() {
       setHostedUploadKind(undefined);
       setOpened(undefined);
       setComparison(undefined);
-      const token = hostedSessionTokenFromPath(window.location.pathname);
+      const token = hostedMode ? hostedSessionTokenFromPath(window.location.pathname) : undefined;
       setHostedToken(token);
-      setInvalidHostedRoute(isHostedSessionPath(window.location.pathname) && !token);
+      setInvalidHostedRoute(hostedMode && isHostedSessionPath(window.location.pathname) && !token);
     };
     window.addEventListener("popstate", navigate);
     return () => window.removeEventListener("popstate", navigate);
-  }, []);
+  }, [hostedMode]);
 
   useEffect(() => {
     if (startupRequested.current) return;
@@ -524,30 +529,22 @@ export default function App() {
           onCompareBundles={openCompareDialog}
           hostedSession={opened.hostedSession}
         />
-      ) : hostedToken ? (
+      ) : hostedMode && hostedToken ? (
         <HostedSessionPage key={hostedToken} token={hostedToken} onOpenBundle={openHostedBundle} />
-      ) : invalidHostedRoute ? (
+      ) : hostedMode && invalidHostedRoute ? (
         <HostedSessionNotFound />
       ) : (
         <>
-          <AppHeader
-            projectName="Open .nettle bundle"
-            statusText={loading ? statusDetail : "No bundle open"}
-            dataMode={loading ? "loading" : "empty"}
-            statusDetail={statusDetail}
-            onOpenProject={openDialog}
-            onCompareBundles={openCompareDialog}
-            onSearch={() => undefined}
-            onHelp={() => undefined}
-          />
+          <LandingHeader />
           <BundleWelcome
+            mode={mode}
             loading={loading}
             error={error}
             onSelect={(file) => void openBundle(file)}
-            onCompare={openCompareDialog}
-            onUploadBundle={() => openHostedUpload("bundle")}
-            onUploadSources={() => openHostedUpload("sources")}
-            demos={publicDemosEnabled ? DEMOS : undefined}
+            onCompare={hostedMode ? openCompareDialog : undefined}
+            onUploadBundle={hostedMode ? () => openHostedUpload("bundle") : undefined}
+            onUploadSources={hostedMode ? () => openHostedUpload("sources") : undefined}
+            demos={mode === "demo" ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
           />
         </>
@@ -561,11 +558,13 @@ export default function App() {
         }}
         onSelect={(file) => void openBundle(file)}
       />
-      <HostedUploadDialog
-        kind={hostedUploadKind}
-        onClose={() => setHostedUploadKind(undefined)}
-        onCreated={acceptHostedSession}
-      />
+      {hostedMode ? (
+        <HostedUploadDialog
+          kind={hostedUploadKind}
+          onClose={() => setHostedUploadKind(undefined)}
+          onCreated={acceptHostedSession}
+        />
+      ) : null}
       <CompareBundlesDialog
         open={compareDialogOpen}
         loading={loading}
