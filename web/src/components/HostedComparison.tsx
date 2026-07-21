@@ -227,7 +227,6 @@ export function HostedComparisonUploadDialog({
   };
   const referenceValidation = inputError("reference", reference);
   const candidateValidation = inputError("candidate", candidate);
-  const busy = uploading || Boolean(referenceCreated || candidateCreated);
 
   const selectReference = (file?: File) => {
     setReference(file);
@@ -361,14 +360,18 @@ export function HostedComparisonUploadDialog({
                 <ComparisonInput
                   side="reference"
                   file={reference}
-                  disabled={busy}
+                  disabled={uploading || Boolean(referenceCreated)}
                   error={referenceValidation ?? referenceError}
                   onSelect={selectReference}
                 />
                 <button
                   className="comparison-slot-swap"
                   type="button"
-                  disabled={busy || (!reference && !candidate)}
+                  disabled={
+                    uploading ||
+                    Boolean(referenceCreated || candidateCreated) ||
+                    (!reference && !candidate)
+                  }
                   aria-label="Swap reference and candidate uploads"
                   onClick={() => {
                     setReference(candidate);
@@ -384,7 +387,7 @@ export function HostedComparisonUploadDialog({
                 <ComparisonInput
                   side="candidate"
                   file={candidate}
-                  disabled={busy}
+                  disabled={uploading || Boolean(candidateCreated)}
                   error={candidateValidation ?? candidateError}
                   onSelect={selectCandidate}
                 />
@@ -393,7 +396,7 @@ export function HostedComparisonUploadDialog({
                 <span>Matching policy</span>
                 <select
                   value={matching}
-                  disabled={busy}
+                  disabled={uploading}
                   onChange={(event) => setMatching(event.target.value as MatchingPolicy)}
                 >
                   <option value="conservative">Conservative (recommended)</option>

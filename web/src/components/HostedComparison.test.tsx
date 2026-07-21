@@ -146,10 +146,21 @@ describe("HostedComparisonUploadDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Upload and create comparison link" }));
 
     expect(await screen.findByText("Candidate admission failed")).toBeTruthy();
+    const referenceInput = screen.getByLabelText(
+      "Choose reference .nettle bundle or source archive",
+    );
+    const candidateInput = screen.getByLabelText(
+      "Choose candidate .nettle bundle or source archive",
+    );
+    expect(referenceInput.hasAttribute("disabled")).toBe(true);
+    expect(candidateInput.hasAttribute("disabled")).toBe(false);
+    fireEvent.change(candidateInput, {
+      target: { files: [new File(["fixed"], "candidate-fixed.nettle")] },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Retry incomplete upload" }));
 
     await waitFor(() => expect(harness.createHostedSession).toHaveBeenCalledTimes(3));
-    expect(harness.createHostedSession.mock.calls[2][1].name).toBe("candidate.zip");
+    expect(harness.createHostedSession.mock.calls[2][1].name).toBe("candidate-fixed.nettle");
     await waitFor(() =>
       expect(onCreated).toHaveBeenCalledWith({
         referenceToken,

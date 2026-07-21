@@ -351,6 +351,15 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
         setHostedToken(undefined);
         setInvalidHostedRoute(false);
         setHostedComparisonUploadOpen(false);
+        if (hostedSessions?.shareable && hostedSessions.reference && hostedSessions.candidate) {
+          const nextRoute: HostedComparisonRoute = {
+            referenceToken: hostedSessions.reference.token,
+            candidateToken: hostedSessions.candidate.token,
+            matching,
+          };
+          setHostedComparisonRoute(nextRoute);
+          window.history.replaceState(null, "", hostedComparisonPath(nextRoute));
+        }
         if (
           !hostedSessions?.shareable &&
           (isHostedSessionPath(window.location.pathname) ||

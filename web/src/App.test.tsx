@@ -265,6 +265,32 @@ describe("App comparison installation", () => {
     expect(window.location.search).toBe("?matching=aggressive");
   });
 
+  it("persists a matching change made through the comparison dialog", async () => {
+    const referenceToken = "a".repeat(43);
+    const candidateToken = "b".repeat(43);
+    window.history.replaceState(
+      null,
+      "",
+      `/compare/${referenceToken}/${candidateToken}?matching=aggressive`,
+    );
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:aggressive"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
+    fireEvent.change(screen.getByLabelText(/Matching policy/), {
+      target: { value: "conservative" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Compare bundles" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("3:4:conservative"),
+    );
+    expect(window.location.pathname).toBe(`/compare/${referenceToken}/${candidateToken}`);
+    expect(window.location.search).toBe("?matching=conservative");
+  });
+
   it("reuses a ready hosted bundle as the reference while keeping the candidate local", async () => {
     const token = "a".repeat(64);
     window.history.replaceState(null, "", `/s/${token}`);
