@@ -43,7 +43,8 @@ RUN set -eu; \
     tar -xzf slang-source.tar.gz -C /tmp/slang-source --strip-components=1; \
     cp /tmp/slang-source/LICENSE /opt/toolchain-licenses/slang/LICENSE; \
     cp -a /tmp/slang-source/LICENSES /opt/toolchain-licenses/slang/LICENSES; \
-    test -x /opt/slang/slang
+    test -x /opt/slang/slang; \
+    rm -rf slang.tar.gz slang-source.tar.gz /tmp/slang-source
 RUN set -eu; \
     curl --fail --location --retry 3 \
       "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_CAD_RELEASE}/${OSS_CAD_ARCHIVE}" \
@@ -65,7 +66,8 @@ RUN set -eu; \
         cp -L "/tmp/oss-cad-suite/lib/${library}" "/opt/oss-cad-suite/lib/${library}"; \
     done; \
     /opt/slang/slang --version; \
-    /opt/oss-cad-suite/bin/yosys -Q -m slang -p "help read_slang" >/dev/null
+    /opt/oss-cad-suite/bin/yosys -Q -m slang -p "help read_slang" >/dev/null; \
+    rm -rf oss-cad-suite.tgz /tmp/oss-cad-suite
 
 # Compile the native CLI once for the builder, viewer, and combined targets.
 FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS rust-builder
@@ -183,15 +185,18 @@ ENV PATH=/opt/oss-cad-suite/bin:/opt/slang:/usr/local/cargo/bin:/usr/local/bin:/
   NETTLE_STRUCTURAL_CANDIDATE_FIXTURE=/tmp/nettle_structural_candidate.nettle \
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 WORKDIR /src
-COPY . .
+COPY package.json package-lock.json ./
+COPY web/package.json web/package.json
 RUN --mount=type=cache,target=/root/.npm \
   npm ci
+COPY . .
 
 # CI builds this target after the standalone cargo and npm unit-test jobs. It
 # clones each manifest-pinned design corpus, then exercises the real HDL
 # toolchain and browser flows without repeating either unit-test suite.
 FROM test-base AS integration-tests
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/src/target \
   scripts/check-toolchain.sh \
   && npm run test:designs \
   && python3 scripts/build-schematic-diff-fixtures.py \
@@ -202,6 +207,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # compiler, design-corpus, and browser regressions.
 FROM integration-tests AS test
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/src/target \
   scripts/check-rust-docs.py \
   && cargo fmt --all --check \
   && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked \
