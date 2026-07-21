@@ -360,7 +360,7 @@ jobs:
           python3 scripts/check-design-corpus.py \
             --prepare-only \
             --corpus bedrock-rtl \
-            --example cdc-fifo-synth-netlist \
+            --example cdc-fifo \
             --workspace target/design-corpora
           docker load --input /tmp/nettle-image/nettle-amd64.tar
           image="nettle-nettle:${{ github.sha }}"
@@ -377,19 +377,15 @@ jobs:
             docker run --rm --user "$(id -u):$(id -g)" \
               -v "$PWD:/work" -w /work "$image" validate "$output"
           }
-          docker run --rm --user "$(id -u):$(id -g)" \
-            --entrypoint yosys \
-            -v "$PWD:/work" -w /work/target/design-corpora/bedrock-rtl "$image" \
-            -Q -m slang -s scripts/synth_br_cdc_fifo_flops.ys
           build_bundle \
-            web/dist/demos/br_cdc_fifo_flops_synth.nettle \
-            target/design-corpora/bedrock-rtl/br_cdc_fifo_flops_synth.f \
+            web/dist/demos/br_cdc_fifo_flops.nettle \
+            target/design-corpora/bedrock-rtl/br_cdc_fifo_flops.f \
             target/design-corpora/bedrock-rtl \
             br_cdc_fifo_flops
           build_bundle web/dist/demos/schematic-reference.nettle integration_tests/schematic-diff/reference/project.f integration_tests/schematic-diff/reference top
           build_bundle web/dist/demos/schematic-candidate.nettle integration_tests/schematic-diff/candidate/project.f integration_tests/schematic-diff/candidate top
           expected_demo_files="$(printf '%s\n' \
-            br_cdc_fifo_flops_synth.nettle \
+            br_cdc_fifo_flops.nettle \
             schematic-candidate.nettle \
             schematic-reference.nettle)"
           actual_demo_files="$(find web/dist/demos -maxdepth 1 -type f -printf '%f\n' | sort)"
