@@ -52,6 +52,8 @@ jobs:
           echo "${PRE_COMMIT_SHA256}  /tmp/pre-commit.pyz" | sha256sum --check --strict
 
       - name: Run pre-commit
+        env:
+          SKIP: clippy,biome,web-test
         run: python3 /tmp/pre-commit.pyz run --all-files --show-diff-on-failure
 
   cargo-test:
@@ -65,6 +67,9 @@ jobs:
 
       - name: Run cargo test
         run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   npm-test:
     name: npm test
@@ -83,6 +88,9 @@ jobs:
 
       - name: Install locked dependencies with npm ci
         run: npm ci
+
+      - name: Run npm lint
+        run: npm run lint
 
       - name: Run npm test
         run: npm test
@@ -128,7 +136,7 @@ jobs:
             NETTLE_BUILD_STATE=${{ steps.build-info.outputs.state }}
           push: false
           cache-from: type=gha,scope=nettle-integration-tests
-          cache-to: type=gha,mode=max,scope=nettle-integration-tests
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=nettle-integration-tests' || '' }}
 
   image-build:
     name: Build nettle image (amd64)
@@ -175,7 +183,7 @@ jobs:
           provenance: false
           tags: nettle-nettle:${{ github.sha }}
           cache-from: type=gha,scope=nettle-amd64
-          cache-to: type=gha,mode=max,scope=nettle-amd64
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=nettle-amd64' || '' }}
 
       - name: Smoke-test nettle image
         run: |
@@ -267,72 +275,13 @@ jobs:
           IMAGE_TAG: ${{ needs.publish-context.outputs.image_tag }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/digests
           docker load --input /tmp/images/nettle-amd64.tar
-          image="${IMAGE}:${IMAGE_TAG}"
-          docker tag "$LOCAL_IMAGE" "$image"
-          docker push "$image"
-          digest="$(docker image inspect --format='{{index .RepoDigests 0}}' "$image" | sed 's/.*@//')"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload image digests
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: nettle-digest
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  publish-manifests:
-    name: Publish nettle manifest
-    if: >-
-      success() &&
-      (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main'))
-    needs:
-      - publish-context
-      - publish-images
-    permissions:
-      contents: read
-      packages: write
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Log in to GHCR
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download image digest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: nettle-digest
-          path: /tmp/digests
-
-      - name: Publish manifest
-        env:
-          IMAGE: ghcr.io/xlsynth/nettle
-          IMAGE_TAG: ${{ needs.publish-context.outputs.image_tag }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          digests=(/tmp/digests/*)
-          if [ "${#digests[@]}" -eq 0 ]; then
-            echo "No image digests found" >&2
-            exit 1
-          fi
-          sources=()
-          for digest in "${digests[@]}"; do
-            sources+=("${IMAGE}@sha256:$(basename "$digest")")
-          done
-          docker buildx imagetools create \
-            --tag "${IMAGE}:latest" \
-            --tag "${IMAGE}:${IMAGE_TAG}" \
-            "${sources[@]}"
+          dated_image="${IMAGE}:${IMAGE_TAG}"
+          latest_image="${IMAGE}:latest"
+          docker tag "$LOCAL_IMAGE" "$dated_image"
+          docker tag "$LOCAL_IMAGE" "$latest_image"
+          docker push "$dated_image"
+          docker push "$latest_image"
 
   pages-build:
     name: Build Nettle demo Pages artifact
