@@ -105,17 +105,11 @@ docker build --platform linux/amd64 \
   -f Dockerfile --target nettle -t nettle:latest .
 ```
 
-### Specialized images
+### Container image
 
-All three published images come from named targets in the root `Dockerfile`.
-Use the smaller specialized images only when one half of the workflow is all
-you need.
-
-| Image            | Use when                                                    | Omits                                                                         |
-| ---------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `nettle`         | Building, viewing, or running the hosted service            | Nothing needed for the interactive workflow; linux/amd64 only                 |
-| `nettle-builder` | Producing `.nettle` bundles without hosting a viewer        | Static viewer assets and server dependencies; linux/amd64 only                |
-| `nettle-viewer`  | Hosting or deploying the static viewer for existing bundles | Slang, Yosys, HDL toolchain, and project sources; linux/amd64 and linux/arm64 |
+Nettle publishes one Linux/amd64 image, `ghcr.io/xlsynth/nettle`, with the
+compiler toolchain, static viewer, and hosted service. Use `build`, `view`,
+`render`, or `host` according to the workflow you need.
 
 ### Run without containers
 
@@ -186,9 +180,9 @@ amd64-only. Install:
   run the browser end-to-end tests.
 
 The [`Dockerfile`](Dockerfile) is the source of truth for known-good
-toolchains and build environments. Its `builder`, `viewer`, and `nettle`
-targets record the exact Slang release/source commit and checksums, the
-checksummed OSS CAD Suite artifact, and the Rust and Node image versions.
+toolchains and build environments. Its `builder`, `test`, and `nettle` targets
+record the exact Slang release/source commit and checksums, the checksummed OSS
+CAD Suite artifact, and the Rust and Node image versions.
 Nettle never downloads HDL compilers at runtime. Run
 `scripts/check-toolchain.sh` after installing native compiler tools to exercise
 their capabilities end to end.
@@ -435,17 +429,16 @@ compatibility rules.
 
 ### Viewer containers and deployment
 
-The viewer image contains only the static web build and a small file server; it
-contains no Slang, Yosys, HDL sources, example projects, or default bundle. It
-is published for both linux/amd64 and linux/arm64:
+The unified image can serve the static viewer for existing bundles on
+linux/amd64:
 
 ```sh
-docker run --rm -p 127.0.0.1:8090:8080 \
-  ghcr.io/xlsynth/nettle-viewer:latest
+docker run --rm --platform linux/amd64 -p 127.0.0.1:8090:8080 \
+  ghcr.io/xlsynth/nettle:latest
 ```
 
-See [Specialized images](#specialized-images) for when to use the stripped-down
-`nettle-builder` and `nettle-viewer` images instead of the combined workflow.
+On Apple silicon hosts, `--platform linux/amd64` selects the published image
+architecture.
 
 In a shared deployment, place the static site behind the normal authentication
 and HTTPS boundary. Design bytes selected with the file picker remain in each

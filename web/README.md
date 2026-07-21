@@ -10,9 +10,8 @@ command-line-selected bundle at `/startup.nettle`, or a comparison descriptor
 plus separate reference and candidate routes. The viewer applies the same
 browser validation path as the file picker.
 
-The production build is ordinary static content. `nettle view` and the
-`viewer` target in the root `Dockerfile` normally serve only those static
-files. `nettle view` may
+The production build is ordinary static content. `nettle view` in the unified
+`nettle` image normally serves only those static files. `nettle view` may
 serve one bundle from a fixed `no-store` route. `nettle compare` serves a
 `no-store` descriptor at `/startup-comparison.json` and two fixed `no-store`
 bundle routes. The native host first copies each selected archive into a

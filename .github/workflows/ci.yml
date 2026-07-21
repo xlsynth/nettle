@@ -131,40 +131,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=nettle-integration-tests
 
   image-build:
-    name: Build ${{ matrix.image }} image (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The precompiled Slang and yosys-slang toolchains currently support
-          # Builder and combined images are linux/amd64 only; the viewer is
-          # built and published for linux/amd64 and linux/arm64.
-          - image: nettle-builder
-            dockerfile: Dockerfile
-            target: builder
-            arch: amd64
-            runner: ubuntu-24.04
-            platform: linux/amd64
-          # Combined compiler-and-viewer runtime published as ghcr.io/xlsynth/nettle.
-          - image: nettle
-            dockerfile: Dockerfile
-            target: nettle
-            arch: amd64
-            runner: ubuntu-24.04
-            platform: linux/amd64
-          - image: nettle-viewer
-            dockerfile: Dockerfile
-            target: viewer
-            arch: amd64
-            runner: ubuntu-24.04
-            platform: linux/amd64
-          - image: nettle-viewer
-            dockerfile: Dockerfile
-            target: viewer
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
+    name: Build nettle image (amd64)
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
@@ -193,9 +161,9 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          platforms: ${{ matrix.platform }}
+          file: Dockerfile
+          target: nettle
+          platforms: linux/amd64
           load: true
           build-args: |
             NETTLE_BUILD_DATE_UTC=${{ steps.build-info.outputs.date_utc }}
@@ -205,12 +173,11 @@ jobs:
           # attestations appear as unknown/unknown entries in GHCR's platform
           # view and are not part of the runnable multi-platform image.
           provenance: false
-          tags: nettle-${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+          tags: nettle-nettle:${{ github.sha }}
+          cache-from: type=gha,scope=nettle-amd64
+          cache-to: type=gha,mode=max,scope=nettle-amd64
 
-      - name: Smoke-test combined image
-        if: matrix.image == 'nettle'
+      - name: Smoke-test nettle image
         run: |
           set -euo pipefail
           # Build the smoke HDL design through `nettle render`, then confirm
@@ -221,7 +188,7 @@ jobs:
             --user 10001:10001 \
             -p 127.0.0.1:8080:8080 \
             -v "$PWD:/work:ro" -w /work \
-            "nettle-${{ matrix.image }}:${{ github.sha }}" render \
+            "nettle-nettle:${{ github.sha }}" render \
             --filelist integration_tests/smoke/project.f \
             --project-root integration_tests/smoke \
             --top top \
@@ -235,17 +202,16 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:8080/startup.nettle --output /dev/null
 
       - name: Smoke-test hosted source workflow
-        if: matrix.image == 'nettle'
-        run: scripts/check-hosted-image.sh "nettle-${{ matrix.image }}:${{ github.sha }}"
+        run: scripts/check-hosted-image.sh "nettle-nettle:${{ github.sha }}"
 
       - name: Save tested image
-        run: docker save "nettle-${{ matrix.image }}:${{ github.sha }}" --output "/tmp/${{ matrix.image }}-${{ matrix.arch }}.tar"
+        run: docker save "nettle-nettle:${{ github.sha }}" --output /tmp/nettle-amd64.tar
 
       - name: Upload tested image
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ matrix.image }}-${{ matrix.arch }}-image
-          path: /tmp/${{ matrix.image }}-${{ matrix.arch }}.tar
+          name: nettle-amd64-image
+          path: /tmp/nettle-amd64.tar
           if-no-files-found: error
           retention-days: 1
 
@@ -272,34 +238,20 @@ jobs:
         run: echo "image_tag=$(date --utc +%F)-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   publish-images:
-    name: Publish ${{ matrix.image }} image
+    name: Publish nettle image
     needs:
       - publish-context
     permissions:
       contents: read
       packages: write
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The precompiled Slang and yosys-slang toolchains currently support
-          # Builder and combined images are linux/amd64 only; the viewer is
-          # built and published for linux/amd64 and linux/arm64.
-          - image: nettle-builder
-            runner: ubuntu-24.04
-          - image: nettle
-            runner: ubuntu-24.04
-          - image: nettle-viewer
-            runner: ubuntu-24.04
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Download tested images
+      - name: Download tested image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: ${{ matrix.image }}-*-image
+          name: nettle-amd64-image
           path: /tmp/images
-          merge-multiple: true
 
       - name: Log in to GHCR
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
@@ -308,38 +260,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Publish tested architecture images
+      - name: Publish tested image
         env:
-          IMAGE: ghcr.io/xlsynth/${{ matrix.image }}
-          LOCAL_IMAGE: nettle-${{ matrix.image }}:${{ github.sha }}
+          IMAGE: ghcr.io/xlsynth/nettle
+          LOCAL_IMAGE: nettle-nettle:${{ github.sha }}
           IMAGE_TAG: ${{ needs.publish-context.outputs.image_tag }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/digests
-          archives=(/tmp/images/${{ matrix.image }}-*.tar)
-          if [ "${#archives[@]}" -eq 0 ]; then
-            echo "No tested image archives found" >&2
-            exit 1
-          fi
-          for archive in "${archives[@]}"; do
-            docker load --input "$archive"
-            image="${IMAGE}:${IMAGE_TAG}"
-            docker tag "$LOCAL_IMAGE" "$image"
-            docker push "$image"
-            digest="$(docker image inspect --format='{{index .RepoDigests 0}}' "$image" | sed 's/.*@//')"
-            touch "/tmp/digests/${digest#sha256:}"
-          done
+          docker load --input /tmp/images/nettle-amd64.tar
+          image="${IMAGE}:${IMAGE_TAG}"
+          docker tag "$LOCAL_IMAGE" "$image"
+          docker push "$image"
+          digest="$(docker image inspect --format='{{index .RepoDigests 0}}' "$image" | sed 's/.*@//')"
+          touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload image digests
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ matrix.image }}-digest
+          name: nettle-digest
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   publish-manifests:
-    name: Publish ${{ matrix.image }} manifest
+    name: Publish nettle manifest
     if: >-
       success() &&
       (github.event_name == 'workflow_dispatch' ||
@@ -351,14 +296,6 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: nettle-builder
-          - image: nettle
-          - image: nettle-viewer
-
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -370,15 +307,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download image digests
+      - name: Download image digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ matrix.image }}-digest
+          name: nettle-digest
           path: /tmp/digests
 
       - name: Publish manifest
         env:
-          IMAGE: ghcr.io/xlsynth/${{ matrix.image }}
+          IMAGE: ghcr.io/xlsynth/nettle
           IMAGE_TAG: ${{ needs.publish-context.outputs.image_tag }}
         run: |
           set -euo pipefail
@@ -449,17 +386,17 @@ jobs:
           NETTLE_PUBLIC_DEMOS: "true"
         run: npm run build
 
-      - name: Download tested Nettle builder image
+      - name: Download tested Nettle image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: nettle-builder-amd64-image
-          path: /tmp/nettle-builder-image
+          name: nettle-amd64-image
+          path: /tmp/nettle-image
 
       - name: Build and validate public integration demos
         run: |
           set -euo pipefail
-          docker load --input /tmp/nettle-builder-image/nettle-builder-amd64.tar
-          image="nettle-nettle-builder:${{ github.sha }}"
+          docker load --input /tmp/nettle-image/nettle-amd64.tar
+          image="nettle-nettle:${{ github.sha }}"
           mkdir -p web/dist/demos
           build_bundle() {
             output="$1"
