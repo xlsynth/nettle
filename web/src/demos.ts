@@ -27,11 +27,11 @@ export const DEMOS: readonly Demo[] = [
   {
     id: "bedrock-cdc-fifo",
     title: "Bedrock CDC FIFO",
-    description: "Explore the synthesized CDC FIFO used by Nettle's browser regression.",
+    description: "Explore the RTL CDC FIFO used by Nettle's browser regression.",
     kind: "bundle",
     bundle: {
-      name: "br_cdc_fifo_flops_synth.nettle",
-      route: "/demos/br_cdc_fifo_flops_synth.nettle",
+      name: "br_cdc_fifo_flops.nettle",
+      route: "/demos/br_cdc_fifo_flops.nettle",
     },
   },
   {

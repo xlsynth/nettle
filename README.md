@@ -21,8 +21,8 @@ compilation without changing that local workflow.
 ## Try the public demo
 
 The GitHub Pages deployment at <https://xlsynth.github.io/nettle> hosts the
-browser viewer with two public examples: the synthesized Bedrock CDC FIFO used
-by the browser regression and Nettle's schematic diff fixture. You can also
+browser viewer with two public examples: the RTL Bedrock CDC FIFO used by the
+browser regression and Nettle's schematic diff fixture. You can also
 open a local `.nettle` file; local files are read and rendered entirely in the
 browser and are never uploaded. The demo is a static viewer, not a hosted HDL
 compiler, and its bundled examples (including their sources) are public.
