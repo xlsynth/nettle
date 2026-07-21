@@ -71,6 +71,7 @@ describe("HostedUploadDialog", () => {
       expect(harness.createHostedSession).toHaveBeenCalledWith(
         "bundle",
         file,
+        undefined,
         expect.any(Function),
         expect.any(AbortSignal),
       ),
@@ -87,9 +88,36 @@ describe("HostedUploadDialog", () => {
     expect(screen.getByText(/including referenced source text/)).toBeTruthy();
   });
 
+  it("allows a root filelist path while defaulting to project.f", async () => {
+    render(<HostedUploadDialog kind="sources" onClose={vi.fn()} onCreated={vi.fn()} />);
+
+    const filelist = await screen.findByLabelText("Root filelist path");
+    expect(filelist.getAttribute("placeholder")).toBe("project.f");
+    expect(screen.getByText(/Defaults to/).textContent).toContain("project.f");
+
+    fireEvent.change(filelist, {
+      target: { value: "br_counter/filelist.f" },
+    });
+    const file = new File(["sources"], "project.zip", { type: "application/zip" });
+    fireEvent.change(screen.getByLabelText("Choose source archive to upload"), {
+      target: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload, build, and create link" }));
+
+    await waitFor(() =>
+      expect(harness.createHostedSession).toHaveBeenCalledWith(
+        "sources",
+        file,
+        "br_counter/filelist.f",
+        expect.any(Function),
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
   it("allows another upload after closing the dialog during an upload", async () => {
     harness.createHostedSession.mockImplementation(
-      (_kind, _file, _progress, signal: AbortSignal) =>
+      (_kind, _file, _filelist, _progress, signal: AbortSignal) =>
         new Promise((_resolve, reject) => {
           signal.addEventListener(
             "abort",

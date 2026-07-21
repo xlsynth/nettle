@@ -374,9 +374,13 @@ atomic session-store commit.
 
 The hosted process enforces upload-size, archive-entry, expansion,
 compression-ratio, path-depth, bundle, queue, output, and build-time limits. It
-rejects archive traversal, links and special files, duplicate paths,
-unsupported source extensions, out-of-root filelist arguments, and malformed
-ZIP/TAR metadata before invoking a compiler. Uploads and metadata use
+rejects archive traversal, links and special files, duplicate paths, out-of-root
+filelist arguments, and malformed ZIP/TAR metadata before invoking a compiler.
+An archive may contain arbitrary regular files; only the selected root
+filelist's validated closure selects compiler inputs, so unreferenced files
+(including operating system metadata) have no effect on compilation. Source
+uploads may provide a safe relative filelist path and default to archive-root
+`project.f` when it is omitted. Uploads and metadata use
 same-filesystem staging, file synchronization, and atomic rename. Capability
 tokens contain 256 random bits; invalid, expired, and unknown tokens have the
 same response. Source archives are removed after terminal success or failure,

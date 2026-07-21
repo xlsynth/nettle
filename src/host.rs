@@ -31,10 +31,13 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use zip::ZipArchive;
 
 use crate::bundle::BundleReader;
+use crate::compiler::validate_yosys_slang_filelist_name;
 use crate::ir::{NormalizedArgumentKind, normalize_filelist_within_root_cancellable};
 use crate::resource_limits::bundle::archive::ENTRY_COUNT as MAX_BUNDLE_ENTRY_COUNT;
 
 const HOST_SCHEMA_VERSION: u32 = 1;
+const SOURCE_FILELIST_SCHEMA_VERSION: u32 = 2;
+const DEFAULT_SOURCE_FILELIST: &str = "project.f";
 const MULTIPART_OVERHEAD_BYTES: u64 = 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 const MAX_ARCHIVE_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
@@ -204,7 +207,17 @@ struct SessionMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_format: Option<SourceFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    source_filelist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+impl SessionMetadata {
+    fn selected_source_filelist(&self) -> &str {
+        self.source_filelist
+            .as_deref()
+            .unwrap_or(DEFAULT_SOURCE_FILELIST)
+    }
 }
 
 #[derive(Debug)]
@@ -809,6 +822,7 @@ async fn create_session(
     let mut source_reservation = None;
     let mut original_name = None;
     let mut upload_bytes = None;
+    let mut source_filelist = None;
 
     while let Some(mut field) = multipart
         .next_field()
@@ -882,6 +896,49 @@ async fn create_session(
                 original_name = Some(filename);
                 upload_bytes = Some(total);
             }
+            Some("filelist") => {
+                if source_filelist.is_some() {
+                    return Err(ApiError::bad_request(
+                        "Upload contains duplicate filelist fields.",
+                    ));
+                }
+                if upload_bytes.is_some() {
+                    return Err(ApiError::bad_request(
+                        "Source filelist must precede the file field.",
+                    ));
+                }
+                match kind {
+                    Some(SessionKind::Sources) => {}
+                    Some(SessionKind::Bundle) => {
+                        return Err(ApiError::bad_request(
+                            "Bundle uploads must not specify a source filelist.",
+                        ));
+                    }
+                    None => {
+                        return Err(ApiError::bad_request(
+                            "Upload kind must precede the filelist field.",
+                        ));
+                    }
+                }
+                let bytes = read_small_field(&mut field, MAX_ARCHIVE_PATH_BYTES).await?;
+                let value = std::str::from_utf8(&bytes).map_err(|_| {
+                    ApiError::bad_request("Source filelist path must be valid UTF-8.")
+                })?;
+                if value.is_empty() {
+                    return Err(ApiError::bad_request(
+                        "Source filelist path must not be empty.",
+                    ));
+                }
+                let path = safe_archive_path(Path::new(value)).map_err(|_| {
+                    ApiError::bad_request("Source filelist must be a safe relative archive path.")
+                })?;
+                validate_yosys_slang_filelist_name(&path).map_err(|_| {
+                    ApiError::bad_request(
+                        "Source filelist name must contain only ASCII letters, digits, '.', '_', '-', '+', or ':'.",
+                    )
+                })?;
+                source_filelist = Some(path.to_string_lossy().into_owned());
+            }
             Some(_) | None => {
                 return Err(ApiError::bad_request(
                     "Upload contains an unsupported multipart field.",
@@ -930,7 +987,7 @@ async fn create_session(
         .flatten();
     let completed_at_ms = (kind == SessionKind::Bundle).then_some(admitted_at_ms);
     let metadata = SessionMetadata {
-        schema_version: HOST_SCHEMA_VERSION,
+        schema_version: metadata_schema_version(source_filelist.as_deref()),
         token: token.clone(),
         kind,
         state: if kind == SessionKind::Bundle {
@@ -946,6 +1003,7 @@ async fn create_session(
         completed_at_ms,
         interruptions: 0,
         source_format,
+        source_filelist,
         error: None,
     };
     let staged_path = staging.path().to_owned();
@@ -1197,7 +1255,7 @@ fn load_visible_metadata(
 ) -> std::result::Result<SessionMetadata, ApiError> {
     let path = session_path(state, token)?;
     let metadata = read_metadata(&path).map_err(|_| not_found())?;
-    if metadata.token != token || metadata.schema_version != HOST_SCHEMA_VERSION {
+    if metadata.token != token {
         return Err(not_found());
     }
     if expiration_ms(state, &metadata).is_some_and(|expires| expires <= now_ms()) {
@@ -1230,19 +1288,36 @@ fn metadata_path(session_path: &Path) -> PathBuf {
     session_path.join("metadata.json")
 }
 
+fn metadata_schema_version(source_filelist: Option<&str>) -> u32 {
+    if source_filelist.is_some() {
+        SOURCE_FILELIST_SCHEMA_VERSION
+    } else {
+        HOST_SCHEMA_VERSION
+    }
+}
+
+fn validate_metadata_schema(metadata: &SessionMetadata) -> Result<()> {
+    match (metadata.schema_version, metadata.source_filelist.is_some()) {
+        (HOST_SCHEMA_VERSION, false) | (SOURCE_FILELIST_SCHEMA_VERSION, true) => Ok(()),
+        (HOST_SCHEMA_VERSION, true) => {
+            bail!("hosted session metadata schema 1 must not select a source filelist")
+        }
+        (SOURCE_FILELIST_SCHEMA_VERSION, false) => {
+            bail!("hosted session metadata schema 2 must select a source filelist")
+        }
+        (version, _) => bail!("unsupported hosted session metadata schema {version}"),
+    }
+}
+
 fn read_metadata(session_path: &Path) -> Result<SessionMetadata> {
     let bytes = fs::read(metadata_path(session_path))?;
     let metadata: SessionMetadata = serde_json::from_slice(&bytes)?;
-    if metadata.schema_version != HOST_SCHEMA_VERSION {
-        bail!(
-            "unsupported hosted session metadata schema {}",
-            metadata.schema_version
-        );
-    }
+    validate_metadata_schema(&metadata)?;
     Ok(metadata)
 }
 
 fn write_metadata(session_path: &Path, metadata: &SessionMetadata) -> io::Result<()> {
+    validate_metadata_schema(metadata).map_err(io::Error::other)?;
     let temporary = session_path.join(".metadata.json.tmp");
     let bytes = serde_json::to_vec(metadata).map_err(io::Error::other)?;
     let result = (|| {
@@ -2065,10 +2140,13 @@ async fn run_source_build(
     .context("source extraction worker stopped")??;
     deadline.check("source extraction")?;
 
+    let selected_filelist = safe_archive_path(Path::new(metadata.selected_source_filelist()))
+        .context("validating selected source filelist path")?;
+    let filelist = project_root.join(selected_filelist);
     let validation_root = project_root.clone();
-    let filelist = project_root.join("project.f");
+    let validation_filelist = filelist.clone();
     tokio::task::spawn_blocking(move || {
-        validate_project_paths_with_deadline(&validation_root, &filelist, Some(deadline))
+        validate_project_paths_with_deadline(&validation_root, &validation_filelist, Some(deadline))
     })
     .await
     .context("filelist validation worker stopped")??;
@@ -2077,6 +2155,7 @@ async fn run_source_build(
     let output_path = scratch_path.join("design.nettle");
     run_build_subprocess(
         &project_root,
+        &filelist,
         &output_path,
         scratch_path,
         deadline.remaining("compiler execution")?,
@@ -2164,6 +2243,7 @@ fn persist_bundle_once(
 
 async fn run_build_subprocess(
     project_root: &Path,
+    filelist: &Path,
     output_path: &Path,
     scratch_path: &Path,
     timeout: Duration,
@@ -2177,7 +2257,7 @@ async fn run_build_subprocess(
     command
         .arg("build")
         .arg("--filelist")
-        .arg(project_root.join("project.f"))
+        .arg(filelist)
         .arg("--project-root")
         .arg(project_root)
         .arg("--output")
@@ -2440,9 +2520,6 @@ fn extract_source_archive_with_deadline(
     if let Some(deadline) = deadline {
         deadline.check("source extraction")?;
     }
-    if !output_root.join("project.f").is_file() {
-        bail!("source archive must contain project.f at its root");
-    }
     Ok(())
 }
 
@@ -2493,7 +2570,6 @@ fn extract_zip(
             fs::create_dir_all(&destination)?;
             continue;
         }
-        validate_source_filename(&relative)?;
         let entry_size = entry.size();
         if entry_size > MAX_ARCHIVE_ENTRY_BYTES {
             bail!(
@@ -2839,7 +2915,6 @@ fn extract_tar(
                 relative.display()
             );
         }
-        validate_source_filename(&relative)?;
         if size > MAX_ARCHIVE_ENTRY_BYTES {
             bail!(
                 "archive entry {} exceeds the {}-byte limit",
@@ -2913,20 +2988,6 @@ fn mode_bits<T: Into<u32>>(bits: T) -> u32 {
     bits.into()
 }
 
-fn validate_source_filename(path: &Path) -> Result<()> {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase);
-    if !matches!(extension.as_deref(), Some("v" | "sv" | "svh" | "vh" | "f")) {
-        bail!(
-            "source archive contains unsupported file {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 fn validate_project_paths(root: &Path, root_filelist: &Path) -> Result<()> {
     validate_project_paths_with_deadline(root, root_filelist, None)
@@ -2941,8 +3002,13 @@ fn validate_project_paths_with_deadline(
         deadline.check("filelist validation")?;
     }
     let canonical_root = fs::canonicalize(root).context("canonicalizing extracted project root")?;
-    let canonical_filelist =
-        fs::canonicalize(root_filelist).context("locating archive-root project.f")?;
+    let display_filelist = root_filelist.strip_prefix(root).unwrap_or(root_filelist);
+    let canonical_filelist = fs::canonicalize(root_filelist).with_context(|| {
+        format!(
+            "locating selected root filelist {}",
+            display_filelist.display()
+        )
+    })?;
     require_regular_within(&canonical_root, &canonical_filelist, "root filelist")?;
     let project = normalize_filelist_within_root_cancellable(
         &canonical_filelist,
@@ -2950,12 +3016,17 @@ fn validate_project_paths_with_deadline(
         &canonical_root,
         || deadline.map_or(Ok(()), |deadline| deadline.check_io("filelist validation")),
     )
-    .context("normalizing uploaded project.f")?;
+    .with_context(|| {
+        format!(
+            "normalizing selected root filelist {}",
+            display_filelist.display()
+        )
+    })?;
     if let Some(deadline) = deadline {
         deadline.check("filelist validation")?;
     }
     if project.top.as_deref().is_none_or(str::is_empty) {
-        bail!("project.f must declare the top module with --top");
+        bail!("selected root filelist must declare the top module with --top");
     }
 
     for argument in &project.arguments {
@@ -3141,13 +3212,36 @@ mod tests {
     }
 
     fn multipart(kind: &str, filename: &str, contents: &[u8]) -> (String, Vec<u8>) {
+        multipart_with_filelist(kind, filename, None, contents)
+    }
+
+    fn multipart_with_filelist(
+        kind: &str,
+        filename: &str,
+        filelist: Option<&str>,
+        contents: &[u8],
+    ) -> (String, Vec<u8>) {
         let boundary = "nettle-test-boundary";
         let mut body = format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"kind\"\r\n\r\n{kind}\r\n\
-             --{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\
-             Content-Type: application/octet-stream\r\n\r\n"
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"kind\"\r\n\r\n{kind}\r\n"
         )
         .into_bytes();
+        if let Some(filelist) = filelist {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"filelist\"\r\n\r\n\
+                     {filelist}\r\n"
+                )
+                .as_bytes(),
+            );
+        }
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\
+                 Content-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
         body.extend_from_slice(contents);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         (format!("multipart/form-data; boundary={boundary}"), body)
@@ -3168,6 +3262,26 @@ mod tests {
             )
             .as_bytes(),
         );
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    fn multipart_fields(fields: &[(&str, Option<&str>, &[u8])]) -> (String, Vec<u8>) {
+        let boundary = "nettle-test-boundary";
+        let mut body = Vec::new();
+        for (name, filename, contents) in fields {
+            let disposition = filename.map_or_else(
+                || format!("Content-Disposition: form-data; name=\"{name}\""),
+                |filename| {
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\""
+                    )
+                },
+            );
+            body.extend_from_slice(format!("--{boundary}\r\n{disposition}\r\n\r\n").as_bytes());
+            body.extend_from_slice(contents);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
         (format!("multipart/form-data; boundary={boundary}"), body)
     }
 
@@ -3218,6 +3332,7 @@ mod tests {
                 .then_some(now_ms()),
             interruptions: 0,
             source_format: Some(SourceFormat::Zip),
+            source_filelist: None,
             error: None,
         }
     }
@@ -3492,6 +3607,216 @@ mod tests {
         assert_eq!(fs::read_dir(&host.state.0.staging_root).unwrap().count(), 0);
     }
 
+    #[tokio::test]
+    async fn source_upload_persists_selected_filelist_and_defaults_older_clients() {
+        let host = test_host(2);
+        let router = host_router(host.state.clone()).unwrap();
+        let zip = source_zip();
+
+        let (content_type, body) = multipart_with_filelist(
+            "sources",
+            "project.zip",
+            Some("br_counter/filelist.f"),
+            &zip,
+        );
+        let selected = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(selected.status(), StatusCode::ACCEPTED);
+        let selected_body = to_bytes(selected.into_body(), usize::MAX).await.unwrap();
+        let selected_json: serde_json::Value = serde_json::from_slice(&selected_body).unwrap();
+        let selected_token = selected_json["token"].as_str().unwrap();
+        let selected_metadata =
+            read_metadata(&host.state.0.sessions_root.join(selected_token)).unwrap();
+        assert_eq!(
+            selected_metadata.schema_version,
+            SOURCE_FILELIST_SCHEMA_VERSION
+        );
+        assert_eq!(
+            selected_metadata.source_filelist.as_deref(),
+            Some("br_counter/filelist.f")
+        );
+        assert_eq!(
+            selected_metadata.selected_source_filelist(),
+            "br_counter/filelist.f"
+        );
+
+        let (content_type, body) = multipart("sources", "default.zip", &zip);
+        let defaulted = router
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(defaulted.status(), StatusCode::ACCEPTED);
+        let defaulted_body = to_bytes(defaulted.into_body(), usize::MAX).await.unwrap();
+        let defaulted_json: serde_json::Value = serde_json::from_slice(&defaulted_body).unwrap();
+        let defaulted_token = defaulted_json["token"].as_str().unwrap();
+        let defaulted_metadata =
+            read_metadata(&host.state.0.sessions_root.join(defaulted_token)).unwrap();
+        assert_eq!(defaulted_metadata.schema_version, HOST_SCHEMA_VERSION);
+        assert_eq!(defaulted_metadata.source_filelist, None);
+        assert_eq!(
+            defaulted_metadata.selected_source_filelist(),
+            DEFAULT_SOURCE_FILELIST
+        );
+    }
+
+    #[test]
+    fn metadata_schema_versions_fail_closed_for_selected_filelists() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let legacy_path = directory.path().join("legacy");
+        fs::create_dir(&legacy_path).unwrap();
+        let legacy = test_source_metadata(&"a".repeat(64), SessionState::Queued, 1);
+        write_metadata(&legacy_path, &legacy).unwrap();
+        let legacy = read_metadata(&legacy_path).unwrap();
+        assert_eq!(legacy.schema_version, HOST_SCHEMA_VERSION);
+        assert_eq!(legacy.selected_source_filelist(), DEFAULT_SOURCE_FILELIST);
+
+        let selected_path = directory.path().join("selected");
+        fs::create_dir(&selected_path).unwrap();
+        let mut selected = test_source_metadata(&"b".repeat(64), SessionState::Queued, 2);
+        selected.schema_version = SOURCE_FILELIST_SCHEMA_VERSION;
+        selected.source_filelist = Some("rtl/files.f".to_owned());
+        write_metadata(&selected_path, &selected).unwrap();
+        let selected = read_metadata(&selected_path).unwrap();
+        assert_eq!(selected.schema_version, SOURCE_FILELIST_SCHEMA_VERSION);
+        assert_eq!(selected.selected_source_filelist(), "rtl/files.f");
+
+        let mut ambiguous_legacy = selected.clone();
+        ambiguous_legacy.schema_version = HOST_SCHEMA_VERSION;
+        assert!(
+            write_metadata(&selected_path, &ambiguous_legacy)
+                .unwrap_err()
+                .to_string()
+                .contains("schema 1 must not select")
+        );
+
+        let mut incomplete_selected = legacy;
+        incomplete_selected.schema_version = SOURCE_FILELIST_SCHEMA_VERSION;
+        assert!(
+            write_metadata(&legacy_path, &incomplete_selected)
+                .unwrap_err()
+                .to_string()
+                .contains("schema 2 must select")
+        );
+    }
+
+    #[tokio::test]
+    async fn source_filelist_upload_field_is_strict_and_precedes_file_data() {
+        let host = test_host(1);
+        let router = host_router(host.state.clone()).unwrap();
+        let zip = source_zip();
+        let deep = vec!["directory"; MAX_ARCHIVE_PATH_COMPONENTS + 1].join("/");
+        let oversized = "f".repeat(MAX_ARCHIVE_PATH_BYTES + 1);
+
+        for path in [
+            "",
+            "../project.f",
+            "/project.f",
+            r"folder\project.f",
+            "folder/file list.f",
+            "folder/文件.f",
+            deep.as_str(),
+            oversized.as_str(),
+        ] {
+            let (content_type, body) =
+                multipart_with_filelist("sources", "project.zip", Some(path), &zip);
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/sessions")
+                        .header(header::CONTENT_TYPE, content_type)
+                        .header("x-nettle-upload", "1")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path:?}");
+        }
+
+        let (content_type, body) = multipart_fields(&[
+            ("kind", None, b"sources".as_slice()),
+            ("filelist", None, b"first.f".as_slice()),
+            ("filelist", None, b"second.f".as_slice()),
+            ("file", Some("project.zip"), zip.as_slice()),
+        ]);
+        let duplicate = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
+
+        let (content_type, body) = multipart_fields(&[
+            ("kind", None, b"bundle".as_slice()),
+            ("filelist", None, b"project.f".as_slice()),
+            ("file", Some("design.nettle"), b"bundle".as_slice()),
+        ]);
+        let bundle = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bundle.status(), StatusCode::BAD_REQUEST);
+
+        let (content_type, body) = multipart_fields(&[
+            ("kind", None, b"sources".as_slice()),
+            ("file", Some("project.zip"), zip.as_slice()),
+            ("filelist", None, b"project.f".as_slice()),
+        ]);
+        let late = router
+            .oneshot(
+                Request::post("/api/v1/sessions")
+                    .header(header::CONTENT_TYPE, content_type)
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(late.status(), StatusCode::BAD_REQUEST);
+        let late_body = to_bytes(late.into_body(), usize::MAX).await.unwrap();
+        let late_error: serde_json::Value = serde_json::from_slice(&late_body).unwrap();
+        assert_eq!(
+            late_error["error"],
+            "Source filelist must precede the file field."
+        );
+
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 0);
+        assert_eq!(
+            fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+            0
+        );
+        assert_eq!(fs::read_dir(&host.state.0.staging_root).unwrap().count(), 0);
+    }
+
     #[test]
     fn in_progress_source_uploads_reserve_queue_capacity() {
         let host = test_host(1);
@@ -3663,7 +3988,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_extraction_rejects_duplicate_link_and_unsupported_entries() {
+    fn archive_extraction_rejects_duplicate_and_link_entries() {
         let duplicate = zip_bytes(|archive| {
             archive
                 .start_file("project.f", FileOptions::default())
@@ -3683,22 +4008,10 @@ mod tests {
                 .add_symlink("rtl/top.sv", "../outside.sv", FileOptions::default())
                 .unwrap();
         });
-        let unsupported = zip_bytes(|archive| {
-            archive
-                .start_file("project.f", FileOptions::default())
-                .unwrap();
-            archive.write_all(b"--top top\n").unwrap();
-            archive
-                .start_file("notes.txt", FileOptions::default())
-                .unwrap();
-            archive.write_all(b"not RTL").unwrap();
-        });
-
         let directory = tempfile::tempdir().unwrap();
         for (name, bytes, expected) in [
             ("duplicate", duplicate, "duplicate path project.f"),
             ("link", link, "link or special file at rtl/top.sv"),
-            ("unsupported", unsupported, "unsupported file notes.txt"),
         ] {
             let archive_path = directory.path().join(format!("{name}.zip"));
             fs::write(&archive_path, bytes).unwrap();
@@ -3711,6 +4024,70 @@ mod tests {
                 "{name}: expected {expected:?}, got {error:#}"
             );
         }
+    }
+
+    #[test]
+    fn archive_extraction_accepts_unreferenced_files() {
+        let zip = zip_bytes(|archive| {
+            let options = FileOptions::default();
+            archive.start_file("project.f", options).unwrap();
+            archive.write_all(b"missing-unselected.sv\n").unwrap();
+            archive
+                .start_file("br_counter/filelist.f", options)
+                .unwrap();
+            archive.write_all(b"--top top\nrtl/top.sv\n").unwrap();
+            archive
+                .start_file("br_counter/rtl/top.sv", options)
+                .unwrap();
+            archive.write_all(b"module top; endmodule\n").unwrap();
+            archive.start_file("._br_counter", options).unwrap();
+            archive.write_all(b"AppleDouble metadata").unwrap();
+            archive.start_file(".DS_Store", options).unwrap();
+            archive.write_all(b"Finder metadata").unwrap();
+            archive.start_file("__MACOSX/._top.sv", options).unwrap();
+            archive.write_all(b"AppleDouble metadata").unwrap();
+            archive.start_file("README.md", options).unwrap();
+            archive.write_all(b"unreferenced project notes").unwrap();
+        });
+
+        let directory = tempfile::tempdir().unwrap();
+        let zip_path = directory.path().join("sources.zip");
+        fs::write(&zip_path, zip).unwrap();
+        let zip_output = directory.path().join("zip-output");
+        fs::create_dir(&zip_output).unwrap();
+        extract_source_archive(&zip_path, &zip_output, SourceFormat::Zip).unwrap();
+        validate_project_paths(&zip_output, &zip_output.join("br_counter/filelist.f")).unwrap();
+        assert!(zip_output.join("._br_counter").is_file());
+        assert!(zip_output.join(".DS_Store").is_file());
+        assert!(zip_output.join("__MACOSX/._top.sv").is_file());
+        assert!(zip_output.join("README.md").is_file());
+
+        let tar_path = directory.path().join("sources.tar");
+        let mut tar = tar::Builder::new(Vec::new());
+        append_tar_file(&mut tar, "project.f", b"missing-unselected.sv\n");
+        append_tar_file(
+            &mut tar,
+            "br_counter/filelist.f",
+            b"--top top\nrtl/top.sv\n",
+        );
+        append_tar_file(
+            &mut tar,
+            "br_counter/rtl/top.sv",
+            b"module top; endmodule\n",
+        );
+        append_tar_file(&mut tar, "._br_counter", b"AppleDouble metadata");
+        append_tar_file(&mut tar, ".DS_Store", b"Finder metadata");
+        append_tar_file(&mut tar, "__MACOSX/._top.sv", b"AppleDouble metadata");
+        append_tar_file(&mut tar, "README.md", b"unreferenced project notes");
+        fs::write(&tar_path, tar.into_inner().unwrap()).unwrap();
+        let tar_output = directory.path().join("tar-output");
+        fs::create_dir(&tar_output).unwrap();
+        extract_source_archive(&tar_path, &tar_output, SourceFormat::Tar).unwrap();
+        validate_project_paths(&tar_output, &tar_output.join("br_counter/filelist.f")).unwrap();
+        assert!(tar_output.join("._br_counter").is_file());
+        assert!(tar_output.join(".DS_Store").is_file());
+        assert!(tar_output.join("__MACOSX/._top.sv").is_file());
+        assert!(tar_output.join("README.md").is_file());
     }
 
     #[test]
@@ -3985,6 +4362,39 @@ mod tests {
         .unwrap();
         let error = validate_project_paths(&project, &project.join("project.f")).unwrap_err();
         assert!(format!("{error:#}").contains("escapes the uploaded project root"));
+    }
+
+    #[test]
+    fn filelist_validation_requires_selected_file_and_declared_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join("lists")).unwrap();
+
+        let missing =
+            validate_project_paths(&project, &project.join("lists/missing.f")).unwrap_err();
+        assert!(format!("{missing:#}").contains("locating selected root filelist lists/missing.f"));
+
+        let directory_selected =
+            validate_project_paths(&project, &project.join("lists")).unwrap_err();
+        assert!(format!("{directory_selected:#}").contains("root filelist is not a regular file"));
+
+        let selected = project.join("lists/filelist.f");
+        for declaration in [
+            "../rtl/missing.sv",
+            "-I ../include",
+            "-y ../libraries",
+            "-v ../libraries/missing.v",
+            "-F nested.f",
+        ] {
+            fs::write(&selected, format!("--top top\n{declaration}\n")).unwrap();
+            let error = validate_project_paths(&project, &selected).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("cannot read filelist")
+                    || message.contains("locating path declared"),
+                "{declaration:?}: {message}"
+            );
+        }
     }
 
     #[test]
@@ -4481,10 +4891,11 @@ mod tests {
             b"source upload",
         )
         .unwrap();
-        let interrupted_path = write_test_session(
-            &host.state,
-            &test_source_metadata(&interrupted, SessionState::Building, 20),
-        );
+        let mut interrupted_metadata =
+            test_source_metadata(&interrupted, SessionState::Building, 20);
+        interrupted_metadata.source_filelist = Some("br_counter/filelist.f".to_owned());
+        interrupted_metadata.schema_version = SOURCE_FILELIST_SCHEMA_VERSION;
+        let interrupted_path = write_test_session(&host.state, &interrupted_metadata);
         fs::write(
             interrupted_path.join(SourceFormat::Zip.stored_filename()),
             b"source upload",
@@ -4525,6 +4936,10 @@ mod tests {
         assert_eq!(recovered_interrupted.state, SessionState::Queued);
         assert_eq!(recovered_interrupted.interruptions, 1);
         assert_eq!(recovered_interrupted.build_started_at_ms, None);
+        assert_eq!(
+            recovered_interrupted.selected_source_filelist(),
+            "br_counter/filelist.f"
+        );
         assert!(
             interrupted_path
                 .join(SourceFormat::Zip.stored_filename())
@@ -4675,6 +5090,7 @@ mod tests {
             completed_at_ms: None,
             interruptions: 0,
             source_format: Some(SourceFormat::Zip),
+            source_filelist: None,
             error: None,
         };
         write_metadata(&session_path, &metadata).unwrap();
