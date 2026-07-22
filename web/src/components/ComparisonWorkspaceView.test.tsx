@@ -87,8 +87,7 @@ describe("comparison workspace module pairing", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
         hostedReference={{
           token: "a".repeat(64),
           status: {
@@ -105,6 +104,38 @@ describe("comparison workspace module pairing", () => {
     expect(screen.getByText(/Candidate stays in this browser and is not uploaded/)).toBeTruthy();
     expect(screen.getByText(/creates no new shareable URL/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "Download reference" })).toBeTruthy();
+  });
+
+  it("keeps close-design navigation available while hosted module pairing is required", () => {
+    const reference = bundle("reference", "reference_top");
+    const candidate = bundle("candidate", "candidate_top");
+    const onCloseDesign = vi.fn();
+
+    render(
+      <ComparisonWorkspaceView
+        reference={reference}
+        candidate={candidate}
+        initialPolicy="conservative"
+        statusDetail="comparison"
+        setStatusDetail={vi.fn()}
+        onCloseDesign={onCloseDesign}
+        hostedReference={{
+          token: "a".repeat(64),
+          status: {
+            state: "ready",
+            admittedAtMs: 1,
+            completedAtMs: 2,
+            serverTimeMs: 3,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Choose modules to compare" })).toBeTruthy();
+    expect(document.querySelector(".hosted-viewer-banner")).toBeTruthy();
+    expect(document.querySelector(".bundle-welcome.module-pair-gate.hosted-session")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close design" }));
+    expect(onCloseDesign).toHaveBeenCalledOnce();
   });
 
   it("compares compatibility metadata canonically instead of warning on ordering", () => {
@@ -158,8 +189,7 @@ describe("comparison workspace module pairing", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -210,8 +240,7 @@ describe("comparison workspace module pairing", () => {
         onModulePairChange={onModulePairChange}
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -270,8 +299,7 @@ describe("comparison workspace module pairing", () => {
         onModulePairChange={onModulePairChange}
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -310,8 +338,7 @@ describe("comparison workspace module pairing", () => {
         onModulePairChange={onModulePairChange}
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -354,8 +381,7 @@ describe("comparison workspace module pairing", () => {
         onModulePairChange={vi.fn()}
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -376,8 +402,7 @@ describe("comparison workspace module pairing", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -403,8 +428,7 @@ describe("comparison workspace module pairing", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 

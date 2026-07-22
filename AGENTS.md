@@ -15,3 +15,8 @@
   version tag alone is not an acceptable pin.
 - Keep dependency pins and their integrity metadata under version control, and
   update them deliberately in the same change that updates the dependency.
+
+## GUI pull requests
+
+- Whenever a pull request makes a substantial GUI change, include before-and-after
+  screenshots in the pull request description.

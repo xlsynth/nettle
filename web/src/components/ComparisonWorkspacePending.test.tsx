@@ -135,8 +135,7 @@ describe("comparison matching transitions", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 

@@ -60,6 +60,7 @@ button:focus-visible {
 
 .app-shell {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--header-height) minmax(0, 1fr) var(--build-info-height);
   width: 100%;
   height: 100%;
@@ -67,6 +68,7 @@ button:focus-visible {
 }
 
 .app-header {
+  grid-column: 1;
   grid-row: 1;
   display: flex;
   align-items: center;
@@ -79,6 +81,7 @@ button:focus-visible {
 
 .landing-header {
   display: flex;
+  grid-column: 1;
   grid-row: 1;
   gap: 8px;
   align-items: center;
@@ -102,6 +105,7 @@ button:focus-visible {
 .build-info {
   z-index: 30;
   display: flex;
+  grid-column: 1;
   grid-row: 3;
   gap: 8px;
   align-items: center;
@@ -133,34 +137,17 @@ button:focus-visible {
   background: var(--border);
 }
 
-.project-title {
+.project-name {
   display: flex;
-  gap: 8px;
   align-items: center;
   align-self: stretch;
-  padding: 0 14px;
-  border: 0;
-  color: #4e5558;
-  background: transparent;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.project-title:hover {
-  color: var(--green-dark);
-  background: var(--surface-subtle);
-}
-
-.project-title > span {
   max-width: 220px;
+  padding: 0 14px;
   overflow: hidden;
+  color: #4e5558;
+  font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.project-menu-mark {
-  margin-left: -3px;
-  color: var(--muted-2);
 }
 
 .header-spacer,
@@ -332,6 +319,7 @@ button:focus-visible {
 }
 
 .bundle-welcome {
+  grid-column: 1;
   grid-row: 2;
   display: grid;
   place-items: center;
@@ -883,6 +871,7 @@ button:focus-visible {
 
 .hosted-page-header {
   display: flex;
+  grid-column: 1;
   grid-row: 1;
   gap: 12px;
   align-items: center;
@@ -892,6 +881,7 @@ button:focus-visible {
 }
 
 .hosted-session-page {
+  grid-column: 1;
   grid-row: 2;
   display: grid;
   height: 100%;
@@ -1073,6 +1063,7 @@ button:focus-visible {
 .hosted-viewer-banner {
   z-index: 20;
   display: flex;
+  grid-column: 1;
   grid-row: 2;
   gap: 8px;
   align-items: center;
@@ -1753,6 +1744,7 @@ button:focus-visible {
 .workspace {
   position: relative;
   display: grid;
+  grid-column: 1;
   grid-row: 2;
   grid-template-columns: 208px minmax(250px, var(--source-pane-width, 30vw)) minmax(420px, 1fr);
   width: 100%;
@@ -3445,7 +3437,7 @@ button:focus-visible {
 
 /* Schematic comparison */
 
-.header-compare-action {
+.header-close-action {
   display: inline-flex;
   gap: 6px;
   align-items: center;
@@ -3460,7 +3452,7 @@ button:focus-visible {
   cursor: pointer;
 }
 
-.header-compare-action:hover {
+.header-close-action:hover {
   border-color: #88bd97;
   color: var(--green-dark);
   background: var(--green-faint);

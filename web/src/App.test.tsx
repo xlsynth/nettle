@@ -43,7 +43,7 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       reference,
       candidate,
       initialPolicy,
-      onCompareBundles,
+      onCloseDesign,
       hostedReference,
       hostedCandidate,
       shareableComparison,
@@ -54,7 +54,7 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       reference: { provider: { marker: number } };
       candidate: { provider: { marker: number } };
       initialPolicy: string;
-      onCompareBundles: () => void;
+      onCloseDesign: () => void;
       hostedReference?: unknown;
       hostedCandidate?: unknown;
       shareableComparison?: boolean;
@@ -70,8 +70,8 @@ vi.mock("./components/ComparisonWorkspaceView", async () => {
       );
       return (
         <>
-          <button type="button" onClick={onCompareBundles}>
-            Compare Nettle bundles
+          <button type="button" onClick={onCloseDesign}>
+            Close design
           </button>
           <output data-testid="comparison-workspace">{mountedIdentity}</output>
           {shareableComparison ? (
@@ -340,7 +340,7 @@ describe("App comparison installation", () => {
     );
   });
 
-  it("persists a matching change made through the comparison dialog", async () => {
+  it("closes a hosted comparison to the landing page and lets Back restore it", async () => {
     const referenceToken = "a".repeat(64);
     const candidateToken = "b".repeat(64);
     window.history.replaceState(
@@ -353,47 +353,22 @@ describe("App comparison installation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:aggressive"),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
-    fireEvent.change(screen.getByLabelText(/Matching policy/), {
-      target: { value: "conservative" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Compare bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close design" }));
 
+    expect(window.location.pathname).toBe("/");
+    expect(screen.getByRole("heading", { name: "Open a design" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close design" })).toBeNull();
+
+    const restored = new Promise<void>((resolve) => {
+      window.addEventListener("popstate", () => resolve(), { once: true });
+    });
+    window.history.back();
+    await restored;
     await waitFor(() =>
-      expect(screen.getByTestId("comparison-workspace").textContent).toBe("3:4:conservative"),
+      expect(screen.getByTestId("comparison-workspace").textContent).toBe("3:4:aggressive"),
     );
     expect(window.location.pathname).toBe(`/compare/${referenceToken}/${candidateToken}`);
-    expect(window.location.search).toBe("?matching=conservative");
-  });
-
-  it("keeps a hosted comparison shareable when its sides are swapped", async () => {
-    const referenceToken = "a".repeat(64);
-    const candidateToken = "b".repeat(64);
-    window.history.replaceState(
-      null,
-      "",
-      `/compare/${referenceToken}/${candidateToken}?matching=conservative&referenceModule=reference_top&candidateModule=candidate_top`,
-    );
-    render(<App />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:conservative"),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
-    fireEvent.click(screen.getByRole("button", { name: "Swap reference and candidate bundles" }));
-    fireEvent.click(screen.getByRole("button", { name: "Compare bundles" }));
-
-    await waitFor(() =>
-      expect(screen.getByTestId("comparison-workspace").textContent).toBe("3:4:conservative"),
-    );
-    expect(screen.getByTestId("shareable-comparison").textContent).toBe("shareable");
-    expect(window.location.pathname).toBe(`/compare/${candidateToken}/${referenceToken}`);
-    expect(new URLSearchParams(window.location.search).get("referenceModule")).toBe(
-      "candidate_top",
-    );
-    expect(new URLSearchParams(window.location.search).get("candidateModule")).toBe(
-      "reference_top",
-    );
+    expect(window.location.search).toBe("?matching=aggressive");
   });
 
   it("restarts an in-flight direct comparison after matching-only navigation", async () => {
@@ -579,7 +554,7 @@ describe("App comparison installation", () => {
     expect(screen.getByText("SHAREABLE")).toBeTruthy();
   });
 
-  it("reuses a ready hosted bundle as the reference while keeping the candidate local", async () => {
+  it("closes a hosted session to the landing page and lets Back restore it", async () => {
     const token = "a".repeat(64);
     window.history.replaceState(null, "", `/s/${token}`);
     render(<App />);
@@ -587,26 +562,20 @@ describe("App comparison installation", () => {
     await waitFor(() => expect(screen.getByText("SHAREABLE")).toBeTruthy());
     expect(harness.getHostedSessionStatus).toHaveBeenCalledOnce();
     expect(harness.loadHostedBundle).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close design" }));
 
-    const dialog = screen.getByRole("dialog", {
-      name: "Compare Nettle bundles",
-    });
-    expect(within(dialog).getByText("design.nettle")).toBeTruthy();
-    expect(within(dialog).getByText(/Reference already has a shareable URL/)).toBeTruthy();
-    expect(within(dialog).getByText(/Any local bundle stays in this browser/)).toBeTruthy();
-    fireEvent.change(within(dialog).getByLabelText("Choose candidate .nettle bundle file"), {
-      target: { files: [new File(["candidate"], "candidate.nettle")] },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Compare bundles" }));
+    expect(window.location.pathname).toBe("/");
+    expect(screen.getByRole("heading", { name: "Open a design" })).toBeTruthy();
 
-    await waitFor(() =>
-      expect(screen.getByTestId("comparison-workspace").textContent).toBe("2:3:conservative"),
-    );
-    expect(screen.getByTestId("hosted-comparison-origin").textContent).toBe("reference");
-    expect(harness.getHostedSessionStatus).toHaveBeenCalledOnce();
-    expect(harness.loadHostedBundle).toHaveBeenCalledOnce();
-    expect(harness.createHostedSession).not.toHaveBeenCalled();
+    const restored = new Promise<void>((resolve) => {
+      window.addEventListener("popstate", () => resolve(), { once: true });
+    });
+    window.history.back();
+    await restored;
+    await waitFor(() => expect(screen.getByText("SHAREABLE")).toBeTruthy());
+    expect(window.location.pathname).toBe(`/s/${token}`);
+    expect(harness.getHostedSessionStatus).toHaveBeenCalledTimes(2);
+    expect(harness.loadHostedBundle).toHaveBeenCalledTimes(2);
   });
 
   it("opens a local bundle without contacting hosted APIs", async () => {
@@ -624,6 +593,22 @@ describe("App comparison installation", () => {
       false,
     );
     expect(harness.open).toHaveBeenCalledOnce();
+  });
+
+  it("closes a local static bundle back to the static landing page", async () => {
+    render(<App mode="static" />);
+    fireEvent.change(screen.getByLabelText("Open a .nettle bundle locally"), {
+      target: {
+        files: [new File(["bundle"], "local.nettle", { type: "application/zip" })],
+      },
+    });
+
+    await waitFor(() => expect(screen.getByText("LOCAL · NOT UPLOADED")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Close design" }));
+
+    expect(screen.getByRole("heading", { name: "Open a design" })).toBeTruthy();
+    expect(screen.getByText("Static mode")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close design" })).toBeNull();
   });
 
   it("keeps the landing action loading while launching a local bundle", async () => {
@@ -797,7 +782,7 @@ describe("App comparison installation", () => {
     expect(screen.getByRole("dialog", { name: "Compare Nettle bundles" })).toBeTruthy();
   });
 
-  it("remounts a replacement with the same filenames and snapshot IDs", async () => {
+  it("closes a comparison before starting a fresh comparison with the same filenames", async () => {
     render(<App />);
     fireEvent.click(
       screen.getByRole("button", {
@@ -822,7 +807,19 @@ describe("App comparison installation", () => {
       expect(screen.getByTestId("comparison-workspace").textContent).toBe("1:2:conservative"),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Compare Nettle bundles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close design" }));
+    expect(screen.getByRole("heading", { name: "Open a design" })).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open and compare two .nettle bundles",
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("Choose reference .nettle bundle file"), {
+      target: { files: [reference] },
+    });
+    fireEvent.change(screen.getByLabelText("Choose candidate .nettle bundle file"), {
+      target: { files: [candidate] },
+    });
     fireEvent.change(screen.getByLabelText(/Matching policy/), {
       target: { value: "aggressive" },
     });

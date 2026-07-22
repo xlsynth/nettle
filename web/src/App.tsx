@@ -54,7 +54,7 @@ import {
 } from "./components/HostedSessions";
 import { Inspector } from "./components/Inspector";
 import { InstanceHierarchy } from "./components/InstanceHierarchy";
-import { BundleWelcome, CompareBundlesDialog, OpenBundleDialog } from "./components/OpenBundle";
+import { BundleWelcome, CompareBundlesDialog } from "./components/OpenBundle";
 import { DEMOS, type Demo } from "./demos";
 import type { ConstantRadix } from "./graph/constant-format";
 import { TOP_MODULE_ID } from "./graph/constants";
@@ -198,7 +198,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
   });
   const [hostedUploadKind, setHostedUploadKind] = useState<HostedUploadKind>();
   const [hostedComparisonUploadOpen, setHostedComparisonUploadOpen] = useState(false);
-  const [dialogOpen, setDialogOpen] = useState(false);
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -261,7 +260,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
           hostedSession,
         });
         setComparison(undefined);
-        setDialogOpen(false);
         setCompareDialogOpen(false);
         setHostedUploadKind(undefined);
         setHostedComparisonUploadOpen(false);
@@ -396,7 +394,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
           window.history.replaceState(null, "", staticAssetRoute("/"));
           setHostedComparisonRoute(undefined);
         }
-        setDialogOpen(false);
         setCompareDialogOpen(false);
         phase(`${referenceFile.name} → ${candidateFile.name}`);
       } catch (reason) {
@@ -413,12 +410,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     },
     [],
   );
-
-  const openDialog = useCallback(() => {
-    setError(undefined);
-    setHostedComparisonUploadOpen(false);
-    setDialogOpen(true);
-  }, []);
 
   const openCompareDialog = useCallback(() => {
     setError(undefined);
@@ -468,6 +459,29 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     window.history.pushState(null, "", hostedComparisonPath(route));
   }, []);
 
+  const closeDesign = useCallback(() => {
+    generation.current += 1;
+    openOwner.current.abort();
+    setLoading(false);
+    setError(undefined);
+    setStatusDetail("No bundle is open");
+    setOpened(undefined);
+    setComparison(undefined);
+    setHostedToken(undefined);
+    setHostedComparisonRoute(undefined);
+    setInvalidHostedRoute(false);
+    setHostedUploadKind(undefined);
+    setHostedComparisonUploadOpen(false);
+    setCompareDialogOpen(false);
+    if (
+      hostedMode &&
+      (isHostedSessionPath(window.location.pathname) ||
+        isHostedComparisonPath(window.location.pathname))
+    ) {
+      window.history.pushState(null, "", staticAssetRoute("/"));
+    }
+  }, [hostedMode]);
+
   const openDemo = useCallback(
     async (demo: Demo) => {
       const request = ++generation.current;
@@ -516,7 +530,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
       generation.current += 1;
       openOwner.current.abort();
       setLoading(false);
-      setDialogOpen(false);
       setCompareDialogOpen(false);
       setHostedUploadKind(undefined);
       setHostedComparisonUploadOpen(false);
@@ -604,7 +617,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
       }}
       onDrop={(event) => {
         if (event.defaultPrevented) return;
-        if (dialogOpen || compareDialogOpen || hostedUploadKind || hostedComparisonUploadOpen) {
+        if (compareDialogOpen || hostedUploadKind || hostedComparisonUploadOpen) {
           event.preventDefault();
           return;
         }
@@ -622,8 +635,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
           initialPolicy={comparison.initialPolicy}
           statusDetail={statusDetail}
           setStatusDetail={setStatusDetail}
-          onOpenBundle={openDialog}
-          onCompareBundles={openCompareDialog}
+          onCloseDesign={closeDesign}
           hostedReference={comparison.reference.hostedSession}
           hostedCandidate={comparison.candidate.hostedSession}
           shareableComparison={comparison.shareableComparison}
@@ -654,8 +666,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
           initial={opened.workspace}
           statusDetail={statusDetail}
           setStatusDetail={setStatusDetail}
-          onOpenBundle={openDialog}
-          onCompareBundles={openCompareDialog}
+          onCloseDesign={closeDesign}
           hostedSession={opened.hostedSession}
         />
       ) : hostedMode && hostedToken ? (
@@ -685,15 +696,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
           />
         </>
       )}
-      <OpenBundleDialog
-        open={dialogOpen}
-        loading={loading}
-        error={error}
-        onClose={() => {
-          if (!loading) setDialogOpen(false);
-        }}
-        onSelect={(file) => void openBundle(file)}
-      />
       {hostedMode ? (
         <>
           <HostedUploadDialog
@@ -762,8 +764,7 @@ interface WorkspaceViewProps {
   hostedSession?: HostedViewerSession;
   statusDetail: string;
   setStatusDetail: (detail: string) => void;
-  onOpenBundle: () => void;
-  onCompareBundles: () => void;
+  onCloseDesign: () => void;
 }
 
 function WorkspaceView({
@@ -772,8 +773,7 @@ function WorkspaceView({
   hostedSession,
   statusDetail,
   setStatusDetail,
-  onOpenBundle,
-  onCompareBundles,
+  onCloseDesign,
 }: WorkspaceViewProps) {
   const [sourceView, setSourceView] = useState<SourceView>(() => ({
     path: normalizePath(initial.source?.path ?? "Source unavailable"),
@@ -1164,8 +1164,7 @@ function WorkspaceView({
         statusText={initial.project.bundleStatus}
         dataMode={hostedSession ? "hosted" : "bundle"}
         statusDetail={statusDetail}
-        onOpenProject={onOpenBundle}
-        onCompareBundles={onCompareBundles}
+        onCloseDesign={onCloseDesign}
         onSearch={() => setUtilityDialog("search")}
         onHelp={() => setUtilityDialog("help")}
       />
