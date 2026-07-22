@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { ChevronDown, CircleHelp, FolderOpen, GitCompareArrows, Search } from "lucide-react";
+import { CircleHelp, Search, X } from "lucide-react";
 import nettleLogo from "../../../assets/nettle_logo_light.png";
 import type { HeaderComparisonPresentation } from "./comparison-types";
 
@@ -10,8 +10,7 @@ interface AppHeaderProps {
   dataMode: DataMode;
   statusDetail?: string;
   comparison?: HeaderComparisonPresentation;
-  onOpenProject: () => void;
-  onCompareBundles?: () => void;
+  onCloseDesign: () => void;
   onSearch: () => void;
   onHelp: () => void;
 }
@@ -33,8 +32,7 @@ export function AppHeader({
   dataMode,
   statusDetail,
   comparison,
-  onOpenProject,
-  onCompareBundles,
+  onCloseDesign,
   onSearch,
   onHelp,
 }: AppHeaderProps) {
@@ -42,35 +40,24 @@ export function AppHeader({
     <header className="app-header">
       <div className="brand">NETTLE</div>
       <div className="header-divider" />
-      <button
-        className="project-title"
-        type="button"
-        onClick={onOpenProject}
-        aria-label="Open bundle"
-        title="Open a .nettle bundle"
+      <div
+        className="project-name"
+        title={
+          comparison ? `${comparison.referenceName} → ${comparison.candidateName}` : projectName
+        }
       >
-        <FolderOpen size={16} strokeWidth={1.7} />
-        <span
-          title={
-            comparison ? `${comparison.referenceName} → ${comparison.candidateName}` : undefined
-          }
-        >
-          {comparison ? `${comparison.referenceName} → ${comparison.candidateName}` : projectName}
-        </span>
-        <ChevronDown className="project-menu-mark" size={12} strokeWidth={1.8} />
+        {projectName}
+      </div>
+      <button
+        className="header-close-action"
+        type="button"
+        onClick={onCloseDesign}
+        aria-label="Close design"
+        title="Close design and return to the start page"
+      >
+        <X size={15} strokeWidth={1.7} />
+        Close design
       </button>
-      {onCompareBundles ? (
-        <button
-          className="header-compare-action"
-          type="button"
-          onClick={onCompareBundles}
-          aria-label="Compare Nettle bundles"
-          title="Compare two .nettle bundles"
-        >
-          <GitCompareArrows size={15} strokeWidth={1.7} />
-          Compare
-        </button>
-      ) : null}
       <div className="header-spacer" />
       <button
         className="icon-button quiet"

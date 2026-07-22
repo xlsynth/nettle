@@ -18,7 +18,7 @@ describe("AppHeader", () => {
   });
 
   it("dispatches each header action", () => {
-    const onOpenProject = vi.fn();
+    const onCloseDesign = vi.fn();
     const onSearch = vi.fn();
     const onHelp = vi.fn();
 
@@ -27,19 +27,23 @@ describe("AppHeader", () => {
         projectName="core.f"
         statusText="Bundle ready"
         dataMode="bundle"
-        onOpenProject={onOpenProject}
+        onCloseDesign={onCloseDesign}
         onSearch={onSearch}
         onHelp={onHelp}
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Close design" }));
     fireEvent.click(screen.getByRole("button", { name: "Search project" }));
     fireEvent.click(screen.getByRole("button", { name: "Help" }));
 
+    expect(onCloseDesign).toHaveBeenCalledOnce();
     expect(onSearch).toHaveBeenCalledOnce();
     expect(onHelp).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-    expect(onOpenProject).not.toHaveBeenCalled();
+    expect(screen.getByText("core.f").closest("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open bundle" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Compare Nettle bundles" })).toBeNull();
     expect(screen.getByText("Bundle ready")).not.toBeNull();
     expect(screen.queryByText(/slang/i)).toBeNull();
   });
@@ -47,7 +51,7 @@ describe("AppHeader", () => {
   it("shows comparison policy and source-change count", () => {
     render(
       <AppHeader
-        projectName="comparison"
+        projectName="before.nettle → after.nettle"
         statusText="7 schematic changes"
         dataMode="comparison"
         comparison={{
@@ -57,7 +61,7 @@ describe("AppHeader", () => {
           sourceChanges: 3,
           heuristicMatches: 2,
         }}
-        onOpenProject={vi.fn()}
+        onCloseDesign={vi.fn()}
         onSearch={vi.fn()}
         onHelp={vi.fn()}
       />,

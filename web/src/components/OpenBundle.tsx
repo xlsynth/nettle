@@ -504,7 +504,7 @@ export function CompareBundlesDialog({
       const previous = previouslyFocused.current;
       const restoreTarget = previous?.isConnected
         ? previous
-        : (document.querySelector<HTMLElement>(".project-title") ??
+        : (document.querySelector<HTMLElement>(".header-close-action") ??
           document.querySelector<HTMLElement>("button:not(:disabled), [href], [tabindex]"));
       restoreTarget?.focus();
       previouslyFocused.current = undefined;

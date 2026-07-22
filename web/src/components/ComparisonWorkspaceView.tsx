@@ -112,8 +112,7 @@ export interface ComparisonWorkspaceViewProps {
   initialPolicy: MatchingPolicy;
   statusDetail: string;
   setStatusDetail: (detail: string) => void;
-  onOpenBundle: () => void;
-  onCompareBundles: () => void;
+  onCloseDesign: () => void;
   hostedReference?: HostedViewerSession;
   hostedCandidate?: HostedViewerSession;
   shareableComparison?: boolean;
@@ -851,8 +850,7 @@ export function ComparisonWorkspaceView({
           candidateName: candidate.provider.fileName,
           policy: props.initialPolicy,
         }}
-        onOpenProject={props.onOpenBundle}
-        onCompareBundles={props.onCompareBundles}
+        onCloseDesign={props.onCloseDesign}
         onSearch={() => undefined}
         onHelp={() => undefined}
       />
@@ -938,8 +936,7 @@ function ConfirmedComparisonWorkspaceView({
   initialPolicy,
   statusDetail,
   setStatusDetail,
-  onOpenBundle,
-  onCompareBundles,
+  onCloseDesign,
   hostedReference,
   hostedCandidate,
   shareableComparison,
@@ -2477,8 +2474,7 @@ function ConfirmedComparisonWorkspaceView({
           sourceChanges: sourceChangeCount,
           heuristicMatches: schematicComparison.heuristicMatchCount,
         }}
-        onOpenProject={onOpenBundle}
-        onCompareBundles={onCompareBundles}
+        onCloseDesign={onCloseDesign}
         onSearch={() => setUtilityDialog("search")}
         onHelp={() => setUtilityDialog("help")}
       />

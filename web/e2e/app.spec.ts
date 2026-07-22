@@ -195,9 +195,10 @@ const openFixture = async (page: Page) => {
   await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");
   await expect(page.getByText("Bundle ready")).toBeVisible();
   await expect(page.getByText(/slang .*ready/i)).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Open bundle" })).toContainText(
-    "nettle-browser-fixture.nettle",
-  );
+  await expect(page.locator(".project-name")).toHaveText("nettle-browser-fixture.nettle");
+  await expect(page.getByRole("button", { name: "Close design" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open bundle" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Compare Nettle bundles" })).toHaveCount(0);
 };
 
 const referenceSessionToken = "a".repeat(64);
@@ -342,7 +343,57 @@ test("uploads, reloads, and shares a bundle comparison", async ({ page }) => {
   await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
   await expect(page.getByText("Shareable comparison")).toBeVisible();
   await expectShareableDownloadLinks(page);
+  const shellBox = await page.getByRole("application").boundingBox();
+  const bannerBox = await page
+    .getByRole("complementary", { name: "Comparison privacy information" })
+    .boundingBox();
+  const workspaceBox = await page.locator(".workspace").boundingBox();
+  expect(shellBox).not.toBeNull();
+  expect(bannerBox).not.toBeNull();
+  expect(workspaceBox).not.toBeNull();
+  if (shellBox && bannerBox && workspaceBox) {
+    expect(Math.abs(bannerBox.x - shellBox.x)).toBeLessThan(2);
+    expect(Math.abs(workspaceBox.x - shellBox.x)).toBeLessThan(2);
+    expect(Math.abs(bannerBox.width - shellBox.width)).toBeLessThan(2);
+    expect(Math.abs(workspaceBox.width - shellBox.width)).toBeLessThan(2);
+    expect(workspaceBox.y).toBeGreaterThanOrEqual(bannerBox.y + bannerBox.height - 2);
+  }
   expect(page.url()).toBe(comparisonUrl);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("keeps a hosted session full-width and restores it with Back after closing", async ({
+  page,
+}) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  await installHostedComparisonApi(page);
+  await page.goto(`/s/${referenceSessionToken}`);
+
+  await expect(page.getByText("Shareable session", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close design" })).toBeVisible();
+  const sessionUrl = page.url();
+  const shellBox = await page.getByRole("application").boundingBox();
+  const bannerBox = await page
+    .getByRole("complementary", { name: "Shareable session information" })
+    .boundingBox();
+  const workspaceBox = await page.locator(".workspace").boundingBox();
+  expect(shellBox).not.toBeNull();
+  expect(bannerBox).not.toBeNull();
+  expect(workspaceBox).not.toBeNull();
+  if (shellBox && bannerBox && workspaceBox) {
+    expect(Math.abs(bannerBox.x - shellBox.x)).toBeLessThan(2);
+    expect(Math.abs(workspaceBox.x - shellBox.x)).toBeLessThan(2);
+    expect(Math.abs(bannerBox.width - shellBox.width)).toBeLessThan(2);
+    expect(Math.abs(workspaceBox.width - shellBox.width)).toBeLessThan(2);
+    expect(workspaceBox.y).toBeGreaterThanOrEqual(bannerBox.y + bannerBox.height - 2);
+  }
+
+  await page.getByRole("button", { name: "Close design" }).click();
+  await expect(page).toHaveURL("/");
+  await expect(page.getByRole("heading", { name: "Open a design" })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(sessionUrl);
+  await expect(page.getByText("Shareable session", { exact: true })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -515,7 +566,8 @@ test("automatically opens a bundle supplied by the viewer host", async ({ page }
 
   await page.goto("/");
   await expect(page.locator(".mode-badge.local")).toContainText("LOCAL");
-  await expect(page.getByRole("button", { name: "Open bundle" })).toContainText("startup.nettle");
+  await expect(page.locator(".project-name")).toHaveText("startup.nettle");
+  await expect(page.getByRole("button", { name: "Close design" })).toBeVisible();
   await expect(page.locator(".schematic-node.kind-module")).toHaveCount(1);
   expect(runtimeErrors).toEqual([]);
 });
@@ -557,9 +609,10 @@ test("automatically opens a comparison supplied by the viewer host", async ({ pa
   await page.goto("/");
 
   await expect(page.locator(".mode-badge.diff").getByText("DIFF", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open bundle" })).toContainText(
+  await expect(page.locator(".project-name")).toHaveText(
     "hosted-reference.nettle → hosted-candidate.nettle",
   );
+  await expect(page.getByRole("button", { name: "Close design" })).toBeVisible();
   await expect(page.getByLabel("Schematic matching policy")).toHaveValue("aggressive");
   await expect(page.locator(".node-interaction.diff-heuristic")).not.toHaveCount(0);
   await expect(page.getByRole("region", { name: "Read-only source diff" })).toBeVisible();
@@ -698,19 +751,15 @@ test("compares two bundles with source and schematic diff controls", async ({ pa
   await page.getByRole("button", { name: "Next schematic change" }).click();
   await expect(page.locator(".node-shape.selected, .schematic-edge.active")).not.toHaveCount(0);
 
-  const nodeCount = await page.locator(".node-interaction").count();
-  await page.getByRole("button", { name: "Compare Nettle bundles" }).click();
-  const replacement = page.getByRole("dialog", { name: "Compare Nettle bundles" });
-  await replacement.getByLabel("Choose candidate .nettle bundle file").setInputFiles({
-    name: "corrupt-candidate.nettle",
-    mimeType: "application/zip",
-    buffer: Buffer.from("not a bundle"),
-  });
-  await replacement.getByRole("button", { name: "Compare bundles", exact: true }).click();
-  await expect(replacement.getByRole("alert")).toBeVisible();
-  await replacement.getByRole("button", { name: "Close compare bundles dialog" }).click();
-  await expect(page.locator(".mode-badge.diff")).toBeVisible();
-  await expect(page.locator(".node-interaction")).toHaveCount(nodeCount);
+  await expect(page.locator(".project-name")).toHaveText(
+    "nettle-comparison-reference.nettle → nettle-comparison-candidate.nettle",
+  );
+  await expect(page.getByRole("button", { name: "Close design" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open bundle" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Compare Nettle bundles" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Close design" }).click();
+  await expect(page.getByRole("heading", { name: "Open a design" })).toBeVisible();
+  await expect(page.locator(".mode-badge.diff")).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -970,23 +1019,14 @@ test("resizes the source pane and keeps schematic controls in view", async ({ pa
   expect(runtimeErrors).toEqual([]);
 });
 
-test("rejects an invalid replacement without discarding the active bundle", async ({ page }) => {
+test("closes an active bundle and reopens from the landing page", async ({ page }) => {
   const runtimeErrors = captureRuntimeErrors(page);
   await openFixture(page);
 
-  await page.getByRole("button", { name: "Open bundle" }).click();
-  await page
-    .getByRole("dialog", { name: "Open Nettle bundle" })
-    .getByLabel("Choose a .nettle bundle")
-    .setInputFiles({
-      name: "broken.nettle",
-      mimeType: "application/zip",
-      buffer: Buffer.from("not a zip archive"),
-    });
-  await expect(
-    page.getByRole("dialog", { name: "Open Nettle bundle" }).getByRole("alert"),
-  ).toContainText("end-of-central-directory");
-  await page.getByRole("button", { name: "Close open bundle dialog" }).click();
+  await page.getByRole("button", { name: "Close design" }).click();
+  await expect(page.getByRole("heading", { name: "Open a design" })).toBeVisible();
+  await expect(page.locator(".schematic-node.kind-module")).toHaveCount(0);
+  await page.getByLabel("Open a .nettle bundle locally").setInputFiles(fixture);
   await expect(page.locator(".schematic-node.kind-module")).toHaveCount(1);
   expect(runtimeErrors).toEqual([]);
 });

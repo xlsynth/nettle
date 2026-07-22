@@ -373,8 +373,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -407,8 +406,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -457,8 +455,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -519,8 +516,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -551,8 +547,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -603,8 +598,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -661,8 +655,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -706,8 +699,7 @@ describe("comparison instance hierarchy", () => {
           initialPolicy="conservative"
           statusDetail="comparison"
           setStatusDetail={vi.fn()}
-          onOpenBundle={vi.fn()}
-          onCompareBundles={vi.fn()}
+          onCloseDesign={vi.fn()}
         />,
       );
 
@@ -745,8 +737,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={setStatusDetail}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -821,8 +812,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -850,8 +840,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -929,8 +918,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -958,8 +946,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -1002,8 +989,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="aggressive"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -1042,8 +1028,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="aggressive"
         statusDetail="comparison"
         setStatusDetail={setStatusDetail}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -1093,8 +1078,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="aggressive"
         statusDetail="comparison"
         setStatusDetail={setStatusDetail}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -1142,8 +1126,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
@@ -1180,8 +1163,7 @@ describe("comparison instance hierarchy", () => {
         initialPolicy="conservative"
         statusDetail="comparison"
         setStatusDetail={vi.fn()}
-        onOpenBundle={vi.fn()}
-        onCompareBundles={vi.fn()}
+        onCloseDesign={vi.fn()}
       />,
     );
 
