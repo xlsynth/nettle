@@ -163,6 +163,9 @@ export function HostedAzureImport({ config, onCreated }: HostedAzureImportProps)
           <small>Relative to the archive root; defaults to project.f.</small>
         </label>
       ) : null}
+      <button type="submit" hidden disabled={!validPath || importing}>
+        Import from Azure
+      </button>
       <small className="hosted-azure-disclosure">
         Anyone with the resulting link can view the design. {retentionText(config)}
       </small>

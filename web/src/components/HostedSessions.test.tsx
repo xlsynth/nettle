@@ -98,7 +98,13 @@ describe("HostedAzureImport", () => {
     fireEvent.change(screen.getByLabelText("Azure source root filelist path"), {
       target: { value: "rtl/project.f" },
     });
-    fireEvent.submit(screen.getByRole("form", { name: "Azure blob import" }));
+    const submit = screen
+      .getByRole("form", { name: "Azure blob import" })
+      .querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(submit?.hidden).toBe(true);
+    expect(screen.queryByRole("button")).toBeNull();
+    if (!submit) throw new Error("Azure archive form has no hidden submit control");
+    fireEvent.click(submit);
 
     await waitFor(() =>
       expect(harness.createHostedAzureSession).toHaveBeenCalledWith(

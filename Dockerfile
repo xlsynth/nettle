@@ -133,22 +133,36 @@ ENTRYPOINT ["nettle"]
 # application. It can run the persistent hosted service in one container or
 # use `nettle render` for a one-off local build.
 FROM python-runtime AS nettle
-ARG OPENSSH_SERVER_VERSION=1:9.2p1-2+deb12u10
-ARG OPENSSH_SERVER_SHA256=933cd92a2329f9bf26d22660a834ae18ebdbe8df9c6127e4d9fcb098dac9cf72
 COPY --from=builder /usr/local/bin/nettle /usr/local/bin/nettle
 COPY --from=builder /opt/slang /opt/slang
 COPY --from=builder /opt/oss-cad-suite /opt/oss-cad-suite
 COPY --from=builder /opt/nettle/third-party-licenses /opt/nettle/third-party-licenses
+COPY debian-runtime.lock /opt/nettle/debian-runtime.lock
 COPY requirements.lock /opt/nettle/requirements.lock
-RUN apt-get update \
-  && apt-get install --yes --download-only --no-install-recommends \
-    "openssh-server=${OPENSSH_SERVER_VERSION}" \
-  && openssh_deb="$(find /var/cache/apt/archives -maxdepth 1 -name 'openssh-server_*.deb' -print -quit)" \
-  && test -n "$openssh_deb" \
-  && echo "${OPENSSH_SERVER_SHA256}  ${openssh_deb}" | sha256sum --check --strict \
-  && apt-get install --yes --no-install-recommends \
-    bash ca-certificates coreutils libgcc-s1 passwd \
-    "openssh-server=${OPENSSH_SERVER_VERSION}" \
+RUN set -eu; \
+    set --; \
+    while read -r package version checksum extra; do \
+      case "$package" in \#* | "") continue ;; esac; \
+      test -z "$extra"; \
+      set -- "$@" "${package}=${version}"; \
+    done < /opt/nettle/debian-runtime.lock; \
+    test "$#" -gt 0; \
+    apt-get update; \
+    apt-get install --yes --download-only --no-install-recommends "$@"; \
+    checked_packages=0; \
+    while read -r package version checksum extra; do \
+      case "$package" in \#* | "") continue ;; esac; \
+      test -z "$extra"; \
+      archive="$(find /var/cache/apt/archives -maxdepth 1 -name "${package}_*.deb" -print -quit)"; \
+      test -n "$archive"; \
+      test "$(dpkg-deb --field "$archive" Package)" = "$package"; \
+      test "$(dpkg-deb --field "$archive" Version)" = "$version"; \
+      printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --strict; \
+      checked_packages=$((checked_packages + 1)); \
+    done < /opt/nettle/debian-runtime.lock; \
+    downloaded_packages="$(find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -print | wc -l)"; \
+    test "$downloaded_packages" -eq "$checked_packages"; \
+    apt-get install --yes --no-install-recommends "$@" \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --home-dir /home/nettle --uid 10001 --user-group nettle \
   && python3 -m venv /opt/boostedblob \

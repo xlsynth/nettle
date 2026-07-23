@@ -352,6 +352,44 @@ test("imports an Azure blob only when the hosted server advertises the capabilit
   expect(runtimeErrors).toEqual([]);
 });
 
+test("imports an Azure source archive by pressing Enter in its optional filelist", async ({
+  page,
+}) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  const uploadKinds = await installHostedComparisonApi(page, { azureEnabled: true });
+  const requests: Array<{ path: string; sourceFilelist?: string }> = [];
+  await page.route("**/api/v1/azure-imports", (route) => {
+    expect(route.request().headers()["x-nettle-upload"]).toBe("1");
+    requests.push(route.request().postDataJSON() as { path: string; sourceFilelist?: string });
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        token: referenceSessionToken,
+        url: `/s/${referenceSessionToken}`,
+        statusUrl: `/api/v1/sessions/${referenceSessionToken}/status`,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /Azure/ })).toHaveCount(0);
+  await page
+    .getByRole("textbox", { name: "Azure blob path" })
+    .fill("az://account/container/project.tar.gz");
+  const filelist = page.getByRole("textbox", { name: "Azure source root filelist path" });
+  await filelist.fill("rtl/project.f");
+  await filelist.press("Enter");
+
+  await expect(page).toHaveURL(new RegExp(`/s/${referenceSessionToken}$`));
+  await expect(page.locator(".hosted-viewer-banner")).toBeVisible();
+  expect(requests).toEqual([
+    { path: "az://account/container/project.tar.gz", sourceFilelist: "rtl/project.f" },
+  ]);
+  expect(uploadKinds).toEqual([]);
+  expect(runtimeErrors).toEqual([]);
+});
+
 test("uploads, reloads, and shares a bundle comparison", async ({ page }) => {
   const runtimeErrors = captureRuntimeErrors(page);
   const uploadKinds = await installHostedComparisonApi(page);
