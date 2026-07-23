@@ -109,7 +109,7 @@ COPY web web
 RUN NETTLE_PUBLIC_MODE="$NETTLE_PUBLIC_MODE" npm run build
 
 # Supply the optional hosted Azure downloader from an immutable Python runtime.
-FROM --platform=$TARGETPLATFORM python:3.11.13-slim-bookworm@sha256:cec9aa7aa96eea4fa036e9b82be1e6b325f2e3707f462d885868df51ec0a4b47 AS python-runtime
+FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 AS python-runtime
 
 # Shared compiler runtime used by the final image and test stages.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
