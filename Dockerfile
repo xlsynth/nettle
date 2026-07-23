@@ -109,7 +109,7 @@ COPY web web
 RUN NETTLE_PUBLIC_MODE="$NETTLE_PUBLIC_MODE" npm run build
 
 # Supply the optional hosted Azure downloader from an immutable Python runtime.
-FROM python:3.11.13-slim-bookworm@sha256:cec9aa7aa96eea4fa036e9b82be1e6b325f2e3707f462d885868df51ec0a4b47 AS python-runtime
+FROM --platform=$TARGETPLATFORM python:3.11.13-slim-bookworm@sha256:cec9aa7aa96eea4fa036e9b82be1e6b325f2e3707f462d885868df51ec0a4b47 AS python-runtime
 
 # Shared compiler runtime used by the final image and test stages.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
@@ -168,7 +168,6 @@ ENV NETTLE_WEB_ROOT=/opt/nettle/web \
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3; read -r protocol status _ <&3; test "$protocol" = HTTP/1.1; test "$status" = 200'
-USER nettle
 WORKDIR /work
 ENTRYPOINT ["nettle"]
 CMD ["view"]

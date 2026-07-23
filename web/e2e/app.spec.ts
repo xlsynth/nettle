@@ -339,11 +339,11 @@ test("imports an Azure blob only when the hosted server advertises the capabilit
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "Open a bundle or source archive from Azure" }).click();
-  const dialog = page.getByRole("dialog", { name: "Open from Azure" });
-  await expect(dialog.getByText(/Anyone with the resulting URL/)).toBeVisible();
-  await dialog.getByLabel("Azure blob path").fill("az://account/container/design.nettle");
-  await dialog.getByRole("button", { name: "Import and create link" }).click();
+  await expect(page.getByText(/Anyone with the resulting link/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Azure/ })).toHaveCount(0);
+  const path = page.getByRole("textbox", { name: "Azure blob path" });
+  await path.fill("az://account/container/design.nettle");
+  await path.press("Enter");
 
   await expect(page).toHaveURL(new RegExp(`/s/${referenceSessionToken}$`));
   await expect(page.locator(".hosted-viewer-banner")).toBeVisible();

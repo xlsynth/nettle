@@ -442,6 +442,17 @@ button:focus-visible {
   line-height: 16px;
 }
 
+.hosted-azure-form {
+  display: grid;
+  gap: 9px;
+}
+
+.hosted-azure-disclosure {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+}
+
 .bundle-workflows.local-row {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

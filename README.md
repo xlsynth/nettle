@@ -279,9 +279,9 @@ instead select any root filelist by its relative archive path, such as
 `br_counter/filelist.f`; nested filelists and every declared project path are
 validated beneath the extracted archive root before compilation.
 
-Set `NETTLE_AZURE_ENABLE=1` on the hosted process to expose **Open from
-Azure** on the landing page. Paste an `az://` path to a `.nettle`, `.zip`,
-`.tar`, `.tar.gz`, or `.tgz` blob. Nettle runs the separately installed `bbb`
+Set `NETTLE_AZURE_ENABLE=1` on the hosted process to show an Azure path field
+on the landing page. Paste an `az://` path to a `.nettle`, `.zip`, `.tar`,
+`.tar.gz`, or `.tgz` blob and press Enter. Nettle runs the separately installed `bbb`
 executable to copy that one blob into its bounded scratch filesystem, then
 validates and admits it exactly like the corresponding hosted upload. Source
 archives can use the same optional relative root filelist. The combined
@@ -289,13 +289,12 @@ container already includes the hash-locked `boostedblob` package providing
 `bbb`; the native binary contains no Azure SDK and does not manage Azure
 credentials.
 
-Authenticate `bbb` yourself as the container's `nettle` user before importing.
-For example, start the container with `-e NETTLE_AZURE_ENABLE=1`, open an
-interactive shell with `docker exec -it <container-name> sh`, and establish the
-Azure authentication your installation requires. A read-only container root
-requires a separately configured writable credential location or a compatible
-operator-provided credential environment. Nettle neither provisions nor stores
-Azure credentials.
+You must authenticate `bbb` yourself before importing. Start the container with
+`-e NETTLE_AZURE_ENABLE=1`, open a shell using
+`docker exec -it <container-name> sh`, and sign in using your usual Azure
+authentication method. If your deployment makes the container filesystem
+read-only and `bbb` needs to save login information, mount a writable directory
+for those credentials. Nettle does not sign in to Azure or manage credentials.
 
 The hosted service runs Slang and Yosys as child processes in the same
 container. It does not launch nested containers or create Kubernetes workloads.

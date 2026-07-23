@@ -212,23 +212,19 @@ describe("App comparison installation", () => {
     render(<App mode="hosted" />);
 
     await waitFor(() => expect(harness.getHostedConfig).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: /from Azure/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Azure blob path" })).toBeNull();
   });
 
-  it("offers Azure imports only after the hosted server advertises them", async () => {
+  it("offers an inline Azure path only after the hosted server advertises it", async () => {
     harness.getHostedConfig.mockResolvedValueOnce({ ...hostedConfig, azureEnabled: true });
     render(<App mode="hosted" />);
 
-    const button = await screen.findByRole("button", {
-      name: "Open a bundle or source archive from Azure",
-    });
-    fireEvent.click(button);
-
-    expect(screen.getByRole("dialog", { name: "Open from Azure" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+    const path = await screen.findByRole("textbox", { name: "Azure blob path" });
+    expect(screen.queryByRole("button", { name: /Azure/ })).toBeNull();
+    fireEvent.change(path, {
       target: { value: "az://account/container/design.nettle" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Import and create link" }));
+    fireEvent.submit(screen.getByRole("form", { name: "Azure blob import" }));
 
     await waitFor(() =>
       expect(harness.createHostedAzureSession).toHaveBeenCalledWith(
@@ -246,7 +242,7 @@ describe("App comparison installation", () => {
 
     await waitFor(() => expect(harness.getHostedConfig).toHaveBeenCalled());
     expect(screen.getByRole("button", { name: "Upload and view a .nettle bundle" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /from Azure/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Azure blob path" })).toBeNull();
   });
 
   it("displays the software build metadata", () => {

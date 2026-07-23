@@ -46,10 +46,9 @@ kubectl rollout status deployment/nettle
 
 The `Recreate` strategy and `ReadWriteOncePod` claim enforce the v1
 single-writer design. `/data` contains the durable queue and completed
-sessions. `/scratch` is a bounded `emptyDir` used
-for archive extraction, compiler work, and explicitly enabled Azure imports.
-Neither path uses the container's read-only root
-filesystem.
+sessions. `/scratch` is a bounded `emptyDir` used for archive extraction,
+compiler work, and explicitly enabled Azure imports. Neither path uses the
+container's read-only root filesystem.
 
 The included egress-deny policy prevents the Pod from making outbound network
 connections when the cluster CNI enforces NetworkPolicy. If an internal
@@ -59,24 +58,21 @@ specific destinations it requires.
 ## Optional Azure blob imports
 
 Azure imports are disabled by default. Set `NETTLE_AZURE_ENABLE=1` in the
-container environment to advertise **Open from Azure** in the hosted landing
-page. The combined image includes a hash-locked `bbb` executable; Nettle runs
-`bbb cp` to import a single supported blob into `/scratch` before processing it
-with the existing hosted upload pipeline. Nettle does not acquire Azure
-credentials, embed an Azure SDK, or authenticate `bbb`.
+container environment to show an Azure path field on the landing page. Paste
+an `az://` bundle or source archive path and press Enter. The image includes
+`bbb`; Nettle runs `bbb cp` to download the file into `/scratch` and then opens
+it through the normal hosted upload pipeline.
 
-The checked-in `nettle-deny-egress` policy intentionally remains unchanged and
-blocks Azure imports. An operator enabling this feature must separately add
-the minimum site-approved egress required for DNS, Azure Blob Storage, and the
-chosen identity provider. Setting the feature flag does not modify network
-policy or grant network access.
+You must sign in to Azure with `bbb` yourself. For example, open a shell in the
+running container and use the authentication method required by your Azure
+account. If `bbb` stores login information in a file and the container has a
+read-only root filesystem, give it a writable mounted credentials directory.
+Nettle never stores Azure credentials or contacts Azure directly.
 
-Authenticate `bbb` inside the running container as user `10001`, or supply the
-credentials accepted by your site's `bbb` configuration. Because the default
-container root is read-only, any file-backed authentication cache needs an
-explicit, appropriately protected writable mount or a supported writable path.
-Do not relax the read-only root, mount credentials into the public web root,
-or place credentials in session URLs or manifests.
+The included Kubernetes configuration blocks all outbound network connections.
+Azure imports therefore will not work until your administrator explicitly
+allows access to DNS, Azure Blob Storage, and the Azure sign-in service.
+Setting `NETTLE_AZURE_ENABLE=1` does not change that network policy.
 
 The checked-in policy is intentionally egress-only because ingress-controller
 namespace and Pod labels are cluster-specific. A `ClusterIP` is not an access

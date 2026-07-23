@@ -79,16 +79,18 @@ describe("BundleWelcome", () => {
     expect(screen.queryByRole("button", { name: /from Azure/ })).toBeNull();
   });
 
-  it("shows Azure imports only when the hosted server offers the action", () => {
-    const onOpenAzure = vi.fn();
+  it("shows an inline Azure path field only when the hosted server offers it", () => {
     render(
-      <BundleWelcome mode="hosted" loading={false} onSelect={vi.fn()} onOpenAzure={onOpenAzure} />,
+      <BundleWelcome
+        mode="hosted"
+        loading={false}
+        onSelect={vi.fn()}
+        azureImport={<input aria-label="Azure blob path" />}
+      />,
     );
 
     expect(screen.getByText("Import from Azure")).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open a bundle or source archive from Azure" }),
-    );
-    expect(onOpenAzure).toHaveBeenCalledOnce();
+    expect(screen.getByRole("textbox", { name: "Azure blob path" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Azure/ })).toBeNull();
   });
 });

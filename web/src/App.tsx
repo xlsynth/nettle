@@ -48,7 +48,7 @@ import { FileTree } from "./components/FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
 import { HostedComparisonPage, HostedComparisonUploadDialog } from "./components/HostedComparison";
 import {
-  HostedAzureImportDialog,
+  HostedAzureImport,
   HostedSessionBanner,
   HostedSessionNotFound,
   HostedSessionPage,
@@ -201,7 +201,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
   });
   const [hostedUploadKind, setHostedUploadKind] = useState<HostedUploadKind>();
   const [hostedConfig, setHostedConfig] = useState<HostedConfig>();
-  const [hostedAzureImportOpen, setHostedAzureImportOpen] = useState(false);
   const [hostedComparisonUploadOpen, setHostedComparisonUploadOpen] = useState(false);
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -439,7 +438,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     generation.current += 1;
     openOwner.current.abort();
     setError(undefined);
-    setHostedAzureImportOpen(false);
     setHostedComparisonUploadOpen(false);
     setHostedUploadKind(kind);
   }, []);
@@ -448,7 +446,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     generation.current += 1;
     openOwner.current.abort();
     setError(undefined);
-    setHostedAzureImportOpen(false);
     setHostedUploadKind(undefined);
     setHostedComparisonUploadOpen(true);
   }, []);
@@ -457,7 +454,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     generation.current += 1;
     openOwner.current.abort();
     setHostedUploadKind(undefined);
-    setHostedAzureImportOpen(false);
     setHostedComparisonUploadOpen(false);
     setOpened(undefined);
     setComparison(undefined);
@@ -471,7 +467,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     generation.current += 1;
     openOwner.current.abort();
     setHostedUploadKind(undefined);
-    setHostedAzureImportOpen(false);
     setHostedComparisonUploadOpen(false);
     setOpened(undefined);
     setComparison(undefined);
@@ -713,17 +708,10 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
             onUploadBundle={hostedMode ? () => openHostedUpload("bundle") : undefined}
             onUploadSources={hostedMode ? () => openHostedUpload("sources") : undefined}
             onUploadComparison={hostedMode ? openHostedComparisonUpload : undefined}
-            onOpenAzure={
-              hostedMode && hostedConfig?.azureEnabled
-                ? () => {
-                    generation.current += 1;
-                    openOwner.current.abort();
-                    setError(undefined);
-                    setHostedUploadKind(undefined);
-                    setHostedComparisonUploadOpen(false);
-                    setHostedAzureImportOpen(true);
-                  }
-                : undefined
+            azureImport={
+              hostedMode && hostedConfig?.azureEnabled ? (
+                <HostedAzureImport config={hostedConfig} onCreated={acceptHostedSession} />
+              ) : undefined
             }
             demos={mode === "static" ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
@@ -732,12 +720,6 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
       )}
       {hostedMode ? (
         <>
-          <HostedAzureImportDialog
-            open={hostedAzureImportOpen}
-            config={hostedConfig}
-            onClose={() => setHostedAzureImportOpen(false)}
-            onCreated={acceptHostedSession}
-          />
           <HostedUploadDialog
             kind={hostedUploadKind}
             onClose={() => setHostedUploadKind(undefined)}

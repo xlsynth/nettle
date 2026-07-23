@@ -3,7 +3,6 @@
 import {
   AlertCircle,
   ArrowLeftRight,
-  CloudDownload,
   FileArchive,
   FolderOpen,
   GitCompareArrows,
@@ -12,7 +11,15 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { type ChangeEvent, type DragEvent, useEffect, useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type DragEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import type { Demo } from "../demos";
 import type { ViewerMode } from "../viewer-mode";
 import type { MatchingPolicy } from "./comparison-types";
@@ -92,7 +99,7 @@ interface BundleWelcomeProps extends BundlePickerProps {
   onUploadBundle?: () => void;
   onUploadSources?: () => void;
   onUploadComparison?: () => void;
-  onOpenAzure?: () => void;
+  azureImport?: ReactNode;
 }
 
 export function BundleWelcome({
@@ -103,7 +110,7 @@ export function BundleWelcome({
   onUploadBundle,
   onUploadSources,
   onUploadComparison,
-  onOpenAzure,
+  azureImport,
   loading,
   error,
   onSelect,
@@ -250,7 +257,7 @@ export function BundleWelcome({
                 ) : null}
               </div>
             </section>
-            {onOpenAzure ? (
+            {azureImport ? (
               <section className="hosted-workflow-group uploads">
                 <div className="hosted-workflow-heading">
                   <strong>Import from Azure</strong>
@@ -259,21 +266,7 @@ export function BundleWelcome({
                     link.
                   </span>
                 </div>
-                <div className="bundle-workflows upload-row">
-                  <button
-                    className="bundle-workflow hosted"
-                    type="button"
-                    aria-label="Open a bundle or source archive from Azure"
-                    disabled={loading}
-                    onClick={onOpenAzure}
-                  >
-                    <CloudDownload size={22} strokeWidth={1.5} />
-                    <span>
-                      <strong>Open from Azure</strong>
-                      <small>Paste an az:// bundle or source archive path</small>
-                    </span>
-                  </button>
-                </div>
+                {azureImport}
               </section>
             ) : null}
           </div>
