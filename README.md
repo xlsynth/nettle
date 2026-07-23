@@ -282,9 +282,11 @@ validated beneath the extracted archive root before compilation.
 Set `NETTLE_AZURE_ENABLE=1` on the hosted process to show an Azure path field
 on the landing page. Paste an `az://` path to a `.nettle`, `.zip`, `.tar`,
 `.tar.gz`, or `.tgz` blob and press Enter. Nettle runs the separately installed `bbb`
-executable to copy that one blob into its bounded scratch filesystem, then
-validates and admits it exactly like the corresponding hosted upload. Source
-archives can use the same optional relative root filelist. The combined
+executable to verify the blob size before copying that one blob into its bounded
+scratch filesystem, then validates and admits it exactly like the corresponding
+hosted upload. The downloader also inherits the upload size as a hard file-size
+limit on Unix, so a blob changing after verification cannot exhaust scratch.
+Source archives can use the same optional relative root filelist. The combined
 container already includes the hash-locked `boostedblob` package providing
 `bbb`; the native binary contains no Azure SDK and does not manage Azure
 credentials.

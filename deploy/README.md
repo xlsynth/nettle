@@ -60,8 +60,10 @@ specific destinations it requires.
 Azure imports are disabled by default. Set `NETTLE_AZURE_ENABLE=1` in the
 container environment to show an Azure path field on the landing page. Paste
 an `az://` bundle or source archive path and press Enter. The image includes
-`bbb`; Nettle runs `bbb cp` to download the file into `/scratch` and then opens
-it through the normal hosted upload pipeline.
+`bbb`; Nettle verifies the blob size with `bbb ll --machine` before running
+`bbb cp` to download the file into `/scratch`, then opens it through the normal
+hosted upload pipeline. The downloader inherits a hard file-size limit, so an
+oversized or changing blob cannot exhaust scratch used by other builds.
 
 You must sign in to Azure with `bbb` yourself. For example, open a shell in the
 running container and use the authentication method required by your Azure

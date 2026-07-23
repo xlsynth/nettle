@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Path as AxumPath, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -62,6 +62,7 @@ const MAX_RETAINED_ERROR_BYTES: usize = 32 * 1024;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const MAX_CONCURRENT_AZURE_DOWNLOADS: usize = 2;
+const MAX_AZURE_REQUEST_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Copy)]
 struct BuildDeadline {
@@ -632,7 +633,10 @@ fn host_router(state: HostState) -> Result<Router> {
         .route("/readyz", get(|| async { "ok" }))
         .route("/api/v1/config", get(get_config))
         .route("/api/v1/sessions", post(create_session))
-        .route("/api/v1/azure-imports", post(create_azure_session))
+        .route(
+            "/api/v1/azure-imports",
+            post(create_azure_session).layer(DefaultBodyLimit::max(MAX_AZURE_REQUEST_BYTES)),
+        )
         .route("/api/v1/sessions/{token}/status", get(get_status))
         .route("/api/v1/sessions/{token}/bundle", get(get_bundle))
         .route(
@@ -1169,8 +1173,7 @@ fn validate_azure_path(path: &str) -> std::result::Result<(SessionKind, String),
 
 async fn create_azure_session(
     State(state): State<HostState>,
-    headers: HeaderMap,
-    Json(request): Json<AzureImportRequest>,
+    request: Request,
 ) -> std::result::Result<Response, ApiError> {
     if !state.0.options.azure_enabled {
         return Err(ApiError {
@@ -1178,7 +1181,13 @@ async fn create_azure_session(
             message: "Azure imports are not enabled on this Nettle server.".to_owned(),
         });
     }
-    require_same_origin_upload(&headers)?;
+    require_same_origin_upload(request.headers())?;
+    let Json(request) = Json::<AzureImportRequest>::from_request(request, &state)
+        .await
+        .map_err(|rejection| ApiError {
+            status: rejection.status(),
+            message: "Azure import requires a small, valid JSON request.".to_owned(),
+        })?;
     let (kind, original_name) = validate_azure_path(&request.path)?;
     let source_filelist = match (kind, request.source_filelist.as_deref()) {
         (SessionKind::Sources, Some(value)) => Some(validate_source_filelist(value)?),
@@ -1202,6 +1211,16 @@ async fn create_azure_session(
     } else {
         None
     };
+    let remote_bytes = inspect_azure_blob(&state, &request.path).await?;
+    if remote_bytes == 0 {
+        return Err(ApiError::bad_request("The downloaded Azure file is empty."));
+    }
+    if remote_bytes > state.0.options.max_upload_bytes {
+        return Err(ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "The downloaded Azure file exceeds the server upload limit.".to_owned(),
+        });
+    }
     let scratch = tempfile::Builder::new()
         .prefix("azure-")
         .tempdir_in(&state.0.options.scratch_root)
@@ -1265,17 +1284,113 @@ async fn create_azure_session(
     .await
 }
 
+async fn inspect_azure_blob(state: &HostState, source: &str) -> std::result::Result<u64, ApiError> {
+    let mut command = Command::new(&state.0.bbb_program);
+    command.arg("ll").arg("--machine").arg(source);
+    let (status, output) = run_azure_command(state, command, true).await?;
+    if !status.success() {
+        return Err(ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message:
+                "Azure download failed. Verify the blob path, network access, and bbb authentication."
+                    .to_owned(),
+        });
+    }
+
+    let invalid_metadata = || ApiError {
+        status: StatusCode::BAD_GATEWAY,
+        message: "Azure blob size could not be verified before downloading.".to_owned(),
+    };
+    let output = std::str::from_utf8(&output).map_err(|_| invalid_metadata())?;
+    let mut lines = output.lines();
+    let line = lines.next().ok_or_else(invalid_metadata)?;
+    if lines.any(|line| !line.trim().is_empty()) {
+        return Err(invalid_metadata());
+    }
+    let (size, rest) = line
+        .trim_start()
+        .split_once(char::is_whitespace)
+        .ok_or_else(invalid_metadata)?;
+    let (_, listed_source) = rest
+        .trim_start()
+        .split_once(char::is_whitespace)
+        .ok_or_else(invalid_metadata)?;
+    if listed_source.trim_start() != source {
+        return Err(invalid_metadata());
+    }
+    size.parse().map_err(|_| invalid_metadata())
+}
+
+#[cfg(unix)]
+fn limit_azure_download_file(
+    command: &mut Command,
+    max_upload_bytes: u64,
+) -> std::result::Result<(), ApiError> {
+    let limit = libc::rlim_t::try_from(max_upload_bytes).map_err(|_| ApiError::internal())?;
+    let limit = libc::rlimit {
+        rlim_cur: limit,
+        rlim_max: limit,
+    };
+
+    // SAFETY: `setrlimit` is async-signal-safe, and the closure only applies the
+    // bounded file-size limit to the freshly forked downloader and its children.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+    Ok(())
+}
+
 async fn download_azure_blob(
     state: &HostState,
     source: &str,
     destination: &Path,
 ) -> std::result::Result<(), ApiError> {
-    let mut child = Command::new(&state.0.bbb_program)
-        .arg("cp")
-        .arg(source)
-        .arg(destination)
+    let mut command = Command::new(&state.0.bbb_program);
+    command.arg("cp").arg(source).arg(destination);
+    #[cfg(unix)]
+    limit_azure_download_file(&mut command, state.0.options.max_upload_bytes)?;
+    let (status, _) = run_azure_command(state, command, false).await?;
+    if status.success() {
+        return Ok(());
+    }
+    if tokio::fs::symlink_metadata(destination)
+        .await
+        .ok()
+        .is_some_and(|metadata| {
+            metadata.file_type().is_file() && metadata.len() >= state.0.options.max_upload_bytes
+        })
+    {
+        return Err(ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "The downloaded Azure file exceeds the server upload limit.".to_owned(),
+        });
+    }
+    Err(ApiError {
+        status: StatusCode::BAD_GATEWAY,
+        message:
+            "Azure download failed. Verify the blob path, network access, and bbb authentication."
+                .to_owned(),
+    })
+}
+
+async fn run_azure_command(
+    state: &HostState,
+    mut command: Command,
+    capture_stdout: bool,
+) -> std::result::Result<(std::process::ExitStatus, Vec<u8>), ApiError> {
+    let mut child = command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(if capture_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
@@ -1290,9 +1405,26 @@ async fn download_azure_blob(
                 message: message.to_owned(),
             }
         })?;
+    let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let outcome = tokio::time::timeout(state.0.options.build_timeout, async {
-        let capture = async move {
+        let capture_stdout = async move {
+            let mut output = Vec::new();
+            if let Some(stdout) = stdout {
+                stdout
+                    .take(MAX_RETAINED_ERROR_BYTES as u64 + 1)
+                    .read_to_end(&mut output)
+                    .await?;
+            }
+            if output.len() > MAX_RETAINED_ERROR_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Azure downloader returned oversized metadata",
+                ));
+            }
+            Ok::<_, io::Error>(output)
+        };
+        let capture_stderr = async move {
             if let Some(stderr) = stderr {
                 let mut diagnostics = Vec::new();
                 stderr
@@ -1302,17 +1434,11 @@ async fn download_azure_blob(
             }
             Ok::<(), io::Error>(())
         };
-        tokio::try_join!(child.wait(), capture)
+        tokio::try_join!(child.wait(), capture_stdout, capture_stderr)
     })
     .await;
     match outcome {
-        Ok(Ok((status, ()))) if status.success() => Ok(()),
-        Ok(Ok((_status, ()))) => Err(ApiError {
-            status: StatusCode::BAD_GATEWAY,
-            message:
-                "Azure download failed. Verify the blob path, network access, and bbb authentication."
-                    .to_owned(),
-        }),
+        Ok(Ok((status, output, ()))) => Ok((status, output)),
         Ok(Err(_)) => Err(ApiError {
             status: StatusCode::BAD_GATEWAY,
             message: "The Azure download process could not be monitored.".to_owned(),
@@ -3443,8 +3569,23 @@ mod tests {
 
     #[cfg(unix)]
     fn install_fake_bbb(host: &mut TestHost, script: &str) {
+        install_fake_bbb_with_metadata(
+            host,
+            script,
+            "printf '1  1970-01-01T00:00:00  %s\\n' \"$3\"",
+        );
+    }
+
+    #[cfg(unix)]
+    fn install_fake_bbb_with_metadata(host: &mut TestHost, script: &str, metadata: &str) {
         let executable = host._root.path().join("fake-bbb");
-        fs::write(&executable, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nset -eu\nif [ \"$1\" = ll ]; then\n    {metadata}\n    exit 0\nfi\n{script}\n"
+            ),
+        )
+        .unwrap();
         let mut permissions = fs::metadata(&executable).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&executable, permissions).unwrap();
@@ -3854,6 +3995,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disabled_azure_imports_reject_bodies_before_json_extraction() {
+        let host = test_host(2);
+        for body in [b"{\"path\":7}".to_vec(), vec![b'x'; 8 * 1024]] {
+            let response = host_router(host.state.clone())
+                .unwrap()
+                .oneshot(
+                    Request::post("/api/v1/azure-imports")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header("x-nettle-upload", "1")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        assert_eq!(
+            fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn azure_imports_require_the_same_origin_upload_header() {
         let host = test_host_with_azure(2, true);
         let request = Request::post("/api/v1/azure-imports")
@@ -3872,6 +4037,51 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn azure_imports_check_origin_before_json_extraction() {
+        let host = test_host_with_azure(2, true);
+        for body in [b"{\"path\":7}".to_vec(), vec![b'x'; 8 * 1024]] {
+            let response = host_router(host.state.clone())
+                .unwrap()
+                .oneshot(
+                    Request::post("/api/v1/azure-imports")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn azure_imports_enforce_a_small_route_specific_json_limit() {
+        let host = test_host_with_azure(2, true);
+        let oversized =
+            json!({ "path": format!("az://account/container/{}", "a".repeat(8 * 1024)) });
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(
+                Request::post("/api/v1/azure-imports")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-nettle-upload", "1")
+                    .body(Body::from(serde_json::to_vec(&oversized).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -4216,6 +4426,108 @@ mod tests {
             fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
             0
         );
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_azure_blob_is_rejected_before_copy_or_scratch_allocation() {
+        let mut host = test_host_with_azure(2, true);
+        Arc::get_mut(&mut host.state.0)
+            .unwrap()
+            .options
+            .max_upload_bytes = 4;
+        let copy_marker = host._root.path().join("azure-copy-started");
+        install_fake_bbb_with_metadata(
+            &mut host,
+            &format!(
+                "printf started > '{}'\nprintf 'too large' > \"$3\"",
+                copy_marker.display()
+            ),
+            "printf '9  1970-01-01T00:00:00  %s\\n' \"$3\"",
+        );
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!copy_marker.exists(), "oversized blob started bbb cp");
+        assert_eq!(
+            fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            host.state.0.azure_downloads.available_permits(),
+            MAX_CONCURRENT_AZURE_DOWNLOADS
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_metadata_must_describe_the_requested_blob() {
+        let mut host = test_host_with_azure(2, true);
+        let copy_marker = host._root.path().join("azure-copy-started");
+        install_fake_bbb_with_metadata(
+            &mut host,
+            &format!("printf started > '{}'", copy_marker.display()),
+            "printf '1  1970-01-01T00:00:00  az://account/container/other.nettle\\n'",
+        );
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(!copy_marker.exists(), "unverified metadata started bbb cp");
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_copy_cannot_grow_beyond_the_prechecked_upload_limit() {
+        let mut host = test_host_with_azure(2, true);
+        Arc::get_mut(&mut host.state.0)
+            .unwrap()
+            .options
+            .max_upload_bytes = 4;
+        let observed_size = host._root.path().join("azure-observed-size");
+        install_fake_bbb_with_metadata(
+            &mut host,
+            &format!(
+                ": > \"$3\"\nln \"$3\" '{}'\ntrap '' XFSZ\nprintf 'too large' > \"$3\"",
+                observed_size.display()
+            ),
+            "printf '4  1970-01-01T00:00:00  %s\\n' \"$3\"",
+        );
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes_written = fs::metadata(&observed_size).unwrap().len();
+        assert!(bytes_written <= 4, "bbb wrote {bytes_written} bytes");
+        assert_eq!(fs::read(observed_size).unwrap(), b"too ");
         assert_eq!(
             fs::read_dir(&host.state.0.options.scratch_root)
                 .unwrap()
