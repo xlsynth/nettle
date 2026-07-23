@@ -322,8 +322,10 @@ session volume.
 The combined image already includes the hash-locked `boostedblob` executable
 `bbb`. It does **not** include the Azure CLI, sign in on your behalf, or change
 network policy. One supported approach is to run `az login` on the Docker host,
-mount that existing `~/.azure` login cache read-only, and give `bbb` its own
-writable, persistent home and token-cache volume.
+then copy only the Azure login files `bbb` uses into a protected Docker volume
+owned by container UID `10001`. Do not mount an owner-only host `~/.azure`
+directly into the non-root server: bind mounts retain host ownership, so the
+server cannot read login files belonging to a different host UID.
 
 If the non-Azure container above is running, stop and remove the container
 before starting its Azure-enabled replacement; this does not delete
@@ -336,6 +338,23 @@ docker rm nettle
 az login
 docker volume create nettle-azure-cache
 
+docker run --rm --platform linux/amd64 \
+  --network none --read-only --user 0:0 \
+  --mount "type=bind,source=$HOME/.azure,target=/host-azure,readonly" \
+  --mount type=volume,source=nettle-azure-cache,target=/home/nettle \
+  --entrypoint sh nettle:latest \
+  -ec 'umask 077
+    install -d -m 0700 -o 10001 -g 10001 \
+      /home/nettle/.azure /home/nettle/.config /home/nettle/.config/bbb
+    test -f /host-azure/msal_token_cache.json ||
+      test -f /host-azure/accessTokens.json
+    for file in msal_token_cache.json accessTokens.json azureProfile.json; do
+      if test -f "/host-azure/$file"; then
+        install -m 0600 -o 10001 -g 10001 \
+          "/host-azure/$file" "/home/nettle/.azure/$file"
+      fi
+    done'
+
 docker run --detach --platform linux/amd64 \
   --name nettle \
   --restart unless-stopped \
@@ -345,7 +364,6 @@ docker run --detach --platform linux/amd64 \
   --env NETTLE_AZURE_ENABLE=1 \
   --mount type=volume,source=nettle-sessions,target=/data \
   --mount type=volume,source=nettle-azure-cache,target=/home/nettle \
-  --mount "type=bind,source=$HOME/.azure,target=/home/nettle/.azure,readonly" \
   --tmpfs /scratch:rw,nosuid,nodev,noexec,size=4g,mode=1777 \
   nettle:latest host \
   --storage-root=/data \
@@ -355,6 +373,14 @@ docker run --detach --platform linux/amd64 \
   --build-timeout=600s \
   --evict-after=30d
 ```
+
+The short-lived initialization container uses root only to read the
+owner-restricted host cache, install credential copies with mode `0600`, and
+create private cache directories with mode `0700`; its network is disabled and
+its root filesystem is read-only. The hosted server still runs as UID `10001`
+with a read-only root and never mounts the host's Azure credentials. Re-run the
+initialization step after renewing the host login when the copied Azure
+credentials need to be refreshed.
 
 Verify that the actual container can access your intended Azure account before
 using the GUI:
