@@ -44,6 +44,18 @@ kubectl apply -f deploy/kubernetes.yaml
 kubectl rollout status deployment/nettle
 ```
 
+For an administrator-only local check, forward the private service and open
+<http://127.0.0.1:8080>:
+
+```sh
+kubectl port-forward service/nettle 8080:8080
+```
+
+Use the site's HTTPS gateway, rather than port-forwarding, when making the
+service available to other users. The default manifest does not enable Azure;
+the hosted landing page supports local viewing, persistent bundle uploads, and
+queued source-archive compilation without outbound network access.
+
 The `Recreate` strategy and `ReadWriteOncePod` claim enforce the v1
 single-writer design. `/data` contains the durable queue and completed
 sessions. `/scratch` is a bounded `emptyDir` used for archive extraction,
@@ -67,9 +79,34 @@ oversized or changing blob cannot exhaust scratch used by other builds.
 
 You must sign in to Azure with `bbb` yourself. For example, open a shell in the
 running container and use the authentication method required by your Azure
-account. If `bbb` stores login information in a file and the container has a
-read-only root filesystem, give it a writable mounted credentials directory.
-Nettle never stores Azure credentials or contacts Azure directly.
+account. The image includes `bbb`, not the Azure CLI; do not assume `az login`
+can run inside the Pod. Configure a site-managed Kubernetes Secret or mounted
+Azure login cache that `bbb` can read as UID `10001`. For a service-principal
+JSON Secret, point `AZURE_APPLICATION_CREDENTIALS` at its mounted file. If
+`bbb` needs to cache tokens, mount an additional protected writable directory
+at `/home/nettle/.config/bbb`; do not make the container root writable.
+
+After configuring the Secret, writable cache if needed, and approved egress,
+enable the feature and verify the actual running Pod can reach the intended
+blob container:
+
+```sh
+kubectl set env deployment/nettle NETTLE_AZURE_ENABLE=1
+kubectl rollout status deployment/nettle
+kubectl exec deployment/nettle -- bbb --version
+kubectl exec deployment/nettle -- bbb ls az://account/container/
+```
+
+Replace `account/container` with your real Azure storage location. To disable
+Azure again without discarding persistent sessions:
+
+```sh
+kubectl set env deployment/nettle NETTLE_AZURE_ENABLE-
+kubectl rollout status deployment/nettle
+```
+
+Nettle never stores Azure credentials or contacts Azure directly. Keep
+credential values out of checked-in manifests, capability URLs, and logs.
 
 The included Kubernetes configuration blocks all outbound network connections.
 Azure imports therefore will not work until your administrator explicitly
@@ -113,6 +150,36 @@ untrusted even when its submitter is trusted.
 The liveness endpoint is `/healthz`; readiness is `/readyz`. Queue and session
 state survive Pod replacement because they live on the PVC. If a running build
 is interrupted, the server restores it to the queue and retries it once.
+
+Check rollout, Pod state, recent logs, PVC capacity, and both mounted
+filesystems:
+
+```sh
+kubectl rollout status deployment/nettle
+kubectl get pods,pvc,service,networkpolicy
+kubectl logs deployment/nettle --tail=100
+kubectl exec deployment/nettle -- df -h /data /scratch
+```
+
+Back up the `nettle-sessions` PVC using your site's encrypted volume snapshot
+or backup mechanism. Treat snapshots, generated `.nettle` bundles, capability
+URLs, and Azure credential mounts as sensitive. Do not back up `/scratch`: it
+is disposable compiler workspace. Verify restore procedures before relying on
+the service for retained designs.
+
+To upgrade, publish and verify the replacement image, update the `nettle`
+container to its immutable digest, and wait for the single-writer rollout:
+
+```sh
+kubectl set image deployment/nettle \
+  nettle=ghcr.io/xlsynth/nettle@sha256:<published-digest>
+kubectl rollout status deployment/nettle
+```
+
+Replace `<published-digest>` with the verified 64-character image digest.
+Retain the existing PVC, resource limits, read-only root, network policies,
+and configured Azure credentials. Check `/readyz`, logs, storage capacity,
+and previously created sessions after the rollout.
 
 Only one replica is supported. Do not change `replicas`, `Recreate`, or the PVC
 access mode without first adding cross-process queue coordination.
