@@ -13,8 +13,10 @@ import {
 } from "react";
 import type { SourceInventoryEntry } from "./api/contracts";
 import {
+  getHostedConfig,
   type HostedComparisonModulePair,
   type HostedComparisonRoute,
+  type HostedConfig,
   type HostedSessionCreated,
   type HostedUploadKind,
   hostedComparisonPath,
@@ -46,6 +48,7 @@ import { FileTree } from "./components/FileTree";
 import { HelpDialog, ProjectSearchDialog } from "./components/HeaderDialogs";
 import { HostedComparisonPage, HostedComparisonUploadDialog } from "./components/HostedComparison";
 import {
+  HostedAzureImport,
   HostedSessionBanner,
   HostedSessionNotFound,
   HostedSessionPage,
@@ -197,6 +200,7 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
     );
   });
   const [hostedUploadKind, setHostedUploadKind] = useState<HostedUploadKind>();
+  const [hostedConfig, setHostedConfig] = useState<HostedConfig>();
   const [hostedComparisonUploadOpen, setHostedComparisonUploadOpen] = useState(false);
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -212,6 +216,19 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
   const initialHostedRoute = useRef(
     hostedMode && (Boolean(hostedToken) || Boolean(hostedComparisonRoute) || invalidHostedRoute),
   );
+
+  useEffect(() => {
+    if (!hostedMode) return;
+    const controller = new AbortController();
+    void getHostedConfig(controller.signal)
+      .then((config) => {
+        if (!controller.signal.aborted) setHostedConfig(config);
+      })
+      .catch(() => {
+        // Existing local and hosted uploads remain usable if capability discovery fails.
+      });
+    return () => controller.abort();
+  }, [hostedMode]);
 
   const openBundle = useCallback(
     async (
@@ -691,6 +708,11 @@ export default function App({ mode = viewerMode }: AppProps = {}) {
             onUploadBundle={hostedMode ? () => openHostedUpload("bundle") : undefined}
             onUploadSources={hostedMode ? () => openHostedUpload("sources") : undefined}
             onUploadComparison={hostedMode ? openHostedComparisonUpload : undefined}
+            azureImport={
+              hostedMode && hostedConfig?.azureEnabled ? (
+                <HostedAzureImport config={hostedConfig} onCreated={acceptHostedSession} />
+              ) : undefined
+            }
             demos={mode === "static" ? DEMOS : undefined}
             onOpenDemo={(demo) => void openDemo(demo)}
           />

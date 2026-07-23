@@ -5,9 +5,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostedApiError } from "../api/hosted";
-import { HostedSessionBanner, HostedSessionPage, HostedUploadDialog } from "./HostedSessions";
+import {
+  HostedAzureImport,
+  HostedSessionBanner,
+  HostedSessionPage,
+  HostedUploadDialog,
+} from "./HostedSessions";
 
 const harness = vi.hoisted(() => ({
+  createHostedAzureSession: vi.fn(),
   createHostedSession: vi.fn(),
   getHostedConfig: vi.fn(),
   getHostedSessionStatus: vi.fn(),
@@ -18,6 +24,7 @@ vi.mock("../api/hosted", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/hosted")>();
   return {
     ...original,
+    createHostedAzureSession: harness.createHostedAzureSession,
     createHostedSession: harness.createHostedSession,
     getHostedConfig: harness.getHostedConfig,
     getHostedSessionStatus: harness.getHostedSessionStatus,
@@ -27,6 +34,7 @@ vi.mock("../api/hosted", async (importOriginal) => {
 
 const config = {
   hostingEnabled: true,
+  azureEnabled: false,
   retention: {
     mode: "expires" as const,
     seconds: 2_592_000,
@@ -42,6 +50,110 @@ beforeEach(() => {
     token: "a".repeat(43),
     url: `/s/${"a".repeat(43)}`,
     statusUrl: `/api/v1/sessions/${"a".repeat(43)}/status`,
+  });
+  harness.createHostedAzureSession.mockResolvedValue({
+    token: "b".repeat(43),
+    url: `/s/${"b".repeat(43)}`,
+    statusUrl: `/api/v1/sessions/${"b".repeat(43)}/status`,
+  });
+});
+
+describe("HostedAzureImport", () => {
+  const azureConfig = { ...config, azureEnabled: true };
+
+  it("remains hidden when the hosted Azure capability is disabled", () => {
+    render(<HostedAzureImport config={config} onCreated={vi.fn()} />);
+
+    expect(screen.queryByRole("textbox", { name: "Azure blob path" })).toBeNull();
+    expect(harness.createHostedAzureSession).not.toHaveBeenCalled();
+  });
+
+  it("discloses visibility and imports an Azure bundle when the path is submitted", async () => {
+    const onCreated = vi.fn();
+    render(<HostedAzureImport config={azureConfig} onCreated={onCreated} />);
+
+    expect(screen.getByText(/Anyone with the resulting link/)).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    expect(harness.createHostedAzureSession).not.toHaveBeenCalled();
+    fireEvent.submit(screen.getByRole("form", { name: "Azure blob import" }));
+
+    await waitFor(() =>
+      expect(harness.createHostedAzureSession).toHaveBeenCalledWith(
+        "az://account/container/design.nettle",
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    await waitFor(() => expect(onCreated).toHaveBeenCalledOnce());
+  });
+
+  it("submits the selected source filelist for an Azure archive", async () => {
+    render(<HostedAzureImport config={azureConfig} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/project.tar.gz" },
+    });
+    fireEvent.change(screen.getByLabelText("Azure source root filelist path"), {
+      target: { value: "rtl/project.f" },
+    });
+    const submit = screen
+      .getByRole("form", { name: "Azure blob import" })
+      .querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(submit?.hidden).toBe(true);
+    expect(screen.queryByRole("button")).toBeNull();
+    if (!submit) throw new Error("Azure archive form has no hidden submit control");
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(harness.createHostedAzureSession).toHaveBeenCalledWith(
+        "az://account/container/project.tar.gz",
+        "rtl/project.f",
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
+  it("displays a failed Azure import without hiding the path field", async () => {
+    harness.createHostedAzureSession.mockRejectedValueOnce(
+      new HostedApiError("Azure authentication is unavailable", 502),
+    );
+    render(<HostedAzureImport config={azureConfig} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    fireEvent.submit(screen.getByRole("form", { name: "Azure blob import" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Azure authentication is unavailable",
+    );
+    expect(screen.getByRole("textbox", { name: "Azure blob path" })).toBeTruthy();
+  });
+
+  it("cancels an in-flight Azure import when the path field is unmounted", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    harness.createHostedAzureSession.mockImplementation(
+      (_path: string, _filelist: string | undefined, signal: AbortSignal) => {
+        receivedSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("The import was aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    const { unmount } = render(<HostedAzureImport config={azureConfig} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    fireEvent.submit(screen.getByRole("form", { name: "Azure blob import" }));
+    await waitFor(() => expect(harness.createHostedAzureSession).toHaveBeenCalledOnce());
+    unmount();
+
+    expect(receivedSignal?.aborted).toBe(true);
   });
 });
 

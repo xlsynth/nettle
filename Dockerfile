@@ -108,6 +108,9 @@ COPY assets/nettle_logo_light.png assets/nettle_logo_light.png
 COPY web web
 RUN NETTLE_PUBLIC_MODE="$NETTLE_PUBLIC_MODE" npm run build
 
+# Supply the optional hosted Azure downloader from an immutable Python runtime.
+FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 AS python-runtime
+
 # Shared compiler runtime used by the final image and test stages.
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS builder
 RUN apt-get update \
@@ -129,19 +132,44 @@ ENTRYPOINT ["nettle"]
 # The interactive image combines the compiler toolchain with the web
 # application. It can run the persistent hosted service in one container or
 # use `nettle render` for a one-off local build.
-FROM builder AS nettle
-ARG OPENSSH_SERVER_VERSION=1:9.2p1-2+deb12u10
-ARG OPENSSH_SERVER_SHA256=933cd92a2329f9bf26d22660a834ae18ebdbe8df9c6127e4d9fcb098dac9cf72
-USER root
-RUN apt-get update \
-  && apt-get install --yes --download-only --no-install-recommends \
-    "openssh-server=${OPENSSH_SERVER_VERSION}" \
-  && openssh_deb="$(find /var/cache/apt/archives -maxdepth 1 -name 'openssh-server_*.deb' -print -quit)" \
-  && test -n "$openssh_deb" \
-  && echo "${OPENSSH_SERVER_SHA256}  ${openssh_deb}" | sha256sum --check --strict \
-  && apt-get install --yes --no-install-recommends \
-    "openssh-server=${OPENSSH_SERVER_VERSION}" \
+FROM python-runtime AS nettle
+COPY --from=builder /usr/local/bin/nettle /usr/local/bin/nettle
+COPY --from=builder /opt/slang /opt/slang
+COPY --from=builder /opt/oss-cad-suite /opt/oss-cad-suite
+COPY --from=builder /opt/nettle/third-party-licenses /opt/nettle/third-party-licenses
+COPY debian-runtime.lock /opt/nettle/debian-runtime.lock
+COPY requirements.lock /opt/nettle/requirements.lock
+RUN set -eu; \
+    set --; \
+    while read -r package version checksum extra; do \
+      case "$package" in \#* | "") continue ;; esac; \
+      test -z "$extra"; \
+      set -- "$@" "${package}=${version}"; \
+    done < /opt/nettle/debian-runtime.lock; \
+    test "$#" -gt 0; \
+    apt-get update; \
+    apt-get install --yes --download-only --no-install-recommends "$@"; \
+    checked_packages=0; \
+    while read -r package version checksum extra; do \
+      case "$package" in \#* | "") continue ;; esac; \
+      test -z "$extra"; \
+      archive="$(find /var/cache/apt/archives -maxdepth 1 -name "${package}_*.deb" -print -quit)"; \
+      test -n "$archive"; \
+      test "$(dpkg-deb --field "$archive" Package)" = "$package"; \
+      test "$(dpkg-deb --field "$archive" Version)" = "$version"; \
+      printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --strict; \
+      checked_packages=$((checked_packages + 1)); \
+    done < /opt/nettle/debian-runtime.lock; \
+    downloaded_packages="$(find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -print | wc -l)"; \
+    test "$downloaded_packages" -eq "$checked_packages"; \
+    apt-get install --yes --no-install-recommends "$@" \
   && rm -rf /var/lib/apt/lists/* \
+  && useradd --create-home --home-dir /home/nettle --uid 10001 --user-group nettle \
+  && python3 -m venv /opt/boostedblob \
+  && /opt/boostedblob/bin/python -m pip install \
+    --no-cache-dir --require-hashes --only-binary=:all: \
+    --requirement /opt/nettle/requirements.lock \
+  && /opt/boostedblob/bin/bbb --version \
   && mkdir -p /data /scratch \
   && chown nettle:nettle /data /scratch \
   && chmod 0700 /data /scratch
@@ -149,10 +177,13 @@ COPY --from=web-builder /src/web/dist /opt/nettle/web
 ENV NETTLE_WEB_ROOT=/opt/nettle/web \
   NETTLE_BIND_ADDRESS=0.0.0.0 \
   NETTLE_PORT=8080 \
-  PATH=/opt/oss-cad-suite/bin:/opt/slang:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+  HOME=/home/nettle \
+  PATH=/opt/boostedblob/bin:/opt/oss-cad-suite/bin:/opt/slang:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3; read -r protocol status _ <&3; test "$protocol" = HTTP/1.1; test "$status" = 200'
+WORKDIR /work
+ENTRYPOINT ["nettle"]
 CMD ["view"]
 
 # Assemble the full integration environment from the checked-out source and

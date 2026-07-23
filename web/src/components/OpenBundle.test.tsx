@@ -76,5 +76,21 @@ describe("BundleWelcome", () => {
     expect(onCompare).toHaveBeenCalledOnce();
     expect(onUploadComparison).toHaveBeenCalledOnce();
     expect(screen.queryByText("Try an example")).toBeNull();
+    expect(screen.queryByRole("button", { name: /from Azure/ })).toBeNull();
+  });
+
+  it("shows an inline Azure path field only when the hosted server offers it", () => {
+    render(
+      <BundleWelcome
+        mode="hosted"
+        loading={false}
+        onSelect={vi.fn()}
+        azureImport={<input aria-label="Azure blob path" />}
+      />,
+    );
+
+    expect(screen.getByText("Import from Azure")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Azure blob path" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Azure/ })).toBeNull();
   });
 });

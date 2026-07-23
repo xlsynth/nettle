@@ -283,22 +283,169 @@ The hosted service runs Slang and Yosys as child processes in the same
 container. It does not launch nested containers or create Kubernetes workloads.
 The v1 deployment is exactly one Pod and one container.
 
-For local evaluation, give the combined image a persistent session volume and
-a bounded scratch filesystem:
+#### Start hosted Docker without Azure
+
+First [build the combined image](#build-the-combined-image-locally), or replace
+`nettle:latest` below with the digest-pinned published image
+`ghcr.io/xlsynth/nettle@sha256:<published-digest>`. Create a persistent Docker
+volume and start the service as a background container:
 
 ```sh
-docker run --rm --platform linux/amd64 \
+docker volume create nettle-sessions
+
+docker run --detach --platform linux/amd64 \
+  --name nettle \
+  --restart unless-stopped \
+  --user 10001:10001 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  -p 127.0.0.1:8080:8080 \
-  -v nettle-sessions:/data \
-  --tmpfs /scratch:rw,nosuid,nodev,noexec,size=4g \
-  ghcr.io/xlsynth/nettle@sha256:REPLACE_WITH_PUBLISHED_DIGEST host \
+  --publish 127.0.0.1:8080:8080 \
+  --mount type=volume,source=nettle-sessions,target=/data \
+  --tmpfs /scratch:rw,nosuid,nodev,noexec,size=4g,mode=1777 \
+  nettle:latest host \
   --storage-root=/data \
   --scratch-root=/scratch \
+  --max-upload-bytes=536870912 \
   --max-queued-builds=32 \
   --build-timeout=600s \
   --evict-after=30d
 ```
+
+Open <http://127.0.0.1:8080>. Upload a `.nettle` bundle or a supported source
+archive using the hosted landing page. Azure imports are absent because the
+feature is disabled by default. `nettle-sessions` preserves completed designs
+and queued builds across container restarts; `/scratch` is bounded, temporary
+compiler and import storage. Keep only one running container attached to the
+session volume.
+
+#### Start hosted Docker with Azure
+
+The combined image already includes the hash-locked `boostedblob` executable
+`bbb`. It does **not** include the Azure CLI, sign in on your behalf, or change
+network policy. One supported approach is to run `az login` on the Docker host,
+then copy only the Azure login files `bbb` uses into a protected Docker volume
+owned by container UID `10001`. Do not mount an owner-only host `~/.azure`
+directly into the non-root server: bind mounts retain host ownership, so the
+server cannot read login files belonging to a different host UID.
+
+If the non-Azure container above is running, stop and remove the container
+before starting its Azure-enabled replacement; this does not delete
+`nettle-sessions`:
+
+```sh
+docker stop nettle
+docker rm nettle
+
+az login
+docker volume create nettle-azure-cache
+
+docker run --rm --platform linux/amd64 \
+  --network none --read-only --user 0:0 \
+  --mount "type=bind,source=$HOME/.azure,target=/host-azure,readonly" \
+  --mount type=volume,source=nettle-azure-cache,target=/home/nettle \
+  --entrypoint sh nettle:latest \
+  -ec 'umask 077
+    install -d -m 0700 -o 10001 -g 10001 \
+      /home/nettle/.azure /home/nettle/.config /home/nettle/.config/bbb
+    test -f /host-azure/msal_token_cache.json ||
+      test -f /host-azure/accessTokens.json
+    for file in msal_token_cache.json accessTokens.json azureProfile.json; do
+      if test -f "/host-azure/$file"; then
+        install -m 0600 -o 10001 -g 10001 \
+          "/host-azure/$file" "/home/nettle/.azure/$file"
+      fi
+    done'
+
+docker run --detach --platform linux/amd64 \
+  --name nettle \
+  --restart unless-stopped \
+  --user 10001:10001 \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --publish 127.0.0.1:8080:8080 \
+  --env NETTLE_AZURE_ENABLE=1 \
+  --mount type=volume,source=nettle-sessions,target=/data \
+  --mount type=volume,source=nettle-azure-cache,target=/home/nettle \
+  --tmpfs /scratch:rw,nosuid,nodev,noexec,size=4g,mode=1777 \
+  nettle:latest host \
+  --storage-root=/data \
+  --scratch-root=/scratch \
+  --max-upload-bytes=536870912 \
+  --max-queued-builds=32 \
+  --build-timeout=600s \
+  --evict-after=30d
+```
+
+The short-lived initialization container uses root only to read the
+owner-restricted host cache, install credential copies with mode `0600`, and
+create private cache directories with mode `0700`; its network is disabled and
+its root filesystem is read-only. The hosted server still runs as UID `10001`
+with a read-only root and never mounts the host's Azure credentials. Re-run the
+initialization step after renewing the host login when the copied Azure
+credentials need to be refreshed.
+
+Verify that the actual container can access your intended Azure account before
+using the GUI:
+
+```sh
+docker exec nettle bbb --version
+docker exec nettle bbb ls az://account/container/
+```
+
+Replace `account/container` with your own storage account and container.
+Alternatively, open `docker exec -it nettle sh` and configure or diagnose
+`bbb` using your site's approved credential procedure. `bbb` also supports a
+mounted service-principal JSON file selected with
+`AZURE_APPLICATION_CREDENTIALS`, service-principal environment variables, and
+storage-account keys. Supply secrets through your site's protected secret
+mechanism; do not commit them, put them in blob URLs, expose them in session
+links, or assume that `az` is available inside the image. If your chosen login
+or cache needs to write files, mount an appropriately protected writable
+directory instead of making the container root writable.
+
+Open <http://127.0.0.1:8080>, paste an `az://` path to a `.nettle`, `.zip`,
+`.tar`, `.tar.gz`, or `.tgz` blob into the Azure field, and press Enter. Source
+archives can optionally specify a relative root filelist. Nettle invokes `bbb`
+to verify the exact blob and its size, copies it into bounded scratch, and
+passes it through the same validation, queue, and session pipeline as a normal
+upload. A Unix subprocess file-size limit also protects scratch if the remote
+blob changes after the size check. The Rust binary contains no Azure SDK and
+never acquires or manages Azure credentials. Only the exact value
+`NETTLE_AZURE_ENABLE=1` enables this workflow.
+
+#### Monitor and maintain the hosted service
+
+Check startup, readiness, container logs, and available persistent and scratch
+storage:
+
+```sh
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/readyz
+docker logs --tail 100 nettle
+docker exec nettle df -h /data /scratch
+docker volume inspect nettle-sessions
+docker system df -v
+```
+
+`/data` is the durable session and queue store; include its Docker volume or
+Kubernetes persistent volume in your site's encrypted backup and restore plan.
+`/scratch` is disposable. On Docker Desktop, `/scratch` is further limited by
+the Docker VM's available memory and the `size=4g` tmpfs ceiling; named-volume
+storage consumes the Docker Desktop disk image. Check Docker Desktop's disk
+image and memory allocations if either filesystem fills, rather than assuming
+free macOS disk space is directly available to the container. Adjust the
+scratch size, `--max-upload-bytes`, queue depth, and build timeout together.
+
+`--evict-after=30d` automatically removes expired terminal sessions; omit it
+only if you intend to retain artifacts indefinitely and monitor storage. Queue
+and completed sessions survive restarts, and an interrupted build is recovered
+and retried once. Inspect failing sessions and storage before deleting data;
+do not modify session directories while the service is running.
+
+To upgrade, build or pull the new digest-pinned image, stop and remove the old
+container, and rerun the appropriate start command against the same
+`nettle-sessions` volume. Run
+`scripts/check-hosted-image.sh nettle:latest` before deploying a locally built
+image. The smoke test exercises upload, source compilation, persistence,
+restart, download, and bundle validation.
 
 Loopback HTTP is suitable only for local evaluation. A shared deployment must
 terminate HTTPS and restrict reachability to its intended private-cloud user

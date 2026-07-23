@@ -24,6 +24,7 @@ export interface HostedRetentionPolicy {
 
 export interface HostedConfig {
   hostingEnabled: boolean;
+  azureEnabled: boolean;
   retention: HostedRetentionPolicy;
   limits: {
     maxUploadBytes: number;
@@ -124,6 +125,9 @@ export const decodeHostedConfig = (value: unknown): HostedConfig => {
   if (typeof candidate.hostingEnabled !== "boolean") {
     throw new HostedApiError("hostingEnabled is missing");
   }
+  if (typeof candidate.azureEnabled !== "boolean") {
+    throw new HostedApiError("azureEnabled is missing");
+  }
   if (
     !Array.isArray(candidate.sourceFormats) ||
     candidate.sourceFormats.some((format) => typeof format !== "string" || !format)
@@ -132,6 +136,7 @@ export const decodeHostedConfig = (value: unknown): HostedConfig => {
   }
   return {
     hostingEnabled: candidate.hostingEnabled,
+    azureEnabled: candidate.azureEnabled,
     retention: decodeRetention(candidate.retention),
     limits: {
       maxUploadBytes: safePositiveInteger(limits.maxUploadBytes, "maximum upload size"),
@@ -212,6 +217,28 @@ export const getHostedConfig = async (signal?: AbortSignal) => {
     signal,
   });
   return decodeHostedConfig(await checkedJson(response));
+};
+
+export const createHostedAzureSession = async (
+  path: string,
+  sourceFilelist?: string,
+  signal?: AbortSignal,
+): Promise<HostedSessionCreated> => {
+  const response = await fetch("/api/v1/azure-imports", {
+    method: "POST",
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Nettle-Upload": "1",
+    },
+    body: JSON.stringify({
+      path,
+      ...(sourceFilelist ? { sourceFilelist } : {}),
+    }),
+    signal,
+  });
+  return decodeHostedSessionCreated(await checkedJson(response));
 };
 
 const xhrErrorMessage = (xhr: XMLHttpRequest) => {

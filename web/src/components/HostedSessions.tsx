@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { type ChangeEvent, type FormEvent, useEffect, useId, useRef, useState } from "react";
 import {
+  classifyHostedUploadKind,
+  createHostedAzureSession,
   createHostedSession,
   getHostedConfig,
   getHostedSessionStatus,
@@ -74,6 +76,108 @@ const retentionText = (config: HostedConfig) =>
 interface ProgressBarProps {
   label: string;
   progress?: TransferProgress;
+}
+
+interface HostedAzureImportProps {
+  config: HostedConfig;
+  onCreated: (session: HostedSessionCreated) => void;
+}
+
+export function HostedAzureImport({ config, onCreated }: HostedAzureImportProps) {
+  const activeImport = useRef<AbortController | undefined>(undefined);
+  const [path, setPath] = useState("");
+  const [sourceFilelist, setSourceFilelist] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(
+    () => () => {
+      activeImport.current?.abort();
+    },
+    [],
+  );
+
+  if (!config.azureEnabled) return null;
+  const trimmedPath = path.trim();
+  const filename = trimmedPath.split("/").at(-1) ?? "";
+  const kind = classifyHostedUploadKind(filename, config.sourceFormats);
+  const validPath = trimmedPath.startsWith("az://") && kind !== undefined;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!validPath || importing) return;
+    const controller = new AbortController();
+    activeImport.current = controller;
+    setImporting(true);
+    setError(undefined);
+    void createHostedAzureSession(
+      trimmedPath,
+      kind === "sources" ? sourceFilelist.trim() || undefined : undefined,
+      controller.signal,
+    )
+      .then(onCreated)
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setError(messageFor(reason));
+      })
+      .finally(() => {
+        if (activeImport.current === controller) activeImport.current = undefined;
+        if (!controller.signal.aborted) setImporting(false);
+      });
+  };
+
+  return (
+    <form className="hosted-azure-form" aria-label="Azure blob import" onSubmit={submit}>
+      <label className="dialog-field">
+        Azure blob path
+        <input
+          type="text"
+          value={path}
+          placeholder="az://account/container/design.nettle"
+          disabled={importing}
+          spellCheck={false}
+          autoCapitalize="none"
+          aria-label="Azure blob path"
+          onChange={(event) => {
+            setPath(event.target.value);
+            setError(undefined);
+          }}
+        />
+        <small>Paste a .nettle, .zip, .tar, .tar.gz, or .tgz path and press Enter.</small>
+      </label>
+      {kind === "sources" ? (
+        <label className="dialog-field">
+          Root filelist path <em>optional</em>
+          <input
+            type="text"
+            value={sourceFilelist}
+            placeholder="project.f"
+            disabled={importing}
+            spellCheck={false}
+            autoCapitalize="none"
+            aria-label="Azure source root filelist path"
+            onChange={(event) => {
+              setSourceFilelist(event.target.value);
+              setError(undefined);
+            }}
+          />
+          <small>Relative to the archive root; defaults to project.f.</small>
+        </label>
+      ) : null}
+      <button type="submit" hidden disabled={!validPath || importing}>
+        Import from Azure
+      </button>
+      <small className="hosted-azure-disclosure">
+        Anyone with the resulting link can view the design. {retentionText(config)}
+      </small>
+      {importing ? <ProgressBar label="Importing and validating the Azure blob" /> : null}
+      {error ? (
+        <div className="bundle-open-error compact" role="alert">
+          <AlertCircle size={15} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+    </form>
+  );
 }
 
 function ProgressBar({ label, progress }: ProgressBarProps) {

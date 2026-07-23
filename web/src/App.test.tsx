@@ -8,6 +8,7 @@ import App, { OpenRequestOwner } from "./App";
 import { BUILD_DATE_UTC, BUILD_GIT_SHA, BUILD_SUFFIX } from "./build-info";
 
 const harness = vi.hoisted(() => ({
+  createHostedAzureSession: vi.fn(),
   loadWorkspace: vi.fn(),
   open: vi.fn(),
   createHostedSession: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("./api/hosted", async (importOriginal) => {
   const original = await importOriginal<typeof import("./api/hosted")>();
   return {
     ...original,
+    createHostedAzureSession: harness.createHostedAzureSession,
     createHostedSession: harness.createHostedSession,
     getHostedConfig: harness.getHostedConfig,
     getHostedSessionStatus: harness.getHostedSessionStatus,
@@ -132,6 +134,7 @@ const project = {
 
 const hostedConfig = {
   hostingEnabled: true,
+  azureEnabled: false,
   retention: {
     mode: "expires" as const,
     seconds: 2_592_000,
@@ -173,6 +176,11 @@ beforeEach(() => {
     },
   }));
   harness.getHostedConfig.mockResolvedValue(hostedConfig);
+  harness.createHostedAzureSession.mockResolvedValue({
+    token: "b".repeat(43),
+    url: `/s/${"b".repeat(43)}`,
+    statusUrl: `/api/v1/sessions/${"b".repeat(43)}/status`,
+  });
   harness.getHostedSessionStatus.mockResolvedValue({
     state: "ready",
     admittedAtMs: 1_000,
@@ -200,6 +208,43 @@ afterEach(() => {
 });
 
 describe("App comparison installation", () => {
+  it("hides Azure imports when the hosted server has not enabled them", async () => {
+    render(<App mode="hosted" />);
+
+    await waitFor(() => expect(harness.getHostedConfig).toHaveBeenCalled());
+    expect(screen.queryByRole("textbox", { name: "Azure blob path" })).toBeNull();
+  });
+
+  it("offers an inline Azure path only after the hosted server advertises it", async () => {
+    harness.getHostedConfig.mockResolvedValueOnce({ ...hostedConfig, azureEnabled: true });
+    render(<App mode="hosted" />);
+
+    const path = await screen.findByRole("textbox", { name: "Azure blob path" });
+    expect(screen.queryByRole("button", { name: /Azure/ })).toBeNull();
+    fireEvent.change(path, {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    fireEvent.submit(screen.getByRole("form", { name: "Azure blob import" }));
+
+    await waitFor(() =>
+      expect(harness.createHostedAzureSession).toHaveBeenCalledWith(
+        "az://account/container/design.nettle",
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    await waitFor(() => expect(window.location.pathname).toBe(`/s/${"b".repeat(43)}`));
+  });
+
+  it("keeps hosted landing workflows available if capability discovery fails", async () => {
+    harness.getHostedConfig.mockRejectedValueOnce(new Error("Configuration unavailable"));
+    render(<App mode="hosted" />);
+
+    await waitFor(() => expect(harness.getHostedConfig).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Upload and view a .nettle bundle" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Azure blob path" })).toBeNull();
+  });
+
   it("displays the software build metadata", () => {
     render(<App />);
 
