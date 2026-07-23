@@ -5,9 +5,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostedApiError } from "../api/hosted";
-import { HostedSessionBanner, HostedSessionPage, HostedUploadDialog } from "./HostedSessions";
+import {
+  HostedAzureImportDialog,
+  HostedSessionBanner,
+  HostedSessionPage,
+  HostedUploadDialog,
+} from "./HostedSessions";
 
 const harness = vi.hoisted(() => ({
+  createHostedAzureSession: vi.fn(),
   createHostedSession: vi.fn(),
   getHostedConfig: vi.fn(),
   getHostedSessionStatus: vi.fn(),
@@ -18,6 +24,7 @@ vi.mock("../api/hosted", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/hosted")>();
   return {
     ...original,
+    createHostedAzureSession: harness.createHostedAzureSession,
     createHostedSession: harness.createHostedSession,
     getHostedConfig: harness.getHostedConfig,
     getHostedSessionStatus: harness.getHostedSessionStatus,
@@ -27,6 +34,7 @@ vi.mock("../api/hosted", async (importOriginal) => {
 
 const config = {
   hostingEnabled: true,
+  azureEnabled: false,
   retention: {
     mode: "expires" as const,
     seconds: 2_592_000,
@@ -42,6 +50,115 @@ beforeEach(() => {
     token: "a".repeat(43),
     url: `/s/${"a".repeat(43)}`,
     statusUrl: `/api/v1/sessions/${"a".repeat(43)}/status`,
+  });
+  harness.createHostedAzureSession.mockResolvedValue({
+    token: "b".repeat(43),
+    url: `/s/${"b".repeat(43)}`,
+    statusUrl: `/api/v1/sessions/${"b".repeat(43)}/status`,
+  });
+});
+
+describe("HostedAzureImportDialog", () => {
+  const azureConfig = { ...config, azureEnabled: true };
+
+  it("remains hidden when the hosted Azure capability is disabled", () => {
+    render(<HostedAzureImportDialog open config={config} onClose={vi.fn()} onCreated={vi.fn()} />);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(harness.createHostedAzureSession).not.toHaveBeenCalled();
+  });
+
+  it("discloses visibility and imports an Azure bundle only after confirmation", async () => {
+    const onCreated = vi.fn();
+    render(
+      <HostedAzureImportDialog open config={azureConfig} onClose={vi.fn()} onCreated={onCreated} />,
+    );
+
+    expect(screen.getByText(/Anyone with the resulting URL/)).toBeTruthy();
+    const submit = screen.getByRole("button", { name: "Import and create link" });
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    expect(harness.createHostedAzureSession).not.toHaveBeenCalled();
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(harness.createHostedAzureSession).toHaveBeenCalledWith(
+        "az://account/container/design.nettle",
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    await waitFor(() => expect(onCreated).toHaveBeenCalledOnce());
+  });
+
+  it("submits the selected source filelist for an Azure archive", async () => {
+    render(
+      <HostedAzureImportDialog open config={azureConfig} onClose={vi.fn()} onCreated={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/project.tar.gz" },
+    });
+    fireEvent.change(screen.getByLabelText("Azure source root filelist path"), {
+      target: { value: "rtl/project.f" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import and create link" }));
+
+    await waitFor(() =>
+      expect(harness.createHostedAzureSession).toHaveBeenCalledWith(
+        "az://account/container/project.tar.gz",
+        "rtl/project.f",
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
+  it("displays a failed Azure import without closing the dialog", async () => {
+    harness.createHostedAzureSession.mockRejectedValueOnce(
+      new HostedApiError("Azure authentication is unavailable", 502),
+    );
+    render(
+      <HostedAzureImportDialog open config={azureConfig} onClose={vi.fn()} onCreated={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import and create link" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Azure authentication is unavailable",
+    );
+    expect(screen.getByRole("dialog", { name: "Open from Azure" })).toBeTruthy();
+  });
+
+  it("cancels an in-flight Azure import when the dialog is closed", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    harness.createHostedAzureSession.mockImplementation(
+      (_path: string, _filelist: string | undefined, signal: AbortSignal) => {
+        receivedSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("The import was aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    const onClose = vi.fn();
+    render(
+      <HostedAzureImportDialog open config={azureConfig} onClose={onClose} onCreated={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText("Azure blob path"), {
+      target: { value: "az://account/container/design.nettle" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import and create link" }));
+    await waitFor(() => expect(harness.createHostedAzureSession).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Close Azure import dialog" }));
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
 

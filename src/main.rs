@@ -311,6 +311,20 @@ struct HostArgs {
         default_value_t = 512 * 1024 * 1024_u64
     )]
     max_upload_bytes: u64,
+
+    /// Enable hosted Azure imports only when set to exactly 1.
+    #[arg(
+        long,
+        env = "NETTLE_AZURE_ENABLE",
+        default_value = "0",
+        action = clap::ArgAction::Set,
+        value_parser = parse_azure_enabled
+    )]
+    azure_enabled: bool,
+}
+
+fn parse_azure_enabled(value: &str) -> Result<bool, String> {
+    Ok(value == "1")
 }
 
 impl From<HostArgs> for HostOptions {
@@ -325,6 +339,7 @@ impl From<HostArgs> for HostOptions {
             build_timeout: args.build_timeout,
             evict_after: args.evict_after,
             max_upload_bytes: args.max_upload_bytes,
+            azure_enabled: args.azure_enabled,
         }
     }
 }
@@ -737,6 +752,23 @@ debug_artifacts: true
             args.evict_after,
             Some(Duration::from_secs(30 * 24 * 60 * 60))
         );
+    }
+
+    #[test]
+    fn azure_imports_are_enabled_only_by_exactly_one() {
+        for (value, enabled) in [("1", true), ("0", false), ("true", false), ("yes", false)] {
+            let cli = Cli::try_parse_from(["nettle", "host", "--azure-enabled", value]).unwrap();
+            let Command::Host(args) = cli.command else {
+                panic!("expected host command");
+            };
+            assert_eq!(args.azure_enabled, enabled, "value {value}");
+        }
+
+        let cli = Cli::try_parse_from(["nettle", "host"]).unwrap();
+        let Command::Host(args) = cli.command else {
+            panic!("expected host command");
+        };
+        assert!(!args.azure_enabled);
     }
 
     #[test]

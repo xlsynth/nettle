@@ -76,5 +76,19 @@ describe("BundleWelcome", () => {
     expect(onCompare).toHaveBeenCalledOnce();
     expect(onUploadComparison).toHaveBeenCalledOnce();
     expect(screen.queryByText("Try an example")).toBeNull();
+    expect(screen.queryByRole("button", { name: /from Azure/ })).toBeNull();
+  });
+
+  it("shows Azure imports only when the hosted server offers the action", () => {
+    const onOpenAzure = vi.fn();
+    render(
+      <BundleWelcome mode="hosted" loading={false} onSelect={vi.fn()} onOpenAzure={onOpenAzure} />,
+    );
+
+    expect(screen.getByText("Import from Azure")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open a bundle or source archive from Azure" }),
+    );
+    expect(onOpenAzure).toHaveBeenCalledOnce();
   });
 });

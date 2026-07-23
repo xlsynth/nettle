@@ -4,6 +4,7 @@ import {
   AlertCircle,
   Archive,
   Clock3,
+  CloudDownload,
   Download,
   FileArchive,
   Hammer,
@@ -15,6 +16,8 @@ import {
 } from "lucide-react";
 import { type ChangeEvent, type FormEvent, useEffect, useId, useRef, useState } from "react";
 import {
+  classifyHostedUploadKind,
+  createHostedAzureSession,
   createHostedSession,
   getHostedConfig,
   getHostedSessionStatus,
@@ -74,6 +77,169 @@ const retentionText = (config: HostedConfig) =>
 interface ProgressBarProps {
   label: string;
   progress?: TransferProgress;
+}
+
+interface HostedAzureImportDialogProps {
+  open: boolean;
+  config?: HostedConfig;
+  onClose: () => void;
+  onCreated: (session: HostedSessionCreated) => void;
+}
+
+export function HostedAzureImportDialog({
+  open,
+  config,
+  onClose,
+  onCreated,
+}: HostedAzureImportDialogProps) {
+  const titleId = useId();
+  const activeImport = useRef<AbortController | undefined>(undefined);
+  const [path, setPath] = useState("");
+  const [sourceFilelist, setSourceFilelist] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!open) {
+      activeImport.current?.abort();
+      activeImport.current = undefined;
+      setPath("");
+      setSourceFilelist("");
+      setImporting(false);
+      setError(undefined);
+    }
+  }, [open]);
+
+  useEffect(
+    () => () => {
+      activeImport.current?.abort();
+    },
+    [],
+  );
+
+  if (!open || !config?.azureEnabled) return null;
+  const trimmedPath = path.trim();
+  const filename = trimmedPath.split("/").at(-1) ?? "";
+  const kind = classifyHostedUploadKind(filename, config.sourceFormats);
+  const validPath = trimmedPath.startsWith("az://") && kind !== undefined;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!validPath || importing) return;
+    const controller = new AbortController();
+    activeImport.current = controller;
+    setImporting(true);
+    setError(undefined);
+    void createHostedAzureSession(
+      trimmedPath,
+      kind === "sources" ? sourceFilelist.trim() || undefined : undefined,
+      controller.signal,
+    )
+      .then(onCreated)
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setError(messageFor(reason));
+      })
+      .finally(() => {
+        if (activeImport.current === controller) activeImport.current = undefined;
+        if (!controller.signal.aborted) setImporting(false);
+      });
+  };
+
+  const close = () => {
+    activeImport.current?.abort();
+    onClose();
+  };
+
+  return (
+    <div className="dialog-backdrop">
+      <section
+        className="hosted-upload-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <header className="dialog-header">
+          <span className="dialog-icon" aria-hidden="true">
+            <CloudDownload size={17} />
+          </span>
+          <div>
+            <h2 id={titleId}>Open from Azure</h2>
+            <p>Import a bundle or source archive into a shareable hosted session.</p>
+          </div>
+          <button
+            className="icon-button compact dialog-close"
+            type="button"
+            aria-label="Close Azure import dialog"
+            onClick={close}
+          >
+            <X size={15} />
+          </button>
+        </header>
+        <form className="hosted-upload-form" onSubmit={submit}>
+          <div className="hosted-disclosure">
+            <strong>Before you import from Azure</strong>
+            <ul>
+              <li>The server downloads and validates the selected blob.</li>
+              <li>Source archives are compiled into a Nettle bundle on this server.</li>
+              <li>Anyone with the resulting URL can view and download the bundle.</li>
+              <li>{retentionText(config)}</li>
+            </ul>
+          </div>
+          <label className="dialog-field">
+            Azure blob path
+            <input
+              type="text"
+              value={path}
+              placeholder="az://account/container/design.nettle"
+              disabled={importing}
+              spellCheck={false}
+              autoCapitalize="none"
+              aria-label="Azure blob path"
+              onChange={(event) => {
+                setPath(event.target.value);
+                setError(undefined);
+              }}
+            />
+            <small>Accepts .nettle, .zip, .tar, .tar.gz, and .tgz files.</small>
+          </label>
+          {kind === "sources" ? (
+            <label className="dialog-field">
+              Root filelist path <em>optional</em>
+              <input
+                type="text"
+                value={sourceFilelist}
+                placeholder="project.f"
+                disabled={importing}
+                spellCheck={false}
+                autoCapitalize="none"
+                aria-label="Azure source root filelist path"
+                onChange={(event) => {
+                  setSourceFilelist(event.target.value);
+                  setError(undefined);
+                }}
+              />
+              <small>Relative to the archive root; defaults to project.f.</small>
+            </label>
+          ) : null}
+          {importing ? <ProgressBar label="Importing and validating the Azure blob" /> : null}
+          {error ? (
+            <div className="bundle-open-error" role="alert">
+              <AlertCircle size={15} />
+              <span>{error}</span>
+            </div>
+          ) : null}
+          <div className="hosted-upload-actions">
+            <button type="button" onClick={close}>
+              Cancel
+            </button>
+            <button className="primary" type="submit" disabled={!validPath || importing}>
+              {importing ? "Importing…" : "Import and create link"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
 }
 
 function ProgressBar({ label, progress }: ProgressBarProps) {

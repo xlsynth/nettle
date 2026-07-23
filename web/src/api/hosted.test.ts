@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyHostedUploadKind,
+  createHostedAzureSession,
   createHostedSession,
   decodeHostedConfig,
   decodeHostedSessionCreated,
@@ -69,16 +70,87 @@ describe("hosted API contracts", () => {
     expect(
       decodeHostedConfig({
         hostingEnabled: true,
+        azureEnabled: false,
         retention: { mode: "expires", seconds: 2_592_000, display: "for 30 days" },
         limits: { maxUploadBytes: 1024, maxQueuedBuilds: 32 },
         sourceFormats: ["zip", "tar.gz"],
       }),
     ).toEqual({
       hostingEnabled: true,
+      azureEnabled: false,
       retention: { mode: "expires", seconds: 2_592_000, display: "for 30 days" },
       limits: { maxUploadBytes: 1024, maxQueuedBuilds: 32 },
       sourceFormats: ["zip", "tar.gz"],
     });
+  });
+
+  it("requires an explicit boolean Azure capability", () => {
+    const base = {
+      hostingEnabled: true,
+      retention: { mode: "forever", display: "Retained" },
+      limits: { maxUploadBytes: 1024, maxQueuedBuilds: 32 },
+      sourceFormats: [".zip"],
+    };
+
+    expect(() => decodeHostedConfig(base)).toThrow("azureEnabled");
+    expect(() => decodeHostedConfig({ ...base, azureEnabled: "1" })).toThrow("azureEnabled");
+    expect(decodeHostedConfig({ ...base, azureEnabled: true }).azureEnabled).toBe(true);
+  });
+
+  it("submits an Azure import as a same-origin JSON request", async () => {
+    const token = "a".repeat(64);
+    const created = {
+      token,
+      url: `/s/${token}`,
+      statusUrl: `/api/v1/sessions/${token}/status`,
+    };
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => created }));
+    vi.stubGlobal("fetch", fetch);
+    const controller = new AbortController();
+
+    await expect(
+      createHostedAzureSession(
+        "az://account/container/project.zip",
+        "nested/project.f",
+        controller.signal,
+      ),
+    ).resolves.toEqual(created);
+    expect(fetch).toHaveBeenCalledWith("/api/v1/azure-imports", {
+      method: "POST",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Nettle-Upload": "1",
+      },
+      body: JSON.stringify({
+        path: "az://account/container/project.zip",
+        sourceFilelist: "nested/project.f",
+      }),
+      signal: controller.signal,
+    });
+  });
+
+  it("omits a source filelist for an imported Azure bundle", async () => {
+    const token = "b".repeat(64);
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        token,
+        url: `/s/${token}`,
+        statusUrl: `/api/v1/sessions/${token}/status`,
+      }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await createHostedAzureSession("az://account/container/design.nettle");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/azure-imports",
+      expect.objectContaining({
+        body: JSON.stringify({ path: "az://account/container/design.nettle" }),
+      }),
+    );
   });
 
   it("decodes integer server timestamps without relying on client clock parsing", () => {

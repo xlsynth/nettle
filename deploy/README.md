@@ -46,14 +46,37 @@ kubectl rollout status deployment/nettle
 
 The `Recreate` strategy and `ReadWriteOncePod` claim enforce the v1
 single-writer design. `/data` contains the durable queue and completed
-sessions. `/scratch` is a bounded `emptyDir` used only for archive extraction
-and compiler work. Neither path uses the container's read-only root
+sessions. `/scratch` is a bounded `emptyDir` used
+for archive extraction, compiler work, and explicitly enabled Azure imports.
+Neither path uses the container's read-only root
 filesystem.
 
 The included egress-deny policy prevents the Pod from making outbound network
 connections when the cluster CNI enforces NetworkPolicy. If an internal
 authentication sidecar or other site policy needs egress, add only the
 specific destinations it requires.
+
+## Optional Azure blob imports
+
+Azure imports are disabled by default. Set `NETTLE_AZURE_ENABLE=1` in the
+container environment to advertise **Open from Azure** in the hosted landing
+page. The combined image includes a hash-locked `bbb` executable; Nettle runs
+`bbb cp` to import a single supported blob into `/scratch` before processing it
+with the existing hosted upload pipeline. Nettle does not acquire Azure
+credentials, embed an Azure SDK, or authenticate `bbb`.
+
+The checked-in `nettle-deny-egress` policy intentionally remains unchanged and
+blocks Azure imports. An operator enabling this feature must separately add
+the minimum site-approved egress required for DNS, Azure Blob Storage, and the
+chosen identity provider. Setting the feature flag does not modify network
+policy or grant network access.
+
+Authenticate `bbb` inside the running container as user `10001`, or supply the
+credentials accepted by your site's `bbb` configuration. Because the default
+container root is read-only, any file-backed authentication cache needs an
+explicit, appropriately protected writable mount or a supported writable path.
+Do not relax the read-only root, mount credentials into the public web root,
+or place credentials in session URLs or manifests.
 
 The checked-in policy is intentionally egress-only because ingress-controller
 namespace and Pod labels are cluster-specific. A `ClusterIP` is not an access

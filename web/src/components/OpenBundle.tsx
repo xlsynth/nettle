@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   ArrowLeftRight,
+  CloudDownload,
   FileArchive,
   FolderOpen,
   GitCompareArrows,
@@ -91,6 +92,7 @@ interface BundleWelcomeProps extends BundlePickerProps {
   onUploadBundle?: () => void;
   onUploadSources?: () => void;
   onUploadComparison?: () => void;
+  onOpenAzure?: () => void;
 }
 
 export function BundleWelcome({
@@ -101,6 +103,7 @@ export function BundleWelcome({
   onUploadBundle,
   onUploadSources,
   onUploadComparison,
+  onOpenAzure,
   loading,
   error,
   onSelect,
@@ -247,6 +250,32 @@ export function BundleWelcome({
                 ) : null}
               </div>
             </section>
+            {onOpenAzure ? (
+              <section className="hosted-workflow-group uploads">
+                <div className="hosted-workflow-heading">
+                  <strong>Import from Azure</strong>
+                  <span>
+                    The server imports a blob and creates a session viewable by anyone with the
+                    link.
+                  </span>
+                </div>
+                <div className="bundle-workflows upload-row">
+                  <button
+                    className="bundle-workflow hosted"
+                    type="button"
+                    aria-label="Open a bundle or source archive from Azure"
+                    disabled={loading}
+                    onClick={onOpenAzure}
+                  >
+                    <CloudDownload size={22} strokeWidth={1.5} />
+                    <span>
+                      <strong>Open from Azure</strong>
+                      <small>Paste an az:// bundle or source archive path</small>
+                    </span>
+                  </button>
+                </div>
+              </section>
+            ) : null}
           </div>
         )}
         <input

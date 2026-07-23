@@ -29,6 +29,7 @@ const referenceToken = "a".repeat(64);
 const candidateToken = "b".repeat(64);
 const config = {
   hostingEnabled: true,
+  azureEnabled: false,
   retention: {
     mode: "expires" as const,
     seconds: 2_592_000,

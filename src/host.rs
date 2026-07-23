@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, Semaphore};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 use zip::ZipArchive;
@@ -61,6 +61,7 @@ const TERMINAL_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_RETAINED_ERROR_BYTES: usize = 32 * 1024;
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const MAX_CONCURRENT_AZURE_DOWNLOADS: usize = 2;
 
 #[derive(Clone, Copy)]
 struct BuildDeadline {
@@ -118,6 +119,8 @@ pub struct HostOptions {
     pub evict_after: Option<Duration>,
     /// Maximum compressed upload size.
     pub max_upload_bytes: u64,
+    /// Enables hosted imports through the external `bbb` executable.
+    pub azure_enabled: bool,
 }
 
 impl HostOptions {
@@ -231,11 +234,29 @@ struct HostStateInner {
     options: HostOptions,
     sessions_root: PathBuf,
     staging_root: PathBuf,
+    azure_downloads: Semaphore,
+    bbb_program: PathBuf,
     queue: Mutex<QueueState>,
     // Counts queued jobs plus source uploads that reserved capacity before streaming.
     // The active build is excluded once the worker pops it from `queue.jobs`.
     source_queue_slots: AtomicUsize,
     notify: Notify,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AzureImportRequest {
+    path: String,
+    #[serde(default)]
+    source_filelist: Option<String>,
+}
+
+struct SessionAdmission {
+    kind: SessionKind,
+    original_name: String,
+    upload_bytes: u64,
+    source_filelist: Option<String>,
+    source_reservation: Option<SourceQueueReservation>,
 }
 
 #[derive(Clone, Debug)]
@@ -445,6 +466,8 @@ fn initialize_state(mut options: HostOptions) -> Result<HostState> {
         options,
         sessions_root,
         staging_root,
+        azure_downloads: Semaphore::new(MAX_CONCURRENT_AZURE_DOWNLOADS),
+        bbb_program: PathBuf::from("bbb"),
         queue: Mutex::new(QueueState {
             jobs: queued.into_iter().map(|(_, token)| token).collect(),
             next_order: max_order.saturating_add(1),
@@ -609,6 +632,7 @@ fn host_router(state: HostState) -> Result<Router> {
         .route("/readyz", get(|| async { "ok" }))
         .route("/api/v1/config", get(get_config))
         .route("/api/v1/sessions", post(create_session))
+        .route("/api/v1/azure-imports", post(create_azure_session))
         .route("/api/v1/sessions/{token}/status", get(get_status))
         .route("/api/v1/sessions/{token}/bundle", get(get_bundle))
         .route(
@@ -688,6 +712,7 @@ async fn get_config(State(state): State<HostState>) -> impl IntoResponse {
         [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
         Json(json!({
             "hostingEnabled": true,
+            "azureEnabled": state.0.options.azure_enabled,
             "retention": retention,
             "limits": {
                 "maxUploadBytes": state.0.options.max_upload_bytes,
@@ -804,23 +829,9 @@ async fn create_session(
     State(state): State<HostState>,
     headers: HeaderMap,
     mut multipart: Multipart,
-) -> std::result::Result<impl IntoResponse, ApiError> {
-    if headers
-        .get("x-nettle-upload")
-        .and_then(|value| value.to_str().ok())
-        != Some("1")
-    {
-        return Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: "Hosted uploads require a same-origin Nettle client.".to_owned(),
-        });
-    }
-    let staging = storage_retry(&state, || {
-        tempfile::Builder::new()
-            .prefix("upload-")
-            .tempdir_in(&state.0.staging_root)
-    })
-    .map_err(|error| ApiError::from_storage(&error))?;
+) -> std::result::Result<Response, ApiError> {
+    require_same_origin_upload(&headers)?;
+    let staging = new_upload_staging(&state)?;
     let upload_path = staging.path().join("upload");
     let mut kind = None;
     let mut source_reservation = None;
@@ -876,21 +887,7 @@ async fn create_session(
                     .await
                     .map_err(|_| ApiError::bad_request("Could not read uploaded file."))?
                 {
-                    total = total
-                        .checked_add(
-                            u64::try_from(chunk.len())
-                                .map_err(|_| ApiError::bad_request("Upload is too large."))?,
-                        )
-                        .ok_or_else(|| ApiError::bad_request("Upload is too large."))?;
-                    if total > state.0.options.max_upload_bytes {
-                        return Err(ApiError {
-                            status: StatusCode::PAYLOAD_TOO_LARGE,
-                            message: format!(
-                                "Upload exceeds the {}-byte limit.",
-                                state.0.options.max_upload_bytes
-                            ),
-                        });
-                    }
+                    total = add_upload_bytes(&state, total, chunk.len())?;
                     write_upload_chunk(&state, &mut output, &chunk).await?;
                 }
                 if total == 0 {
@@ -928,20 +925,7 @@ async fn create_session(
                 let value = std::str::from_utf8(&bytes).map_err(|_| {
                     ApiError::bad_request("Source filelist path must be valid UTF-8.")
                 })?;
-                if value.is_empty() {
-                    return Err(ApiError::bad_request(
-                        "Source filelist path must not be empty.",
-                    ));
-                }
-                let path = safe_archive_path(Path::new(value)).map_err(|_| {
-                    ApiError::bad_request("Source filelist must be a safe relative archive path.")
-                })?;
-                validate_yosys_slang_filelist_name(&path).map_err(|_| {
-                    ApiError::bad_request(
-                        "Source filelist name must contain only ASCII letters, digits, '.', '_', '-', '+', or ':'.",
-                    )
-                })?;
-                source_filelist = Some(path.to_string_lossy().into_owned());
+                source_filelist = Some(validate_source_filelist(value)?);
             }
             Some(_) | None => {
                 return Err(ApiError::bad_request(
@@ -951,11 +935,101 @@ async fn create_session(
         }
     }
 
-    let kind = kind.ok_or_else(|| ApiError::bad_request("Upload is missing kind."))?;
-    let original_name =
-        original_name.ok_or_else(|| ApiError::bad_request("Upload is missing file."))?;
-    let upload_bytes =
-        upload_bytes.ok_or_else(|| ApiError::bad_request("Upload is missing file."))?;
+    admit_staged_session(
+        &state,
+        staging,
+        SessionAdmission {
+            kind: kind.ok_or_else(|| ApiError::bad_request("Upload is missing kind."))?,
+            original_name: original_name
+                .ok_or_else(|| ApiError::bad_request("Upload is missing file."))?,
+            upload_bytes: upload_bytes
+                .ok_or_else(|| ApiError::bad_request("Upload is missing file."))?,
+            source_filelist,
+            source_reservation,
+        },
+    )
+    .await
+}
+
+fn require_same_origin_upload(headers: &HeaderMap) -> std::result::Result<(), ApiError> {
+    if headers
+        .get("x-nettle-upload")
+        .and_then(|value| value.to_str().ok())
+        != Some("1")
+    {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "Hosted uploads require a same-origin Nettle client.".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn new_upload_staging(state: &HostState) -> std::result::Result<tempfile::TempDir, ApiError> {
+    storage_retry(state, || {
+        tempfile::Builder::new()
+            .prefix("upload-")
+            .tempdir_in(&state.0.staging_root)
+    })
+    .map_err(|error| ApiError::from_storage(&error))
+}
+
+fn add_upload_bytes(
+    state: &HostState,
+    total: u64,
+    chunk_bytes: usize,
+) -> std::result::Result<u64, ApiError> {
+    let total = total
+        .checked_add(
+            u64::try_from(chunk_bytes)
+                .map_err(|_| ApiError::bad_request("Upload is too large."))?,
+        )
+        .ok_or_else(|| ApiError::bad_request("Upload is too large."))?;
+    if total > state.0.options.max_upload_bytes {
+        return Err(ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: format!(
+                "Upload exceeds the {}-byte limit.",
+                state.0.options.max_upload_bytes
+            ),
+        });
+    }
+    Ok(total)
+}
+
+fn validate_source_filelist(value: &str) -> std::result::Result<String, ApiError> {
+    if value.is_empty() {
+        return Err(ApiError::bad_request(
+            "Source filelist path must not be empty.",
+        ));
+    }
+    if value.len() > MAX_ARCHIVE_PATH_BYTES {
+        return Err(ApiError::bad_request("Source filelist path is too long."));
+    }
+    let path = safe_archive_path(Path::new(value)).map_err(|_| {
+        ApiError::bad_request("Source filelist must be a safe relative archive path.")
+    })?;
+    validate_yosys_slang_filelist_name(&path).map_err(|_| {
+        ApiError::bad_request(
+            "Source filelist name must contain only ASCII letters, digits, '.', '_', '-', '+', or ':'.",
+        )
+    })?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+async fn admit_staged_session(
+    state: &HostState,
+    staging: tempfile::TempDir,
+    admission: SessionAdmission,
+) -> std::result::Result<Response, ApiError> {
+    let SessionAdmission {
+        kind,
+        original_name,
+        upload_bytes,
+        source_filelist,
+        mut source_reservation,
+    } = admission;
+    let upload_path = staging.path().join("upload");
 
     match kind {
         SessionKind::Bundle if !original_name.to_ascii_lowercase().ends_with(".nettle") => {
@@ -1017,15 +1091,15 @@ async fn create_session(
             .expect("source uploads were assigned a format")
             .stored_filename(),
     };
-    storage_retry(&state, || {
+    storage_retry(state, || {
         fs::rename(staged_path.join("upload"), staged_path.join(stored_file))
     })
     .map_err(|error| ApiError::from_storage(&error))?;
-    storage_retry(&state, || write_metadata(&staged_path, &metadata))
+    storage_retry(state, || write_metadata(&staged_path, &metadata))
         .map_err(|error| ApiError::from_storage(&error))?;
     let staged_path = staging.into_path();
     let session_path = state.0.sessions_root.join(&token);
-    if let Err(error) = commit_staged_session(&state, &staged_path, &session_path) {
+    if let Err(error) = commit_staged_session(state, &staged_path, &session_path) {
         let _ = fs::remove_dir_all(&staged_path);
         return Err(ApiError::from_storage(&error));
     }
@@ -1052,7 +1126,206 @@ async fn create_session(
         },
         [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
         Json(response),
-    ))
+    )
+        .into_response())
+}
+
+fn validate_azure_path(path: &str) -> std::result::Result<(SessionKind, String), ApiError> {
+    if path.len() > MAX_ARCHIVE_PATH_BYTES
+        || path.chars().any(char::is_control)
+        || path.contains(['?', '#', '\\'])
+    {
+        return Err(ApiError::bad_request(
+            "Azure path must be a safe az:// blob path without query strings or fragments.",
+        ));
+    }
+    let Some(blob_path) = path.strip_prefix("az://") else {
+        return Err(ApiError::bad_request("Azure path must start with az://."));
+    };
+    let components: Vec<_> = blob_path.split('/').collect();
+    if components.len() < 2
+        || components
+            .iter()
+            .any(|component| component.is_empty() || matches!(*component, "." | ".."))
+    {
+        return Err(ApiError::bad_request(
+            "Azure path must identify a blob with a safe filename.",
+        ));
+    }
+    let filename = components.last().copied().unwrap_or_default();
+    if safe_display_filename(filename) != filename {
+        return Err(ApiError::bad_request("Azure blob filename is unsafe."));
+    }
+    if filename.to_ascii_lowercase().ends_with(".nettle") {
+        Ok((SessionKind::Bundle, filename.to_owned()))
+    } else if SourceFormat::from_filename(filename).is_some() {
+        Ok((SessionKind::Sources, filename.to_owned()))
+    } else {
+        Err(ApiError::bad_request(
+            "Azure blob must be a .nettle, .zip, .tar, .tar.gz, or .tgz file.",
+        ))
+    }
+}
+
+async fn create_azure_session(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Json(request): Json<AzureImportRequest>,
+) -> std::result::Result<Response, ApiError> {
+    if !state.0.options.azure_enabled {
+        return Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: "Azure imports are not enabled on this Nettle server.".to_owned(),
+        });
+    }
+    require_same_origin_upload(&headers)?;
+    let (kind, original_name) = validate_azure_path(&request.path)?;
+    let source_filelist = match (kind, request.source_filelist.as_deref()) {
+        (SessionKind::Sources, Some(value)) => Some(validate_source_filelist(value)?),
+        (SessionKind::Bundle, Some(_)) => {
+            return Err(ApiError::bad_request(
+                "Bundle imports must not specify a source filelist.",
+            ));
+        }
+        (_, None) => None,
+    };
+    let _download_slot = state
+        .0
+        .azure_downloads
+        .try_acquire()
+        .map_err(|_| ApiError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Too many Azure downloads are running. Try again shortly.".to_owned(),
+        })?;
+    let source_reservation = if kind == SessionKind::Sources {
+        Some(try_reserve_source_queue_slot(&state)?)
+    } else {
+        None
+    };
+    let scratch = tempfile::Builder::new()
+        .prefix("azure-")
+        .tempdir_in(&state.0.options.scratch_root)
+        .map_err(|error| ApiError::from_storage(&error))?;
+    let download_path = scratch.path().join(&original_name);
+    download_azure_blob(&state, &request.path, &download_path).await?;
+    let downloaded = tokio::fs::symlink_metadata(&download_path)
+        .await
+        .map_err(|_| {
+            ApiError::invalid_upload("Azure download did not produce the expected file.")
+        })?;
+    if !downloaded.file_type().is_file() {
+        return Err(ApiError::invalid_upload(
+            "Azure download did not produce a regular file.",
+        ));
+    }
+    if downloaded.len() == 0 {
+        return Err(ApiError::bad_request("The downloaded Azure file is empty."));
+    }
+    add_upload_bytes(
+        &state,
+        0,
+        usize::try_from(downloaded.len()).map_err(|_| ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "The downloaded Azure file exceeds the server upload limit.".to_owned(),
+        })?,
+    )?;
+
+    let staging = new_upload_staging(&state)?;
+    let mut input = tokio::fs::File::open(&download_path)
+        .await
+        .map_err(|_| ApiError::invalid_upload("The downloaded Azure file could not be opened."))?;
+    let mut output = create_upload_file(&state, &staging.path().join("upload")).await?;
+    let mut buffer = vec![0_u8; STREAM_CHUNK_BYTES];
+    let mut upload_bytes = 0_u64;
+    loop {
+        let read = input.read(&mut buffer).await.map_err(|_| {
+            ApiError::invalid_upload("The downloaded Azure file could not be read.")
+        })?;
+        if read == 0 {
+            break;
+        }
+        upload_bytes = add_upload_bytes(&state, upload_bytes, read)?;
+        write_upload_chunk(&state, &mut output, &buffer[..read]).await?;
+    }
+    if upload_bytes == 0 {
+        return Err(ApiError::bad_request("The downloaded Azure file is empty."));
+    }
+    sync_upload_file(&state, &output).await?;
+    admit_staged_session(
+        &state,
+        staging,
+        SessionAdmission {
+            kind,
+            original_name,
+            upload_bytes,
+            source_filelist,
+            source_reservation,
+        },
+    )
+    .await
+}
+
+async fn download_azure_blob(
+    state: &HostState,
+    source: &str,
+    destination: &Path,
+) -> std::result::Result<(), ApiError> {
+    let mut child = Command::new(&state.0.bbb_program)
+        .arg("cp")
+        .arg(source)
+        .arg(destination)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| {
+            let message = if error.kind() == io::ErrorKind::NotFound {
+                "Azure import requires the bbb executable to be installed on the server PATH."
+            } else {
+                "The server could not start its Azure download executable."
+            };
+            ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: message.to_owned(),
+            }
+        })?;
+    let stderr = child.stderr.take();
+    let outcome = tokio::time::timeout(state.0.options.build_timeout, async {
+        let capture = async move {
+            if let Some(stderr) = stderr {
+                let mut diagnostics = Vec::new();
+                stderr
+                    .take(MAX_RETAINED_ERROR_BYTES as u64)
+                    .read_to_end(&mut diagnostics)
+                    .await?;
+            }
+            Ok::<(), io::Error>(())
+        };
+        tokio::try_join!(child.wait(), capture)
+    })
+    .await;
+    match outcome {
+        Ok(Ok((status, ()))) if status.success() => Ok(()),
+        Ok(Ok((_status, ()))) => Err(ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message:
+                "Azure download failed. Verify the blob path, network access, and bbb authentication."
+                    .to_owned(),
+        }),
+        Ok(Err(_)) => Err(ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: "The Azure download process could not be monitored.".to_owned(),
+        }),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(ApiError {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                message: "Azure download exceeded the server time limit.".to_owned(),
+            })
+        }
+    }
 }
 
 async fn read_small_field(
@@ -1804,7 +2077,6 @@ async fn process_queued_build_with_metadata_writer(
         .await;
         return Ok(());
     }
-
     let scratch_path = state.0.options.scratch_root.join(token);
     let build_result = run_source_build(state, &session_path, &scratch_path, &metadata).await;
     let cleanup_result =
@@ -3116,6 +3388,8 @@ mod tests {
     use std::ffi::OsString;
     use std::io::Cursor;
     use std::net::{IpAddr, Ipv4Addr};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use axum::body::to_bytes;
     use axum::http::Request;
@@ -3138,6 +3412,10 @@ mod tests {
     }
 
     fn test_host(max_queued_builds: usize) -> TestHost {
+        test_host_with_azure(max_queued_builds, false)
+    }
+
+    fn test_host_with_azure(max_queued_builds: usize, azure_enabled: bool) -> TestHost {
         let root = tempfile::tempdir().unwrap();
         let web = tempfile::tempdir().unwrap();
         let scratch = tempfile::tempdir().unwrap();
@@ -3152,6 +3430,7 @@ mod tests {
             build_timeout: Duration::from_secs(10),
             evict_after: Some(Duration::from_secs(60)),
             max_upload_bytes: 1024 * 1024,
+            azure_enabled,
         })
         .unwrap();
         TestHost {
@@ -3160,6 +3439,28 @@ mod tests {
             _scratch: scratch,
             state,
         }
+    }
+
+    #[cfg(unix)]
+    fn install_fake_bbb(host: &mut TestHost, script: &str) {
+        let executable = host._root.path().join("fake-bbb");
+        fs::write(&executable, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+        Arc::get_mut(&mut host.state.0).unwrap().bbb_program = executable;
+    }
+
+    fn azure_request(path: &str, source_filelist: Option<&str>) -> Request<Body> {
+        let mut body = json!({ "path": path });
+        if let Some(source_filelist) = source_filelist {
+            body["sourceFilelist"] = json!(source_filelist);
+        }
+        Request::post("/api/v1/azure-imports")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-nettle-upload", "1")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
     }
 
     #[tokio::test]
@@ -3338,6 +3639,7 @@ mod tests {
             build_timeout: Duration::from_secs(10),
             evict_after: Some(Duration::from_secs(60)),
             max_upload_bytes: 1024 * 1024,
+            azure_enabled: false,
         }
     }
 
@@ -3518,6 +3820,408 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cross_origin_style_upload.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn azure_capability_is_advertised_only_when_enabled() {
+        for enabled in [false, true] {
+            let host = test_host_with_azure(2, enabled);
+            let response = host_router(host.state)
+                .unwrap()
+                .oneshot(Request::get("/api/v1/config").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(config["azureEnabled"], enabled);
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_azure_imports_do_not_create_sessions() {
+        let host = test_host(2);
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn azure_imports_require_the_same_origin_upload_header() {
+        let host = test_host_with_azure(2, true);
+        let request = Request::post("/api/v1/azure-imports")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "path": "az://account/container/design.nettle"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = host_router(host.state)
+            .unwrap()
+            .oneshot(request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn azure_paths_accept_supported_blob_formats() {
+        for (path, kind, filename) in [
+            (
+                "az://account/container/design.nettle",
+                SessionKind::Bundle,
+                "design.nettle",
+            ),
+            (
+                "az://account/container/project.zip",
+                SessionKind::Sources,
+                "project.zip",
+            ),
+            (
+                "az://account/container/project.tar",
+                SessionKind::Sources,
+                "project.tar",
+            ),
+            (
+                "az://account/container/project.tar.gz",
+                SessionKind::Sources,
+                "project.tar.gz",
+            ),
+            (
+                "az://account/container/project.tgz",
+                SessionKind::Sources,
+                "project.tgz",
+            ),
+        ] {
+            let (actual_kind, actual_filename) = validate_azure_path(path).unwrap();
+            assert_eq!(actual_kind, kind);
+            assert_eq!(actual_filename, filename);
+        }
+    }
+
+    #[test]
+    fn azure_paths_reject_queries_fragments_traversal_and_unsupported_files() {
+        for path in [
+            "https://account/container/design.nettle",
+            "az://account",
+            "az://account/",
+            "az://account//design.nettle",
+            "az://account/../design.nettle",
+            "az://account/./design.nettle",
+            "az://account/container/design.nettle?token=secret",
+            "az://account/container/design.nettle#fragment",
+            "az://account/container/design\\evil.nettle",
+            "az://account/container/design.sv",
+            "az://account/container/design\n.nettle",
+        ] {
+            assert!(validate_azure_path(path).is_err(), "accepted {path:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_bundle_import_uses_the_standard_session_and_cleans_scratch() {
+        let mut host = test_host_with_azure(2, true);
+        let input = host._root.path().join("fixture.nettle");
+        test_bundle(&input);
+        let expected = fs::read(&input).unwrap();
+        install_fake_bbb(
+            &mut host,
+            &format!("test \"$1\" = cp\ncp '{}' \"$3\"", input.display()),
+        );
+        let router = host_router(host.state.clone()).unwrap();
+        let response = router
+            .clone()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let token = created["token"].as_str().unwrap();
+        let metadata = read_metadata(&host.state.0.sessions_root.join(token)).unwrap();
+        assert_eq!(metadata.kind, SessionKind::Bundle);
+        assert_eq!(metadata.original_name, "design.nettle");
+        assert_eq!(metadata.state, SessionState::Ready);
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+
+        let download = router
+            .oneshot(
+                Request::get(format!("/api/v1/sessions/{token}/download"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(
+            to_bytes(download.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .as_ref(),
+            expected
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_source_import_preserves_filelist_and_queue_reservation() {
+        let mut host = test_host_with_azure(1, true);
+        let input = host._root.path().join("fixture.zip");
+        fs::write(&input, source_zip()).unwrap();
+        install_fake_bbb(&mut host, &format!("cp '{}' \"$3\"", input.display()));
+        let router = host_router(host.state.clone()).unwrap();
+        let response = router
+            .clone()
+            .oneshot(azure_request(
+                "az://account/container/project.zip",
+                Some("nested/project.f"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let token = created["token"].as_str().unwrap();
+        let metadata = read_metadata(&host.state.0.sessions_root.join(token)).unwrap();
+        assert_eq!(metadata.kind, SessionKind::Sources);
+        assert_eq!(metadata.source_format, Some(SourceFormat::Zip));
+        assert_eq!(
+            metadata.source_filelist.as_deref(),
+            Some("nested/project.f")
+        );
+        assert_eq!(metadata.state, SessionState::Queued);
+        assert_eq!(host.state.0.source_queue_slots.load(Ordering::Acquire), 1);
+
+        let overflow = router
+            .oneshot(azure_request("az://account/container/another.zip", None))
+            .await
+            .unwrap();
+        assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_download_failures_are_bounded_redacted_and_cleaned() {
+        let mut host = test_host_with_azure(2, true);
+        install_fake_bbb(&mut host, "printf 'credential=super-secret\\n' >&2\nexit 9");
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(error["error"].as_str().unwrap().contains("authentication"));
+        assert!(!error.to_string().contains("super-secret"));
+        assert_eq!(
+            fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_missing_output_empty_output_and_bad_bundle_are_rejected() {
+        for (script, expected_status) in [
+            ("exit 0", StatusCode::UNPROCESSABLE_ENTITY),
+            ("touch \"$3\"", StatusCode::BAD_REQUEST),
+            ("printf invalid > \"$3\"", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            let mut host = test_host_with_azure(2, true);
+            install_fake_bbb(&mut host, script);
+            let response = host_router(host.state.clone())
+                .unwrap()
+                .oneshot(azure_request("az://account/container/design.nettle", None))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status, "script {script}");
+            assert_eq!(
+                fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+                0
+            );
+            assert_eq!(fs::read_dir(&host.state.0.staging_root).unwrap().count(), 0);
+            assert_eq!(
+                fs::read_dir(&host.state.0.options.scratch_root)
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_missing_executable_returns_actionable_service_error() {
+        let mut host = test_host_with_azure(2, true);
+        Arc::get_mut(&mut host.state.0).unwrap().bbb_program =
+            host._root.path().join("bbb-does-not-exist");
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(error["error"].as_str().unwrap().contains("bbb executable"));
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_download_timeout_terminates_the_process_and_cleans_scratch() {
+        let mut host = test_host_with_azure(2, true);
+        Arc::get_mut(&mut host.state.0)
+            .unwrap()
+            .options
+            .build_timeout = Duration::from_millis(25);
+        install_fake_bbb(&mut host, "sleep 10");
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            host.state.0.azure_downloads.available_permits(),
+            MAX_CONCURRENT_AZURE_DOWNLOADS
+        );
+    }
+
+    #[tokio::test]
+    async fn azure_imports_enforce_the_process_wide_download_limit() {
+        let host = test_host_with_azure(2, true);
+        let first = host.state.0.azure_downloads.try_acquire().unwrap();
+        let second = host.state.0.azure_downloads.try_acquire().unwrap();
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+        drop((first, second));
+        assert_eq!(
+            host.state.0.azure_downloads.available_permits(),
+            MAX_CONCURRENT_AZURE_DOWNLOADS
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_an_azure_import_releases_scratch_and_download_capacity() {
+        let mut host = test_host_with_azure(2, true);
+        let marker = host._root.path().join("bbb-started");
+        install_fake_bbb(
+            &mut host,
+            &format!("printf started > '{}'\nsleep 10", marker.display()),
+        );
+        let router = host_router(host.state.clone()).unwrap();
+        let request = tokio::spawn(async move {
+            router
+                .oneshot(azure_request("az://account/container/design.nettle", None))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("fake Azure downloader did not start");
+        request.abort();
+        let _ = request.await;
+
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            host.state.0.azure_downloads.available_permits(),
+            MAX_CONCURRENT_AZURE_DOWNLOADS
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn azure_oversized_download_is_rejected_before_session_admission() {
+        let mut host = test_host_with_azure(2, true);
+        Arc::get_mut(&mut host.state.0)
+            .unwrap()
+            .options
+            .max_upload_bytes = 4;
+        install_fake_bbb(&mut host, "printf 'too large' > \"$3\"");
+        let response = host_router(host.state.clone())
+            .unwrap()
+            .oneshot(azure_request("az://account/container/design.nettle", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            fs::read_dir(&host.state.0.sessions_root).unwrap().count(),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(&host.state.0.options.scratch_root)
+                .unwrap()
+                .count(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -4517,6 +5221,7 @@ mod tests {
             build_timeout: Duration::from_secs(1),
             evict_after: None,
             max_upload_bytes: 1024,
+            azure_enabled: false,
         })
         .unwrap_err();
         assert!(
@@ -4540,6 +5245,7 @@ mod tests {
             build_timeout: Duration::from_secs(1),
             evict_after: None,
             max_upload_bytes: 1024,
+            azure_enabled: false,
         })
         .unwrap_err();
         assert!(error.to_string().contains("--web-root and --storage-root"));

@@ -206,7 +206,7 @@ const candidateSessionToken = "b".repeat(64);
 
 const installHostedComparisonApi = async (
   page: Page,
-  options: { queueSourceOnce?: boolean } = {},
+  options: { queueSourceOnce?: boolean; azureEnabled?: boolean } = {},
 ) => {
   const uploadKinds: string[] = [];
   const sourceTokens = new Set<string>();
@@ -217,6 +217,7 @@ const installHostedComparisonApi = async (
       contentType: "application/json",
       body: JSON.stringify({
         hostingEnabled: true,
+        azureEnabled: options.azureEnabled ?? false,
         retention: {
           mode: "expires",
           seconds: 2_592_000,
@@ -292,7 +293,10 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
   const runtimeErrors = captureRuntimeErrors(page);
   const apiRequests: string[] = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url());
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/api/") && path !== "/api/v1/config") {
+      apiRequests.push(request.url());
+    }
   });
 
   await page.goto("/");
@@ -310,6 +314,41 @@ test("opens a Rust-produced bundle entirely in the browser", async ({ page }) =>
   await expect(page.locator(".top-level-boundary")).toHaveCount(1);
   await expect(page.locator(".tree-row").filter({ hasText: "top.sv" })).toHaveCount(1);
   expect(apiRequests).toEqual([]);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("imports an Azure blob only when the hosted server advertises the capability", async ({
+  page,
+}) => {
+  const runtimeErrors = captureRuntimeErrors(page);
+  const uploadKinds = await installHostedComparisonApi(page, { azureEnabled: true });
+  const requests: Array<{ path: string; sourceFilelist?: string }> = [];
+  await page.route("**/api/v1/azure-imports", (route) => {
+    expect(route.request().headers()["x-nettle-upload"]).toBe("1");
+    const body = route.request().postDataJSON() as { path: string; sourceFilelist?: string };
+    requests.push(body);
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        token: referenceSessionToken,
+        url: `/s/${referenceSessionToken}`,
+        statusUrl: `/api/v1/sessions/${referenceSessionToken}/status`,
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open a bundle or source archive from Azure" }).click();
+  const dialog = page.getByRole("dialog", { name: "Open from Azure" });
+  await expect(dialog.getByText(/Anyone with the resulting URL/)).toBeVisible();
+  await dialog.getByLabel("Azure blob path").fill("az://account/container/design.nettle");
+  await dialog.getByRole("button", { name: "Import and create link" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/s/${referenceSessionToken}$`));
+  await expect(page.locator(".hosted-viewer-banner")).toBeVisible();
+  expect(requests).toEqual([{ path: "az://account/container/design.nettle" }]);
+  expect(uploadKinds).toEqual([]);
   expect(runtimeErrors).toEqual([]);
 });
 
