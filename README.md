@@ -319,13 +319,14 @@ session volume.
 
 #### Start hosted Docker with Azure
 
-The combined image already includes the hash-locked `boostedblob` executable
-`bbb`. It does **not** include the Azure CLI, sign in on your behalf, or change
-network policy. One supported approach is to run `az login` on the Docker host,
-then copy only the Azure login files `bbb` uses into a protected Docker volume
-owned by container UID `10001`. Do not mount an owner-only host `~/.azure`
-directly into the non-root server: bind mounts retain host ownership, so the
-server cannot read login files belonging to a different host UID.
+The combined image includes the hash-locked `boostedblob` executable `bbb` and
+a checksum-locked Azure CLI. It does **not** sign in on your behalf or change
+network policy. One supported approach is to run `az login` on the Docker
+host, then copy only the Azure login files `bbb` uses into a protected Docker
+volume owned by container UID `10001`. Do not mount an owner-only host
+`~/.azure` directly into the non-root server: bind mounts retain host
+ownership, so the server cannot read login files belonging to a different host
+UID.
 
 If the non-Azure container above is running, stop and remove the container
 before starting its Azure-enabled replacement; this does not delete
@@ -387,6 +388,7 @@ using the GUI:
 
 ```sh
 docker exec nettle bbb --version
+docker exec nettle az version
 docker exec nettle bbb ls az://account/container/
 ```
 
@@ -397,9 +399,9 @@ mounted service-principal JSON file selected with
 `AZURE_APPLICATION_CREDENTIALS`, service-principal environment variables, and
 storage-account keys. Supply secrets through your site's protected secret
 mechanism; do not commit them, put them in blob URLs, expose them in session
-links, or assume that `az` is available inside the image. If your chosen login
-or cache needs to write files, mount an appropriately protected writable
-directory instead of making the container root writable.
+links, or assume that the bundled `az` command has already authenticated. If
+your chosen login or cache needs to write files, mount an appropriately
+protected writable directory instead of making the container root writable.
 
 Open <http://127.0.0.1:8080>, paste an `az://` path to a `.nettle`, `.zip`,
 `.tar`, `.tar.gz`, or `.tgz` blob into the Azure field, and press Enter. Source

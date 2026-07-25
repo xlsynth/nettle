@@ -138,6 +138,7 @@ COPY --from=builder /opt/slang /opt/slang
 COPY --from=builder /opt/oss-cad-suite /opt/oss-cad-suite
 COPY --from=builder /opt/nettle/third-party-licenses /opt/nettle/third-party-licenses
 COPY debian-runtime.lock /opt/nettle/debian-runtime.lock
+COPY azure-cli.lock /opt/nettle/azure-cli.lock
 COPY requirements.lock /opt/nettle/requirements.lock
 RUN set -eu; \
     set --; \
@@ -162,7 +163,27 @@ RUN set -eu; \
     done < /opt/nettle/debian-runtime.lock; \
     downloaded_packages="$(find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -print | wc -l)"; \
     test "$downloaded_packages" -eq "$checked_packages"; \
-    apt-get install --yes --no-install-recommends "$@" \
+    apt-get install --yes --no-install-recommends "$@"; \
+    azure_cli_url=; \
+    azure_cli_sha256=; \
+    while read -r url sha256 extra; do \
+      case "$url" in \#* | "") continue ;; esac; \
+      test -z "$extra"; \
+      azure_cli_url="$url"; \
+      azure_cli_sha256="$sha256"; \
+      break; \
+    done < /opt/nettle/azure-cli.lock; \
+    test -n "$azure_cli_url"; \
+    test -n "$azure_cli_sha256"; \
+    python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+      "$azure_cli_url" /tmp/azure-cli.deb; \
+    printf '%s  %s\n' "$azure_cli_sha256" /tmp/azure-cli.deb \
+      | sha256sum --check --strict; \
+    dpkg -i /tmp/azure-cli.deb; \
+    test "$(dpkg-query --showformat='${Version}' --show azure-cli)" = \
+      "2.88.0-1~bookworm"; \
+    az version; \
+    rm -f /tmp/azure-cli.deb \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --home-dir /home/nettle --uid 10001 --user-group nettle \
   && python3 -m venv /opt/boostedblob \
