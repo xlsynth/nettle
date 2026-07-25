@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+# Exact linux/amd64 Azure CLI Debian artifact for the hosted runtime.
+# Format: URL SHA-256
+https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/azure-cli_2.88.0-1~bookworm_amd64.deb e589a155989afbde1ab88bd5b8669a1de2cd5582260e9eb446584506214d4b2e
