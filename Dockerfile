@@ -179,7 +179,9 @@ RUN set -eu; \
       "$azure_cli_url" /tmp/azure-cli.deb; \
     printf '%s  %s\n' "$azure_cli_sha256" /tmp/azure-cli.deb \
       | sha256sum --check --strict; \
-    apt-get install --yes --no-install-recommends /tmp/azure-cli.deb; \
+    dpkg -i /tmp/azure-cli.deb; \
+    test "$(dpkg-query --showformat='${Version}' --show azure-cli)" = \
+      "2.88.0-1~bookworm"; \
     az version; \
     rm -f /tmp/azure-cli.deb \
   && rm -rf /var/lib/apt/lists/* \

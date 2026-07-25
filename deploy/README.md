@@ -77,14 +77,14 @@ an `az://` bundle or source archive path and press Enter. The image includes
 hosted upload pipeline. The downloader inherits a hard file-size limit, so an
 oversized or changing blob cannot exhaust scratch used by other builds.
 
-You must sign in to Azure with `bbb` yourself. For example, open a shell in the
-running container and use the authentication method required by your Azure
-account. The image includes `bbb`, not the Azure CLI; do not assume `az login`
-can run inside the Pod. Configure a site-managed Kubernetes Secret or mounted
-Azure login cache that `bbb` can read as UID `10001`. For a service-principal
-JSON Secret, point `AZURE_APPLICATION_CREDENTIALS` at its mounted file. If
-`bbb` needs to cache tokens, mount an additional protected writable directory
-at `/home/nettle/.config/bbb`; do not make the container root writable.
+You must sign in to Azure yourself. For example, open a shell in the running
+container and use the authentication method required by your Azure account.
+The image includes both `bbb` and the Azure CLI, but neither tool signs in on
+your behalf. Configure a site-managed Kubernetes Secret or mounted Azure login
+cache that `bbb` can read as UID `10001`. For a service-principal JSON Secret,
+point `AZURE_APPLICATION_CREDENTIALS` at its mounted file. If `bbb` needs to
+cache tokens, mount an additional protected writable directory at
+`/home/nettle/.config/bbb`; do not make the container root writable.
 
 After configuring the Secret, writable cache if needed, and approved egress,
 enable the feature and verify the actual running Pod can reach the intended
@@ -94,6 +94,7 @@ blob container:
 kubectl set env deployment/nettle NETTLE_AZURE_ENABLE=1
 kubectl rollout status deployment/nettle
 kubectl exec deployment/nettle -- bbb --version
+kubectl exec deployment/nettle -- az version
 kubectl exec deployment/nettle -- bbb ls az://account/container/
 ```
 
