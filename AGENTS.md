@@ -20,3 +20,5 @@
 
 - Whenever a pull request makes a substantial GUI change, include before-and-after
   screenshots in the pull request description.
+- Do not commit screenshots used to populate pull request descriptions to the
+  source tree.
