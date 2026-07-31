@@ -89,7 +89,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
   && cp target/release/nettle /tmp/nettle
 
 # Compile the static browser viewer once for the viewer and combined targets.
-FROM node:24-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203 AS web-builder
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS web-builder
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
 ARG NETTLE_BUILD_STATE
