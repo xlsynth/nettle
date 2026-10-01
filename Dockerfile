@@ -70,7 +70,7 @@ RUN set -eu; \
     rm -rf oss-cad-suite.tgz /tmp/oss-cad-suite
 
 # Compile the native CLI once for the builder, viewer, and combined targets.
-FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS rust-builder
+FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS rust-builder
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
 ARG NETTLE_BUILD_STATE
@@ -213,7 +213,7 @@ CMD ["view"]
 # Shared environment for the integration-only and comprehensive test targets.
 # The precompiled Slang and yosys-slang distributions currently have Linux
 # amd64 binaries only; add linux/arm64 when both upstream toolchains provide it.
-FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS test-base
+FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS test-base
 ARG NETTLE_BUILD_DATE_UTC
 ARG NETTLE_BUILD_GIT_SHA
 ARG NETTLE_BUILD_STATE
